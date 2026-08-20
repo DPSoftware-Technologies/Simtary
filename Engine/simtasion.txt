@@ -1,0 +1,82 @@
+for versioning. use this chart
+the format is
+
+A-BB-CCCC-D-EEE-FFFF-MA-MI-RE
+
+A - Channel
+
+0 = Public Alpha
+1 = Public Beta
+2 = RC
+3 = Release
+4 = LTS
+5 = Snapshot
+6 = In-Dev
+
+BB - Platform Arch
+Format: NN (Number Number)
+0 = All Arch
+1 = x86
+2 = AMD64
+3 = ARM
+4 = ARM64
+5 = RISC-V
+6 = PowerPC
+7 = Web (WASM)
+
+CCCC - Platforms OS
+Format: NNNS (Number Number Number String)
+
+By default S is "D" or Default but if use combine version it can will "C" example 032C  or 143C
+
+00 = All Platform (Windows, Linux, FreeBSD, MACOS, Android (include XR platform), IOS/IPadOS/VisionOS, Console (Xbox, Playstation, Nintendo))
+
+10 = PC Platform (Windows, Linux, FreeBSD, MACOS)
+11 = PC Platform (Windows)
+12 = PC Platform (Linux)
+13 = PC Platform (FreeBSD)
+14 = PC Platform (MACOS)
+
+20 = Mobile Platform (Any Android Device, Apple Device)
+21 = Mobile Platform (Any Android Device)
+22 = Mobile Platform (Android Tablet Only)
+23 = Mobile Platform (Android Phone Only)
+24 = Mobile Platform (Apple Device)
+25 = Mobile Platform (IOS only)
+26 = Mobile Platform (IPadOS only)
+
+30 = XR Platform (Android XR, Meta Horizon OS, PICO OS, VisionOS)
+31 = XR Platform (Android XR only)
+32 = XR Platform (Meta Horizon OS Only)
+33 = XR Platform (PICO OS Only)
+34 = XR Platform (VisionOS Only)
+
+40 = Console Platform (Xbox, Playstation, Nintendo)
+41 = Console Platform (Xbox only)
+42 = Console Platform (Playstation only)
+43 = Console Platform (Nintendo only)
+
+and it allow to combine platform like 11 (Windows) + 12 (Linux) + 21 (Android Device) + 31 (Android XR platform) = 075C
+
+D - Application target
+0 = Both
+1 = Client
+2 = Server
+
+EEE - Design for Application
+Format: NN (Number Number)
+
+00 - Everything
+01 - Realtime
+02 - Simulation
+03 - High Performance
+.
+.
+.
+and it allow to combine like platform example 01 + 02 = 03E. but if not combine it will 03D
+
+FFFF - Build by
+Format: NNNN (Number Number Number Number)
+if build by official it will 0000
+if build by community that not registered to PlatoonLabs it will 0001
+but if registered it can be 0002-9999 (limit only 9997 developer/studio/company/org)

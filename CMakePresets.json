@@ -1,0 +1,64 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 23,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "SIMTARY_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "win_x86-64",
+      "inherits": "base",
+      "displayName": "Windows x86-64",
+      "description": "Default Visual Studio generator, 64-bit. Builds into build/win_x86-64.",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "linux_x86-64",
+      "inherits": "base",
+      "generator": "Ninja Multi-Config",
+      "displayName": "Linux x86-64",
+      "description": "Ninja Multi-Config. Builds into build/linux_x86-64.",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "win_x86-64",
+      "configurePreset": "win_x86-64",
+      "configuration": "Release"
+    },
+    {
+      "name": "win_x86-64-debug",
+      "configurePreset": "win_x86-64",
+      "configuration": "Debug"
+    },
+    {
+      "name": "linux_x86-64",
+      "configurePreset": "linux_x86-64",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux_x86-64-debug",
+      "configurePreset": "linux_x86-64",
+      "configuration": "Debug"
+    }
+  ]
+}
