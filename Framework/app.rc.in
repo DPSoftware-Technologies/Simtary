@@ -1,0 +1,34 @@
+LANGUAGE 9, 1
+
+// --- App Icon ---
+1 ICON "@ST_APP_ICON@"
+
+// --- Version Information ---
+1 VERSIONINFO
+  FILEVERSION     @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+  PRODUCTVERSION  @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+  FILEFLAGSMASK   0x3fL
+  FILEFLAGS       0x0L
+  FILEOS          0x40004L
+  FILETYPE        0x1L
+  FILESUBTYPE     0x0L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName",      "@ST_APP_ORGANIZATION@"
+      VALUE "FileDescription",  "@PROJECT_NAME@"
+      VALUE "FileVersion",      "@PROJECT_VERSION@"
+      VALUE "InternalName",     "@PROJECT_NAME@"
+      VALUE "LegalCopyright",   "Copyright (C) @PROJECT_YEAR@ @ST_APP_ORGANIZATION@"
+      VALUE "OriginalFilename", "@PROJECT_NAME@.exe"
+      VALUE "ProductName",      "@PROJECT_NAME@"
+      VALUE "ProductVersion",   "@PROJECT_VERSION@"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 1200
+  END
+END
