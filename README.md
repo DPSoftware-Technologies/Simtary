@@ -1,13 +1,9 @@
 # Simtary
 
-The shared engine for every game in this workspace. A game beside it
-(`../Milistry`, `../template`, …) pulls this in with one `include()` and gets a
-window, a render path, a scene system, a full ImGui system UI, input, settings and
-save data, crash reporting and shader compilation without writing any of it.
-
+The shared engine for every game in this workspace.
 ```
 Simtary/
-├── Engine/         engine core — its own repo (DPSoftware-Technologies/Simtary4)
+├── Engine/         engine core
 ├── Framework/      the layer this workspace adds: st::App, st::Run, SceneManager,
 │                   system UI, io/NBT, input, crash, lens flare, Faust, ZMQ
 ├── libs/           SDL2, ImGui, ImGuizmo, libzmq (submodules) + libgfx, faust
@@ -251,9 +247,3 @@ the cold ~360-shader compile. After a shader-heavy change, publish the result ba
 ```
 cmake --build <project>/build/win_x86-64 --target simtary_shadercache_update
 ```
-
-## Git
-
-`Engine/` is a separate repository with its own remote — commits there go upstream to
-Simtary4. Keep workspace-specific work in `Framework/`. `libs/ImGui`, `libs/ImGuizmo`,
-`libs/libzmq` and `libs/SDL2` are submodules of this repository.
