@@ -90,7 +90,7 @@ static void DrawNode(Scene& scene, Entity e,
 	// Drag source: lets you drag this entity onto an EntityField (Unity-style object reference).
 	if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
 	{
-		ImGui::SetDragDropPayload(MILISTRY_ENTITY_PAYLOAD, &e, sizeof(Entity));
+		ImGui::SetDragDropPayload(SIMTARY_ENTITY_PAYLOAD, &e, sizeof(Entity));
 		ImGui::Text("%s", EntityLabel(scene, e).c_str());
 		ImGui::EndDragDropSource();
 	}
@@ -140,7 +140,7 @@ void HierarchyGUI(Scene& scene, Entity& selected)
 				selected = e;
 			if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
 			{
-				ImGui::SetDragDropPayload(MILISTRY_ENTITY_PAYLOAD, &e, sizeof(Entity));
+				ImGui::SetDragDropPayload(SIMTARY_ENTITY_PAYLOAD, &e, sizeof(Entity));
 				ImGui::Text("%s", EntityLabel(scene, e).c_str());
 				ImGui::EndDragDropSource();
 			}
@@ -519,7 +519,7 @@ bool EntityField(Scene& scene, const char* label, NativeComponent& comp, const c
 
 	if (ImGui::BeginDragDropTarget())
 	{
-		if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(MILISTRY_ENTITY_PAYLOAD))
+		if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(SIMTARY_ENTITY_PAYLOAD))
 		{
 			Entity dropped = INVALID_ENTITY;
 			if (p->DataSize == (int)sizeof(Entity))

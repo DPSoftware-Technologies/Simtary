@@ -23,6 +23,8 @@
 
 include_guard(GLOBAL)
 
+include(SimtaryProject)
+
 # CACHE INTERNAL, not a plain set(): this file is included from Simtary/CMakeLists.txt,
 # which a game add_subdirectory()s from its own (parent) scope. A directory-scope
 # variable set down there would not be visible back up in the game's CMakeLists.
@@ -36,6 +38,13 @@ else()
     set(_SIMTARY_COPY_DIR copy_directory_if_different)
 endif()
 set(SIMTARY_COPY_DIR_CMD "${_SIMTARY_COPY_DIR}" CACHE INTERNAL "cmake -E directory copy mode")
+
+# build_number.txt is PROJECT-level: only a build of that project may advance it.
+# Turn this OFF for compile-checks that are not real project builds — the engine-side
+# sweep (SIMTARY_BUILD_PROJECTS) and CI both do, so they never inflate the counter.
+# version.h is still generated at configure time either way, so ST_APP_BUILD_NUMBER
+# always resolves.
+option(SIMTARY_BUMP_BUILD_NUMBER "Advance <project>/build_number.txt on every build" ON)
 
 # ── simtary_compile_shader() ──────────────────────────────────────────────────
 # Compile one HLSL file with dxc into the app's runtime shader folder
@@ -131,8 +140,35 @@ function(simtary_add_app)
     if (NOT DEFINED APP_CONTENT_SUBDIR)
         set(APP_CONTENT_SUBDIR "contents")
     endif()
+    # ── project descriptor ────────────────────────────────────────────────────
+    # assets/project.stpd is the build-time manifest (identity, icon, version). It is
+    # read here, at configure time, and never at runtime — which is why it lives in
+    # assets/ and not assets/contents/, the folder that ships with the game.
+    # Explicit simtary_add_app() arguments still win over the file.
+    simtary_read_project_descriptor("${CMAKE_CURRENT_SOURCE_DIR}/assets/project.stpd")
+
+    if (NOT APP_ORGANIZATION AND ST_PROJECT_ORGANIZATION)
+        set(APP_ORGANIZATION "${ST_PROJECT_ORGANIZATION}")
+    endif()
+    if (NOT APP_ICON AND ST_PROJECT_ICON)
+        set(APP_ICON "${ST_PROJECT_ICON}")
+    endif()
     if (NOT APP_ORGANIZATION)
         set(APP_ORGANIZATION "DPSoftware")
+    endif()
+
+    # Display name is what a player sees (window title, About box, exe metadata); the
+    # CMake target name stays the exe filename and must be a valid identifier.
+    if (ST_PROJECT_NAME)
+        set(ST_APP_DISPLAY_NAME "${ST_PROJECT_NAME}")
+    else()
+        set(ST_APP_DISPLAY_NAME "${APP_NAME}")
+    endif()
+    if (ST_PROJECT_COPYRIGHT)
+        set(ST_APP_COPYRIGHT "${ST_PROJECT_COPYRIGHT}")
+    else()
+        string(TIMESTAMP _year "%Y")
+        set(ST_APP_COPYRIGHT "Copyright (C) ${_year} ${APP_ORGANIZATION}")
     endif()
 
     set(ST_APP_ORGANIZATION "${APP_ORGANIZATION}")
@@ -159,15 +195,22 @@ function(simtary_add_app)
     source_group(TREE ${SIMTARY_FRAMEWORK_DIR} PREFIX "Simtary/Framework" FILES ${_framework_sources})
     source_group(TREE ${APP_SOURCE_DIR}        PREFIX "src"               FILES ${_app_sources})
 
-    if (PROJECT_VERSION)
-        set_target_properties(${APP_NAME} PROPERTIES
-            VERSION   ${PROJECT_VERSION}
-            SOVERSION ${PROJECT_VERSION_MAJOR}
-        )
+    # Descriptor version wins: it is the one a release is cut from.
+    if (ST_PROJECT_VERSION)
+        set(_app_version ${ST_PROJECT_VERSION})
+    elseif (PROJECT_VERSION)
         set(_app_version ${PROJECT_VERSION})
     else()
         set(_app_version 1.0.0)
     endif()
+    string(REPLACE "." ";" _vparts "${_app_version}")
+    list(LENGTH _vparts _vcount)
+    if (_vcount GREATER_EQUAL 3)
+        set_target_properties(${APP_NAME} PROPERTIES VERSION ${_app_version})
+        list(GET _vparts 0 _vmajor)
+        set_target_properties(${APP_NAME} PROPERTIES SOVERSION ${_vmajor})
+    endif()
+    set(ST_APP_VERSION_STRING "${_app_version}")
 
     # ── build number / versioning ─────────────────────────────────────────────
     # A persistent per-project counter (build_number.txt, gitignored) is
@@ -192,29 +235,40 @@ function(simtary_add_app)
         )
     endif()
 
-    add_custom_target(${APP_NAME}_BumpBuildNumber
-        COMMAND ${CMAKE_COMMAND}
-            -DCOUNTER_FILE=${_counter}
-            -DTEMPLATE=${_template}
-            -DOUTPUT=${_header}
-            -DPROJECT_VER=${_app_version}
-            -P ${SIMTARY_ROOT}/cmake/IncrementBuild.cmake
-        BYPRODUCTS ${_header}
-        COMMENT "Bumping ${APP_NAME} build number"
-        VERBATIM
+    if (SIMTARY_BUMP_BUILD_NUMBER)
+        # Identity header generated from the descriptor, so main.cpp never repeats the
+    # name/organization/copyright that the manifest already states.
+    configure_file(
+        ${SIMTARY_FRAMEWORK_DIR}/stProject.h.in
+        ${_gendir}/stProject.h
+        @ONLY
     )
-    set_target_properties(${APP_NAME}_BumpBuildNumber PROPERTIES FOLDER "${APP_NAME}/Build")
-    add_dependencies(${APP_NAME} ${APP_NAME}_BumpBuildNumber)
+
+    add_custom_target(${APP_NAME}_BumpBuildNumber
+            COMMAND ${CMAKE_COMMAND}
+                -DCOUNTER_FILE=${_counter}
+                -DTEMPLATE=${_template}
+                -DOUTPUT=${_header}
+                -DPROJECT_VER=${_app_version}
+                -P ${SIMTARY_ROOT}/cmake/IncrementBuild.cmake
+            BYPRODUCTS ${_header}
+            COMMENT "Bumping ${APP_NAME} build number"
+            VERBATIM
+        )
+        set_target_properties(${APP_NAME}_BumpBuildNumber PROPERTIES FOLDER "${APP_NAME}/Build")
+        add_dependencies(${APP_NAME} ${APP_NAME}_BumpBuildNumber)
+    else()
+        message(STATUS "${APP_NAME}: build number frozen (SIMTARY_BUMP_BUILD_NUMBER=OFF)")
+    endif()
 
     # ── Windows resources (icon + version info) ───────────────────────────────
     if (WIN32)
         string(TIMESTAMP PROJECT_YEAR "%Y")
         set(PROJECT_NAME "${APP_NAME}")           # consumed by app.rc.in
         set(PROJECT_VERSION "${_app_version}")
-        string(REPLACE "." ";" _v "${_app_version}")
-        list(GET _v 0 PROJECT_VERSION_MAJOR)
-        list(GET _v 1 PROJECT_VERSION_MINOR)
-        list(GET _v 2 PROJECT_VERSION_PATCH)
+        list(GET _vparts 0 PROJECT_VERSION_MAJOR)
+        list(GET _vparts 1 PROJECT_VERSION_MINOR)
+        list(GET _vparts 2 PROJECT_VERSION_PATCH)
         if (APP_ICON)
             get_filename_component(ST_APP_ICON "${APP_ICON}" ABSOLUTE BASE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
         else()

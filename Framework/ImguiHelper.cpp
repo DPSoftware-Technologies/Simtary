@@ -306,13 +306,19 @@ void st::App::ImguiExit() {
 void st::App::ImguiUpdate() {
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
-    SysUIRender();
 
+    // Developer tooling first, so game UI and the loading screen draw over it.
+    if (IsDevUIVisible()) DevUIRender();
+
+    // The active scene: game-facing UI always, dev-only panels only with DevUI up.
     sceneManager.OnGUI();
+    if (IsDevUIVisible()) sceneManager.OnDevGUI();
 
-    // Project hook: game-owned ImGui windows, drawn after the active scene's so a
-    // project can overlay or dock alongside them.
-    OnGUI();
+    // Project hook: the game's own UI. Drawn regardless of DevUIMode.
+    RenderUI();
+
+    // On top of everything, including while shaders are still compiling.
+    RenderLoadingScreen(loading_);
 
     ImGui::Render();
 }

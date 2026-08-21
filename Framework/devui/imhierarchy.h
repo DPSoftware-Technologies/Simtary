@@ -21,7 +21,7 @@ namespace wi::scene { struct Scene; struct NativeComponent; }
 
 // ImGui drag-drop payload type that Hierarchy rows publish and EntityField accepts.
 //	Payload is a single wi::ecs::Entity. Exposed so other panels can author drop targets too.
-inline constexpr const char* MILISTRY_ENTITY_PAYLOAD = "MILISTRY_ENTITY";
+inline constexpr const char* SIMTARY_ENTITY_PAYLOAD = "SIMTARY_ENTITY";
 
 // Unity-like "object field": a button you can drag an entity from the Hierarchy onto.
 //	Shows the current target's name (or "(none)"). On drop, points the native component's

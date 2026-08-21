@@ -2,7 +2,7 @@
 #include "version.h"   // generated: ST_APP_VERSION / ST_APP_BUILD_NUMBER / ST_APP_BUILD_DATE
 #include "wiVersion.h" // engine (Simtary) version + credits
 
-void st::App::SysUIMenuBar() {
+void st::App::DevUIMenuBar() {
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu(Config().name.c_str())) {
             ImGui::MenuItem("Graphics Settings", NULL, &showGraphicsSettings);
@@ -14,7 +14,7 @@ void st::App::SysUIMenuBar() {
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("HMMWV4")) {
+        if (ImGui::BeginMenu("Simtary")) {
             if (ImGui::BeginMenu("Window")) {
                 ImGui::MenuItem("Scene Manager", NULL, &showSceneManager);
                 ImGui::MenuItem("Hierarchy", NULL, &showHierarchy);
@@ -39,7 +39,7 @@ void st::App::SysUIMenuBar() {
                 ImGui::EndMenu();
             }
             ImGui::Separator();
-            SysUISceneSelector();
+            DevUISceneSelector();
             ImGui::Separator();
             ImGui::MenuItem("Show BackLog", NULL, &showBackLog);
             ImGui::Separator();
@@ -54,6 +54,9 @@ void st::App::SysUIMenuBar() {
 
             ImGui::EndMenu();
         }
+
+        // Project hook: add your own ImGui::BeginMenu(...) here.
+        OnDevUIMenu();
 
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::MenuItem("About", "")) {
@@ -94,7 +97,7 @@ void st::App::SysUIMenuBar() {
 
 
 
-void st::App::SysUISceneSelector() {
+void st::App::DevUISceneSelector() {
     if (ImGui::BeginMenu("Scene")) {
         const std::string& cur = sceneManager.CurrentName();
         for (const std::string& name : sceneManager.Names()) {
@@ -109,7 +112,7 @@ void st::App::SysUISceneSelector() {
     }
 }
 
-void st::App::SysUISceneManager() {
+void st::App::DevUISceneManager() {
     ImGui::SetNextWindowSize(ImVec2(340, 0), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Scene Manager", &showSceneManager)) {
         ImGui::End();
@@ -164,7 +167,7 @@ void st::App::SysUISceneManager() {
     ImGui::End();
 }
 
-void st::App::SysUIAbout(bool *show) {
+void st::App::DevUIAbout(bool *show) {
     ImGui::Begin("About", show);
 
     if (ImGui::BeginTabBar("AboutTab")) {
@@ -214,77 +217,27 @@ void st::App::SysUIAbout(bool *show) {
     ImGui::End();
 }
 
-void st::App::SysUIRender() {
-    SysUIMenuBar();
+void st::App::DevUIRender() {
+    DevUIMenuBar();
 
     if (showBackLog) backlogViewer.render(&showBackLog);
     if (showImguiDemo) ImGui::ShowDemoWindow(&showImguiDemo);
-    if (showGraphicsSettings) graphicsSettings.render(&showGraphicsSettings, renderPath, *this, lensFlare);
-    if (showAbout) SysUIAbout(&showAbout);
-    if (showSceneManager) SysUISceneManager();
-    if (showHierarchy || showProperties) SysUIHierarchy();
+    if (showGraphicsSettings) graphicsSettings.render(&showGraphicsSettings, renderPath, *this, lensFlare, displaySettings_);
+    if (showAbout) DevUIAbout(&showAbout);
+    if (showSceneManager) DevUISceneManager();
+    if (showHierarchy || showProperties) DevUIHierarchy();
     if (showFaustDSP) faustManager.DrawPanel("Faust DSP", &showFaustDSP);
 
-    // Drawn last so it covers everything else while shaders/pipelines compile.
-    SysUILoadingScreen();
+    // Project hook: the game's own developer panels.
+    RenderDevUI();
+
 }
 
-void st::App::SysUIHierarchy() {
+void st::App::DevUIHierarchy() {
     // Single live scene in Wicked is the global GetScene(); both windows act on it.
     // Selection (selectedEntity_) is owned by st::App so the two panels share it.
     wi::scene::Scene& scene = wi::scene::GetScene();
 
     if (showHierarchy) HierarchyWindow(scene, selectedEntity_, &showHierarchy);
     if (showProperties) PropertiesWindow(scene, selectedEntity_, &showProperties);
-}
-
-void st::App::SysUILoadingScreen() {
-    if (loadingDone_) return;
-
-    // wi::renderer compiles object shaders + builds PSOs on background job-system
-    // threads; this returns the number of jobs still in flight. ImGui's own shaders
-    // were already loaded synchronously in ImguiInit(), so this window renders fine
-    // even while the rest is still compiling.
-    const int active = wi::renderer::IsPipelineCreationActive();
-
-    if (active > 0) { loadingSawWork_ = true; loadingIdleFrames_ = 0; }
-    else            { loadingIdleFrames_++; }
-
-    // Dismiss once compilation has been idle for a short debounce. If no job ever
-    // started (shaders precompiled/embedded), give it ~30 frames then drop the splash.
-    if (loadingIdleFrames_ > 10 && (loadingSawWork_ || ImGui::GetFrameCount() > 30)) {
-        loadingDone_ = true;
-        return;
-    }
-
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(20, vp->Size.y - 50));
-    //ImGui::SetNextWindowSize(ImVec2(450.0f, 320.0f));
-
-    //ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.04f, 0.04f, 0.06f, 1.0f));
-    ImGui::Begin("##loading_overlay", nullptr,
-        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoResize    | ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNav |
-        ImGuiWindowFlags_NoScrollbar);
-
-    if (active > 0)
-        ImGui::Text("Creating Pipeline... (%d job%s remaining)", active, active == 1 ? "" : "s");
-    else
-        ImGui::TextUnformatted("Finishing up...");
-
-    // Live engine log = the shader compile output ("shader compiled: ...").
-    // Show the tail so the most recent lines are visible.
-    // ImGui::Separator();
-    // std::string log = wi::backlog::getText();
-    // const size_t maxChars = 8000;
-    // const char* begin = log.c_str();
-    // if (log.size() > maxChars) begin = log.c_str() + (log.size() - maxChars);
-    // ImGui::BeginChild("##compile_log", ImVec2(0, 0), true, ImGuiWindowFlags_HorizontalScrollbar);
-    // ImGui::TextUnformatted(begin);
-    // ImGui::SetScrollHereY(1.0f); // pin to bottom
-    // ImGui::EndChild();
-
-    ImGui::End();
-    //ImGui::PopStyleColor();
 }

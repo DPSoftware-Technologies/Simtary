@@ -18,8 +18,25 @@
     {
       "name": "win_x86-64",
       "inherits": "base",
-      "displayName": "Windows x86-64",
-      "description": "Default Visual Studio generator, 64-bit. Builds into build/win_x86-64.",
+      "generator": "Visual Studio 18 2026",
+      "architecture": {
+        "value": "x64",
+        "strategy": "set"
+      },
+      "displayName": "Windows x86-64 (MSVC)",
+      "description": "Pinned to the Visual Studio generator on purpose: leaving it unset lets different tools (CLI vs IDE) reconfigure the same build/win_x86-64 with different toolchains, which corrupts the tree. Change the generator string if you are on another Visual Studio version.",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "win_x86-64-ninja",
+      "inherits": "base",
+      "generator": "Ninja Multi-Config",
+      "displayName": "Windows x86-64 (Ninja + MSVC)",
+      "description": "Run from a Developer Command Prompt so cl.exe is on PATH. Separate build dir from the VS preset.",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -31,7 +48,6 @@
       "inherits": "base",
       "generator": "Ninja Multi-Config",
       "displayName": "Linux x86-64",
-      "description": "Ninja Multi-Config. Builds into build/linux_x86-64.",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -49,6 +65,11 @@
       "name": "win_x86-64-debug",
       "configurePreset": "win_x86-64",
       "configuration": "Debug"
+    },
+    {
+      "name": "win_x86-64-ninja",
+      "configurePreset": "win_x86-64-ninja",
+      "configuration": "Release"
     },
     {
       "name": "linux_x86-64",

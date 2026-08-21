@@ -29,13 +29,12 @@ bool GraphicsSettings::EngineGfx::operator==(const EngineGfx& o) const {
         && tonemap == o.tonemap && colorGrading == o.colorGrading
         && exposure == o.exposure && hdrCalibration == o.hdrCalibration
         && brightness == o.brightness && contrast == o.contrast && saturation == o.saturation
-        && vsync == o.vsync && msaa == o.msaa
+        && msaa == o.msaa
         && fsr == o.fsr && fsrSharpness == o.fsrSharpness
         && fsr2 == o.fsr2 && fsr2Preset == o.fsr2Preset && fsr2Sharpness == o.fsr2Sharpness
         && resolutionScale == o.resolutionScale
         && occlusionCulling == o.occlusionCulling && sceneUpdate == o.sceneUpdate
         && meshBlend == o.meshBlend && visibilityCompute == o.visibilityCompute
-        && framerateLock == o.framerateLock && targetFrameRate == o.targetFrameRate
         && frameskip == o.frameskip;
 }
 
@@ -98,7 +97,6 @@ void GraphicsSettings::readFromEngine(wi::RenderPath3D& path, wi::Application& a
     g.contrast           = path.getContrast();
     g.saturation         = path.getSaturation();
 
-    g.vsync              = applied_.vsync; // not queryable; keep last
     g.msaa               = (int)path.getMSAASampleCount();
     g.fsr                = path.getFSREnabled();
     g.fsrSharpness       = path.getFSRSharpness();
@@ -112,8 +110,6 @@ void GraphicsSettings::readFromEngine(wi::RenderPath3D& path, wi::Application& a
     g.meshBlend          = path.getMeshBlendEnabled();
     g.visibilityCompute  = path.getVisibilityComputeShadingEnabled();
 
-    g.framerateLock      = applied_.framerateLock; // no getter
-    g.targetFrameRate    = app.getTargetFrameRate();
     g.frameskip          = applied_.frameskip;     // no getter
 
     applied_ = g;
@@ -196,11 +192,8 @@ void GraphicsSettings::applyToEngine(wi::RenderPath3D& path, wi::Application& ap
 
     // Global renderer / display state.
     wi::renderer::SetShadowProps2D(g.shadowRes);
-    wi::eventhandler::SetVSync(g.vsync);
 
     // Frame pacing (Application).
-    app.setTargetFrameRate(g.targetFrameRate);
-    app.setFrameRateLock(g.framerateLock);
     app.setFrameSkip(g.frameskip);
 
     // Anything that changes internal render-target size/sample-count needs a
@@ -285,7 +278,6 @@ void GraphicsSettings::SaveTo(st::nbt::Tag& out) const {
     out.putFloat ("contrast", g.contrast);
     out.putFloat ("saturation", g.saturation);
 
-    out.putBool  ("vsync", g.vsync);
     out.putInt   ("msaa", g.msaa);
     out.putBool  ("fsr", g.fsr);
     out.putFloat ("fsrSharpness", g.fsrSharpness);
@@ -299,8 +291,6 @@ void GraphicsSettings::SaveTo(st::nbt::Tag& out) const {
     out.putBool  ("meshBlend", g.meshBlend);
     out.putBool  ("visibilityCompute", g.visibilityCompute);
 
-    out.putBool  ("framerateLock", g.framerateLock);
-    out.putFloat ("targetFrameRate", g.targetFrameRate);
     out.putBool  ("frameskip", g.frameskip);
 }
 
@@ -366,7 +356,6 @@ void GraphicsSettings::LoadFrom(const st::nbt::Tag& in) {
     g.contrast           = in.getFloat ("contrast", g.contrast);
     g.saturation         = in.getFloat ("saturation", g.saturation);
 
-    g.vsync              = in.getBool  ("vsync", g.vsync);
     g.msaa               = in.getInt   ("msaa", g.msaa);
     g.fsr                = in.getBool  ("fsr", g.fsr);
     g.fsrSharpness       = in.getFloat ("fsrSharpness", g.fsrSharpness);
@@ -380,8 +369,6 @@ void GraphicsSettings::LoadFrom(const st::nbt::Tag& in) {
     g.meshBlend          = in.getBool  ("meshBlend", g.meshBlend);
     g.visibilityCompute  = in.getBool  ("visibilityCompute", g.visibilityCompute);
 
-    g.framerateLock      = in.getBool  ("framerateLock", g.framerateLock);
-    g.targetFrameRate    = in.getFloat ("targetFrameRate", g.targetFrameRate);
     g.frameskip          = in.getBool  ("frameskip", g.frameskip);
 
     pending_ = g; // stage the loaded values; caller applies (or Apply commits them)
@@ -525,14 +512,19 @@ void GraphicsSettings::drawEngineTab() {
         ImGui::Checkbox("Visibility Shading in Compute", &g.visibilityCompute);
     }
 
-    if (ImGui::CollapsingHeader("Frame Rate", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Limit Frame Rate", &g.framerateLock);
-        ImGui::BeginDisabled(!g.framerateLock);
-        ImGui::SliderFloat("Target FPS", &g.targetFrameRate, 30.0f, 360.0f, "%.0f");
-        ImGui::EndDisabled();
+    if (ImGui::CollapsingHeader("Frame Pacing", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Frame Skip (fixed-step catch-up)", &g.frameskip);
-        ImGui::Checkbox("VSync", &g.vsync);
+        ImGui::TextDisabled("V-Sync and the frame cap are on the Display tab.");
     }
+}
+
+void GraphicsSettings::drawDisplayTab(st::DisplaySettings& display, wi::Application& app) {
+    // Owned by st::DisplaySettings, not by the Engine snapshot: it has its own
+    // Apply/Revert because changing a resolution has to be confirmed, and a game
+    // renders this very panel in its own options menu.
+    ImGui::TextDisabled("Video options. A game can render this same panel from its own menu.");
+    ImGui::Spacing();
+    display.GUI(app);
 }
 
 void GraphicsSettings::drawContentTab(st::LensFlare& lensFlare) {
@@ -550,7 +542,8 @@ void GraphicsSettings::drawContentTab(st::LensFlare& lensFlare) {
     }
 }
 
-void GraphicsSettings::render(bool* isopen, wi::RenderPath3D& path, wi::Application& app, st::LensFlare& lensFlare) {
+void GraphicsSettings::render(bool* isopen, wi::RenderPath3D& path, wi::Application& app,
+                              st::LensFlare& lensFlare, st::DisplaySettings& display) {
     if (!initialized_) {
         readFromEngine(path, app);
         initialized_ = true;
@@ -566,6 +559,7 @@ void GraphicsSettings::render(bool* isopen, wi::RenderPath3D& path, wi::Applicat
     const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
     ImGui::BeginChild("##gfx_tabs", ImVec2(0, -footer), false);
     if (ImGui::BeginTabBar("##gfx_tabbar")) {
+        if (ImGui::BeginTabItem("Display")) { drawDisplayTab(display, app); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Engine"))  { drawEngineTab();  ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Content")) { drawContentTab(lensFlare); ImGui::EndTabItem(); }
         ImGui::EndTabBar();

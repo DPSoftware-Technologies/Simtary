@@ -24,18 +24,32 @@ void SceneManager::Reload() {
         pendingLoad_ = currentName_;
 }
 
+void SceneManager::SetCallbacks(Callback onLoaded, Callback onUnloaded) {
+    onLoaded_   = std::move(onLoaded);
+    onUnloaded_ = std::move(onUnloaded);
+}
+
 void SceneManager::Update(float dt) {
     if (!pendingLoad_.empty()) {
-        if (current_)
+        // Published for the whole transition so the loading screen can name the scene
+        // it is waiting on; Load() below may block for a long time.
+        loadingName_ = pendingLoad_;
+
+        if (current_) {
+            const std::string previous = currentName_;
             current_->Unload();
+            if (onUnloaded_) onUnloaded_(previous);
+        }
 
         auto it = scenes_.find(pendingLoad_);
         if (it != scenes_.end()) {
             current_     = it->second.get();
             currentName_ = pendingLoad_;
             current_->Load();
+            if (onLoaded_) onLoaded_(currentName_);
         }
         pendingLoad_.clear();
+        loadingName_.clear();
     }
 
     if (current_)
@@ -45,4 +59,9 @@ void SceneManager::Update(float dt) {
 void SceneManager::OnGUI() {
     if (current_)
         current_->OnGUI();
+}
+
+void SceneManager::OnDevGUI() {
+    if (current_)
+        current_->OnDevGUI();
 }

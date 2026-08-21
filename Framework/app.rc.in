@@ -18,12 +18,12 @@ BEGIN
     BLOCK "040904B0"
     BEGIN
       VALUE "CompanyName",      "@ST_APP_ORGANIZATION@"
-      VALUE "FileDescription",  "@PROJECT_NAME@"
+      VALUE "FileDescription",  "@ST_APP_DISPLAY_NAME@"
       VALUE "FileVersion",      "@PROJECT_VERSION@"
       VALUE "InternalName",     "@PROJECT_NAME@"
-      VALUE "LegalCopyright",   "Copyright (C) @PROJECT_YEAR@ @ST_APP_ORGANIZATION@"
+      VALUE "LegalCopyright",   "@ST_APP_COPYRIGHT@"
       VALUE "OriginalFilename", "@PROJECT_NAME@.exe"
-      VALUE "ProductName",      "@PROJECT_NAME@"
+      VALUE "ProductName",      "@ST_APP_DISPLAY_NAME@"
       VALUE "ProductVersion",   "@PROJECT_VERSION@"
     END
   END

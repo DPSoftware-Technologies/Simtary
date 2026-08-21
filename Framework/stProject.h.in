@@ -1,0 +1,14 @@
+#pragma once
+// Auto-generated from <project>/assets/project.stpd at configure time. DO NOT EDIT.
+//
+// Edit the descriptor instead:
+//   make_project_descriptor assets/project.stpd --name "My Game"
+//
+// Build-time identity only. Runtime properties (window size, startup scene, DevUI
+// mode) are NOT here on purpose — baking them in would mean a rebuild to change them,
+// so they live in st::AppConfig in src/main.cpp.
+
+#define ST_PROJECT_NAME         "@ST_APP_DISPLAY_NAME@"
+#define ST_PROJECT_ORGANIZATION "@ST_APP_ORGANIZATION@"
+#define ST_PROJECT_COPYRIGHT    "@ST_APP_COPYRIGHT@"
+#define ST_PROJECT_VERSION      "@ST_APP_VERSION_STRING@"
