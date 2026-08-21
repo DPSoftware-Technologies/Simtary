@@ -97,9 +97,3 @@ the cold ~360-shader compile. After a shader-heavy change, publish the result ba
 ```
 cmake --build <project>/build/win_x86-64 --target simtary_shadercache_update
 ```
-
-## Git
-
-`Engine/` is a separate repository with its own remote — commits there go upstream to
-Simtary4. Keep workspace-specific work in `Framework/`. `libs/ImGui`, `libs/ImGuizmo`,
-`libs/libzmq` and `libs/SDL2` are submodules of this repository.
