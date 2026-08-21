@@ -35,17 +35,40 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 
 | File | Role |
 |---|---|
-| `stApp.h/.cpp` | `st::App` (a `wi::Application`) + `st::AppConfig`. Owns render path, scene manager, ImGui, lens flare, Faust, ZMQ, settings. Project hooks: `RegisterScenes`, `OnInitialize`, `OnUpdate`, `OnGUI`, `OnCompose`, `OnExit`. |
+| `stApp.h/.cpp` | `st::App` (a `wi::Application`) + `st::AppConfig` + `st::DevUIMode` + `st::LoadingState`. Owns render path, scene manager, ImGui, lens flare, Faust, ZMQ, settings. Project hook surface is listed below. |
+| `stProject.h.in` | Template for the generated `stProject.h` (`ST_PROJECT_NAME` / `_ORGANIZATION` / `_COPYRIGHT` / `_VERSION`), filled from the `.stpd` manifest at configure time. |
 | `stRun.h/.cpp` | `st::Run(argc, argv, config, app)` — window, splash, SDL event loop, input routing, shutdown. The project owns `main()`; this owns everything after it. |
-| `stScene.h` | `Scene` base class: `Load` / `Update` / `OnGUI` / `Unload`. |
-| `SceneManager.*` | Named scene registry with deferred transitions. |
-| `ImguiHelper.cpp`, `sysui.cpp`, `sysui/` | The hand-rolled ImGui backend and the system UI: menu bar, backlog, graphics settings, hierarchy/properties, scene manager, About. |
+| `stScene.h/.cpp` | `Scene` base class: `Load` / `Update` / `OnGUI` / `OnDevGUI` / `Unload`, plus `ReportProgress()`. |
+| `SceneManager.*` | Named scene registry with deferred transitions + load/unload callbacks. |
+| `ImguiHelper.cpp` | The hand-rolled ImGui backend and the per-frame UI ordering. |
+| `devui.cpp`, `devui/` | **DevUI** — developer tooling, not game UI: menu bar, backlog, graphics settings, hierarchy/properties, scene manager, About. Gated by `AppConfig::devUI`. |
+| `stLoading.cpp` | Default `RenderLoadingScreen` — the pipeline warm-up overlay plus whatever `LoadingState` carries. |
 | `io/` | `Nbt` (the `.stad`/`.stcd` format), `NbtStore`, `SettingsManager`, `SaveGame`, `PlayerPrefs`, `UserData` (LocalLow path resolver). |
 | `input/InputSystem.*` | Centralized action/axis keymap, refreshed once per frame. |
 | `crash/CrashHandler.*` | sentry-native + Crashpad, offline only; launches `SimtaryCrashReporter`. |
 | `render/LensFlare.*` | Procedural screen-space flare (`assets/shaders/StLensFlare*`). |
+| `display/DisplaySettings.*` | Player-facing video options: window mode, monitor, resolution, refresh rate, v-sync, frame cap, render scale. NOT DevUI — `st::App::Display().GUI(app)` drops into a game's own options menu, and DevUI renders the same panel in its Display tab. Sole owner of v-sync and the frame cap; `GraphicsSettings` deliberately no longer carries them. |
 | `audio/faust/` | `FaustManager` (OpenAL DSP host) + `FaustProcessor<T>`. Starts with no processors — games register their own AOT instruments. |
 | `anim/`, `eventBus.*`, `ZmqHandler.*`, `SubWinStatus.*` | Animation descriptors, main-thread event bus, ZMQ bridge, native (Win32/X11) loading window. |
+
+### Project hook surface (`st::App`)
+
+Content: `RegisterScenes`, `OnInitialize`, `OnExit`.
+Frame: `OnUpdate(dt)`, `OnFixedUpdate()`.
+UI: `RenderUI()` (game UI, always), `RenderDevUI()` + `OnDevUIMenu()` (dev only),
+`RenderLoadingScreen(state)`.
+Render: `OnRenderPathSetup(path)`, `OnRender()`, `OnPreCompose(cmd)`, `OnCompose(cmd)`.
+Input: `OnEvent(SDL_Event) -> bool` (true = consumed).
+Scenes: `OnSceneLoaded(name)`, `OnSceneUnloaded(name)`.
+Instance methods: `Audio()`, `RequestQuit()`, `IsDevUIVisible()/SetDevUIVisible()/ToggleDevUI()`,
+`Loading()`, `SetLoadingStatus(text, percent)`.
+
+**DevUI vs game UI is the important distinction.** Anything in `devui/` is tooling and
+must stay behind `IsDevUIVisible()`. `AppConfig::devUI` is `Visible` (dev default),
+`Hidden` (compiled in, `devUIToggleKey` opens it) or `Disabled` (never drawn;
+`SetDevUIVisible(true)` is a deliberate no-op so a shipped build cannot be opened up).
+When adding a panel, ask whether a player should ever see it — if not, it belongs in
+`devui/` and behind that gate, or in `Scene::OnDevGUI()` rather than `Scene::OnGUI()`.
 
 Namespace is `st::` throughout (`st::App`, `st::InputSystem`, `st::nbt`,
 `st::userdata`, `st::crash`). `st` is also the file prefix used by the engine core
@@ -66,6 +89,10 @@ Out-of-source only; in-source builds are blocked. Presets are in `CMakePresets.j
 that keys the build directory.
 
 Tests: `ctest` in the build dir (currently `nbt_test`).
+
+`build_number.txt` is project-level. The `SIMTARY_BUILD_PROJECTS` sweep forces
+`SIMTARY_BUMP_BUILD_NUMBER=OFF` so a workspace compile-check never advances a game's
+counter; only a build of that project does.
 
 ## The CMake API games use
 
@@ -90,6 +117,35 @@ Changing the flags means changing them in ONE place: `SIMTARY_APP_OPTIONS` /
 *before* the project-wide `/EHsc- /GR- /_HAS_EXCEPTIONS=0` flags, because they use
 exceptions/RTTI internally and must build with their own defaults. libgfx is added
 *after*, because it uses neither and must stay ABI-consistent with the engine.
+
+**A blocking `Scene::Load()` is why there are two loading screens.** No ImGui frame
+can be drawn while the main thread is inside `Load()`, so `st::App::Update` raises the
+native `SubWinStatus` window (its own thread, Win32/X11, no SDL) around any scene
+transition, and `Scene::ReportProgress()` writes into it. The ImGui
+`RenderLoadingScreen` overlay only covers the non-blocking cases — chiefly the
+first-launch pipeline warm-up. Do not "simplify" one into the other.
+
+**The `.stpd` manifest is build-time only, and identity only.** `assets/project.stpd`
+is read by CMake at configure time and never at runtime; it lives in `assets/` rather
+than `assets/contents/` precisely because `contents/` is what ships next to the exe.
+It carries name/organization/copyright/version/icon and nothing else — a window size
+or a DevUI mode in there would make every tweak a rebuild, so those stay in
+`st::AppConfig`. Adding a manifest field means: a flag plus an `EmitCMake` line in
+`tools/make_project_descriptor.cpp`, a hoist in `simtary_read_project_descriptor`, and
+a use in `simtary_add_app`.
+
+**The descriptor reader is bootstrapped, not a normal target.** CMake cannot parse NBT
+and needs the values *while* a project is configuring, before its targets exist — so
+`SimtaryProject.cmake` configures and builds `tools/descriptor-bootstrap` into
+`<build>/_descriptor` and caches the path in `SIMTARY_DESCRIPTOR_TOOL`. That bootstrap
+deliberately links only `Nbt.cpp`, which depends on nothing beyond the standard
+library; keep it that way or configure time balloons.
+
+**Presets pin the generator on purpose.** Leaving `generator` unset in
+`CMakePresets.json` lets the CLI and the IDE configure the same `build/<arch>` with
+different toolchains — one Visual Studio, one Ninja+mingw — and the second poisons the
+cache (`CMAKE_C_COMPILE_OBJECT` errors on the next regenerate). The Windows preset is
+pinned to the Visual Studio generator; `win_x86-64-ninja` is the separate opt-in.
 
 **Scene update runs exactly once per frame.** `st::App::Initialize` calls
 `renderPath.setSceneUpdateEnabled(false)`; scenes call `scene.Update(dt)` themselves

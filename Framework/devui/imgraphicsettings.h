@@ -2,9 +2,14 @@
 #include <imgui.h>
 #include <Simtary.h>
 #include "render/LensFlare.h"
+#include "display/DisplaySettings.h"
 #include "io/Nbt.h"
 
-// Graphics settings window. Two tabs:
+// Graphics settings window. Three tabs:
+//   "Display" — the player-facing video options (window mode, monitor, resolution,
+//               v-sync, frame cap, render scale). These live in st::DisplaySettings,
+//               a framework module, so a game can render the same panel inside its own
+//               options menu — see st::App::Display().
 //   "Engine"  — every live graphics knob the engine exposes (RenderPath3D +
 //               renderer globals + Application frame pacing).
 //   "Content" — settings for effects Milistry owns itself, currently the
@@ -17,9 +22,10 @@
 // Apply/Reset do not affect them.
 class GraphicsSettings {
 public:
-    // path = active 3D render path, app = owning application (for FPS / vsync),
+    // path = active 3D render path, app = owning application (frame pacing / window),
     // lensFlare = Milistry's procedural flare, driven by the Content tab.
-    void render(bool* isopen, wi::RenderPath3D& path, wi::Application& app, st::LensFlare& lensFlare);
+    void render(bool* isopen, wi::RenderPath3D& path, wi::Application& app,
+                st::LensFlare& lensFlare, st::DisplaySettings& display);
 
     // ── persistence (options.stad via SettingsManager) ──────────────────────────
     // Serialize the current pending_ snapshot into an NBT compound, and load it back.
@@ -91,8 +97,9 @@ private:
         float contrast           = 1.0f;
         float saturation         = 1.0f;
 
-        // ── Display / upscaling ─────────────────────────────────────────────
-        bool  vsync              = true;
+        // ── Upscaling ───────────────────────────────────────────────────────
+        // v-sync / frame cap deliberately absent: they are video options and belong
+        // to st::DisplaySettings (the Display tab), which is the single owner.
         int   msaa               = 1;     // 1 / 2 / 4 / 8
         bool  fsr                = false; // FSR 1.0 spatial
         float fsrSharpness       = 1.0f;
@@ -108,8 +115,6 @@ private:
         bool  visibilityCompute  = false;
 
         // ── Frame pacing (Application) ──────────────────────────────────────
-        bool  framerateLock      = false;
-        float targetFrameRate    = 60.0f;
         bool  frameskip          = true;
 
         bool operator==(const EngineGfx& o) const;
@@ -119,6 +124,7 @@ private:
     void readFromEngine(wi::RenderPath3D& path, wi::Application& app); // engine -> snapshots
     void applyToEngine(wi::RenderPath3D& path, wi::Application& app);  // pending_ -> engine
     void drawEngineTab();
+    void drawDisplayTab(st::DisplaySettings& display, wi::Application& app);
     void drawContentTab(st::LensFlare& lensFlare);
 
     EngineGfx applied_;          // values currently live in the engine

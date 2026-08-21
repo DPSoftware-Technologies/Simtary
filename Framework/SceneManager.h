@@ -3,6 +3,7 @@
 #include <vector>
 #include <unordered_map>
 #include <memory>
+#include <functional>
 #include "stScene.h"
 
 class SceneManager {
@@ -20,6 +21,23 @@ public:
 
     void Update(float dt);
     void OnGUI();
+    // The active scene's developer UI. st::App only calls this while DevUI is visible.
+    void OnDevGUI();
+
+    // Fired around a deferred transition, with the scene name. Reload() fires both.
+    // st::App wires these to its OnSceneUnloaded / OnSceneLoaded hooks.
+    using Callback = std::function<void(const std::string&)>;
+    void SetCallbacks(Callback onLoaded, Callback onUnloaded);
+
+    // Set while a transition is in flight, so the loading screen knows what is
+    // being loaded. Empty when idle.
+    const std::string& LoadingName() const { return loadingName_; }
+
+    // A transition is queued but has not run yet. Scene::Load() blocks the main
+    // thread, so st::App uses this to raise the native loading window BEFORE
+    // calling Update().
+    bool HasPendingLoad() const { return !pendingLoad_.empty(); }
+    const std::string& PendingName() const { return pendingLoad_; }
 
     const std::string& CurrentName() const { return currentName_; }
 
@@ -31,4 +49,7 @@ private:
     Scene*      current_     = nullptr;
     std::string currentName_;
     std::string pendingLoad_;
+    std::string loadingName_;
+    Callback    onLoaded_;
+    Callback    onUnloaded_;
 };

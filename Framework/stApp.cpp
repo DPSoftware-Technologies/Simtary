@@ -22,7 +22,25 @@ const st::AppConfig& st::App::Config() {
 
 st::App::App() : m_loadingScreen("Starting up", 300, 75) {}
 
+void st::App::SetDevUIVisible(bool visible) {
+    // DevUIMode::Disabled is a build decision, not a runtime one: a shipped game
+    // cannot be talked into opening the tooling.
+    devUIVisible_ = visible && Config().devUI != DevUIMode::Disabled;
+}
+
+void st::App::SetLoadingStatus(std::string status, int percent) {
+    loading_.status  = std::move(status);
+    loading_.percent = percent;
+    // While the native window is up (startup, scene transitions) it is the only
+    // thing that can paint — the main thread is blocked inside Scene::Load().
+    m_loadingScreen.SetStatusText(loading_.status);
+    if (percent >= 0) m_loadingScreen.SetProgress(percent);
+}
+
 void st::App::Initialize() {
+    devUIVisible_ = (Config().devUI == DevUIMode::Visible);
+    loading_.active = true;   // startup counts as loading until the engine is up
+
     // Native loading window on its own thread (Win32/X11, no SDL). It keeps
     // animating while this (main) thread blocks below building the engine.
     m_loadingScreen.Show();
@@ -34,9 +52,13 @@ void st::App::Initialize() {
     EventBus::Get().Subscribe("loading.progress", [this](const std::string& payload) {
         const size_t bar = payload.find('|');
         if (bar == std::string::npos) return;
-        m_loadingScreen.SetProgress(std::atoi(payload.substr(0, bar).c_str()));
-        m_loadingScreen.SetStatusText(payload.substr(bar + 1));
+        SetLoadingStatus(payload.substr(bar + 1), std::atoi(payload.substr(0, bar).c_str()));
     });
+
+    // Scene transitions reach the project as OnSceneLoaded / OnSceneUnloaded.
+    sceneManager.SetCallbacks(
+        [this](const std::string& name) { OnSceneLoaded(name); },
+        [this](const std::string& name) { OnSceneUnloaded(name); });
 
     // loading system assets
     m_loadingScreen.SetStatusText("loading system assets");
@@ -47,13 +69,17 @@ void st::App::Initialize() {
     m_loadingScreen.SetStatusText("starting ImGui");
     ImguiInit(window);
 
+    // Video options (window mode, monitor, resolution, v-sync, frame cap, render
+    // scale) before the render path is built, so the canvas is sized from the final
+    // window rather than the one st::Run happened to open.
+    displaySettings_.LoadAndApply(st::SettingsManager::Get().SubCompound("display"), *this);
+
     // After ImguiInit, which runs wi::Application::Initialize() and so guarantees the
     // graphics device exists and the shader path has its backend subfolder appended.
     lensFlare.Init();
 
     renderPath.init(canvas);
     renderPath.Load();
-    ActivatePath(&renderPath);
 
     // Scenes own wi::scene::Scene::Update(dt) — they run it from sceneManager.Update(),
     // after st::InputSystem refresh, which native components read. RenderPath3D::Update()
@@ -62,6 +88,13 @@ void st::App::Initialize() {
     // skinning then always writes the same half and the previous-position half is never
     // written, so skinned meshes get garbage velocity (broken motion blur, TAA, FSR2).
     renderPath.setSceneUpdateEnabled(false);
+
+    // Project hook: last chance to configure the path (or activate one of your own)
+    // before it goes live.
+    OnRenderPathSetup(renderPath);
+
+    // Only claim the path if the project did not activate one of its own.
+    if (GetActivePath() == nullptr) ActivatePath(&renderPath);
 
     // Push saved graphics options to the engine now, so the first frame reflects them.
     // Get() constructs the manager on first call and its constructor already reads
@@ -102,6 +135,7 @@ void st::App::Initialize() {
     OnInitialize();
 
     m_loadingScreen.Hide(); // engine ready → tear the loading window down
+    loading_ = LoadingState{};   // nothing is loading any more
 }
 
 void st::App::Update(float dt) {
@@ -127,7 +161,25 @@ void st::App::Update(float dt) {
     // before scenes/components read it in sceneManager.Update.
     st::InputSystem::Get().Update(dt);
 
+    // Scene::Load() blocks this thread, so no ImGui frame can be drawn while a
+    // transition runs. The native loading window lives on its own thread and keeps
+    // painting, which is the only thing that works here — same reason startup uses it.
+    const bool transitioning = sceneManager.HasPendingLoad();
+    if (transitioning) {
+        loading_.active  = true;
+        loading_.scene   = sceneManager.PendingName();
+        loading_.percent = -1;
+        loading_.status  = "loading " + loading_.scene;
+        m_loadingScreen.SetStatusText(loading_.status);
+        m_loadingScreen.Show();
+    }
+
     sceneManager.Update(dt);
+
+    if (transitioning) {
+        m_loadingScreen.Hide();
+        loading_ = LoadingState{};
+    }
 
     OnUpdate(dt);
 
@@ -162,7 +214,20 @@ void st::App::Update(float dt) {
     }
 }
 
+void st::App::FixedUpdate() {
+    wi::Application::FixedUpdate();
+    OnFixedUpdate();
+}
+
+void st::App::Render() {
+    wi::Application::Render();
+    OnRender();
+}
+
 void st::App::Compose(wi::graphics::CommandList cmd) {
+    // Under everything: a backdrop drawn before the engine composes the frame.
+    OnPreCompose(cmd);
+
     wi::Application::Compose(cmd);
 
     // Between the two: additively over the composed 3D frame, but under the UI, so
@@ -180,6 +245,7 @@ void st::App::Exit() {
     // Persist current graphics + any option edits on the way out, so quitting without
     // pressing Apply still keeps the live settings.
     graphicsSettings.SaveTo(st::SettingsManager::Get().GraphicsTag());
+    displaySettings_.SaveTo(st::SettingsManager::Get().SubCompound("display"));
     lensFlare.SaveTo(st::SettingsManager::Get().SubCompound("lensflare"));
     st::SettingsManager::Get().Save();
     zmqHandler.Stop(); // join receiver thread before tearing anything else down

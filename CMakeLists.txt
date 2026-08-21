@@ -421,6 +421,14 @@ if (SIMTARY_BUILD_TESTS)
     target_include_directories(make_player_descriptor PRIVATE Framework)
     target_link_libraries(make_player_descriptor PRIVATE Simtary::AppFlags)
     set_target_properties(make_player_descriptor PROPERTIES FOLDER "Simtary/Tools")
+
+    # Authoring tool for the build-time project manifest (assets/project.stpd). The
+    # descriptor is NBT, so this is how a project edits it; it links Nbt.cpp only, so
+    # it builds in seconds without the engine.
+    add_executable(make_project_descriptor tools/make_project_descriptor.cpp Framework/io/Nbt.cpp)
+    target_include_directories(make_project_descriptor PRIVATE Framework)
+    target_link_libraries(make_project_descriptor PRIVATE Simtary::AppFlags)
+    set_target_properties(make_project_descriptor PROPERTIES FOLDER "Simtary/Tools")
 endif()
 
 # ─── Games in this workspace ───────────────────────────────────────────────────
@@ -431,6 +439,9 @@ endif()
 if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)   # top-level: CMake 3.19 has no PROJECT_IS_TOP_LEVEL
     option(SIMTARY_BUILD_PROJECTS "Also build the sibling game projects" OFF)
     if (SIMTARY_BUILD_PROJECTS)
+        # This is a compile-check of the workspace, not a build OF those games, so it
+        # must not touch their project-level build counters.
+        set(SIMTARY_BUMP_BUILD_NUMBER OFF CACHE BOOL "" FORCE)
         get_filename_component(_workspace ${SIMTARY_ROOT} DIRECTORY)
         file(GLOB _candidates RELATIVE ${_workspace} ${_workspace}/*)
         foreach(_c ${_candidates})

@@ -60,10 +60,11 @@ int main (int argc, char* argv[]) {
 | Header | What |
 |---|---|
 | `stRun.h` | `st::Run(argc, argv, config, app)` — window, splash, event loop, shutdown. |
-| `stApp.h` | `st::App` + `st::AppConfig`. Override `RegisterScenes`, `OnInitialize`, `OnUpdate`, `OnGUI`, `OnCompose`, `OnExit`. `Audio()` for Faust processors, `RequestQuit()` to exit. |
-| `stScene.h` | `Scene` — `Load` / `Update` / `OnGUI` / `Unload`. |
+| `stApp.h` | `st::App` + `st::AppConfig` + `st::DevUIMode` + `st::LoadingState`. See the hook table below. |
+| `stScene.h` | `Scene` — `Load` / `Update` / `OnGUI` / `OnDevGUI` / `Unload`, plus `ReportProgress()`. |
 | `SceneManager.h` | `Register` / `Load` / `Reload` / `Names`. Transitions are deferred to the next frame. |
 | `io/PlayerPrefs.h`, `io/SaveGame.h`, `io/SettingsManager.h`, `io/UserData.h` | Per-user options and save games under `LocalLow/<organization>/<name>/`. |
+| `display/DisplaySettings.h` | `st::DisplaySettings` — window mode, monitor, resolution, refresh rate, v-sync, frame cap, render scale. `GUI()` has no `Begin/End`, so it drops into a game's own options menu. |
 | `input/InputSystem.h` | Action/axis keymap, refreshed once per frame. |
 | `eventBus.h` | Main-thread publish/subscribe (`loading.progress`, `zmq.message`, …). |
 | `anim/AnimationDescriptor.h` | NBT-backed animation descriptors. |
@@ -72,6 +73,151 @@ int main (int argc, char* argv[]) {
 | `Engine/stNativeComponent.h` | The Unity-like native component model (engine core). |
 
 Everything framework-side is in namespace `st::`.
+
+### st::App hooks
+
+Every one is optional and does nothing by default.
+
+| Hook | When |
+|---|---|
+| `RegisterScenes(SceneManager&)` | once at startup, before the start scene loads |
+| `OnInitialize()` | framework up, start scene loaded |
+| `OnExit()` | before teardown |
+| `OnUpdate(dt)` | each frame, after the scene manager |
+| `OnFixedUpdate()` | the engine's fixed tick — physics-rate logic |
+| `RenderUI()` | the game's ImGui. Drawn every frame, whatever `devUI` says |
+| `RenderDevUI()` | extra developer panels; only while DevUI is visible |
+| `OnDevUIMenu()` | add a menu to the DevUI main menu bar |
+| `RenderLoadingScreen(const LoadingState&)` | replace the loading overlay with your own art |
+| `OnRenderPathSetup(RenderPath3D&)` | configure the path — or activate one of your own |
+| `OnRender()` | the game's own GPU work, after the engine renders |
+| `OnPreCompose(cmd)` | draw under the composed 3D frame |
+| `OnCompose(cmd)` | draw over the 3D frame, under the UI |
+| `OnEvent(const SDL_Event&) -> bool` | raw SDL before the engine; `true` consumes it |
+| `OnSceneLoaded(name)` / `OnSceneUnloaded(name)` | around a scene transition |
+
+Plus, on the instance: `Audio()` (the Faust host), `RequestQuit()`,
+`IsDevUIVisible()` / `SetDevUIVisible()` / `ToggleDevUI()`, `Loading()` and
+`SetLoadingStatus(text, percent)`.
+
+### DevUI
+
+The menu bar, backlog, graphics settings, hierarchy/properties, scene manager and
+Faust panel are **developer tooling**, not game UI. A project chooses how much of it
+a build exposes:
+
+```cpp
+config.devUI          = st::DevUIMode::Hidden;   // Visible | Hidden | Disabled
+config.devUIToggleKey = SDL_SCANCODE_F1;         // 0 = no toggle
+```
+
+`Visible` opens it at startup (the development default). `Hidden` compiles it in but
+starts closed. `Disabled` never draws it, never calls `RenderDevUI()` or
+`Scene::OnDevGUI()`, and makes `SetDevUIVisible(true)` a no-op — a shipped build
+stays shut. Panels live in `Framework/devui/`.
+
+### Project descriptor
+
+`<project>/assets/project.stpd` is the project's **build-time manifest** — the
+equivalent of Unreal's `.uproject`. It is NBT (same container as `.stad` options and
+`.stcd` saves) and CMake reads it **at configure time only**. It never ships: note
+that it sits in `assets/`, not `assets/contents/`, which is the folder copied next to
+the executable.
+
+```
+project : name, organization, copyright, version
+build   : icon, target_name
+```
+
+Identity only. Runtime properties — window size, startup scene, DevUI mode — are
+deliberately not in it: baking them into the exe would mean a rebuild to change them,
+so they stay in `st::AppConfig` in `src/main.cpp`, and user-facing ones end up in
+`options.stad`.
+
+What the build does with it:
+
+- fills the executable's version resource (`CompanyName`, `ProductName`,
+  `LegalCopyright`, `ProductVersion`) and compiles in `build.icon`
+- generates `stProject.h` beside the generated `version.h`, so `main.cpp` states the
+  identity once:
+
+```cpp
+#include "stProject.h"
+config.name         = ST_PROJECT_NAME;
+config.organization = ST_PROJECT_ORGANIZATION;
+config.copyright    = ST_PROJECT_COPYRIGHT;
+```
+
+Explicit `simtary_add_app()` arguments still win over the file, and a project with no
+descriptor keeps the CMake defaults.
+
+Being NBT it is binary, so it is authored with the generator:
+
+```
+make_project_descriptor assets/project.stpd --name "My Game" --version 1.2.0
+make_project_descriptor assets/project.stpd --dump
+```
+
+The tool reads the existing file first and changes only the flags you pass, so
+regenerating never drops keys the build does not know about. `--help` lists them all.
+
+CMake cannot parse NBT, and the values are needed *while* a project is configuring —
+before any of its targets can be built. So `SimtaryProject.cmake` configures and
+builds the reader from `tools/descriptor-bootstrap` (two files, no engine, no
+third-party) into `<build>/_descriptor` on the first configure, then runs it with
+`--cmake` and `include()`s the `set()` lines it prints. Later configures reuse the
+cached exe.
+
+### Video options
+
+Resolution, window mode and the rest are **player-facing**, so they are a framework
+module rather than DevUI. `st::App::Display()` hands back the live
+`st::DisplaySettings`; its `GUI()` draws the whole panel without opening a window, so
+a game renders it inside its own menu:
+
+```cpp
+void MyGame::RenderUI () {
+    ImGui::Begin("Options");
+    Display().GUI(*this);   // window mode, monitor, resolution, v-sync, FPS cap, render scale
+    ImGui::End();
+}
+```
+
+DevUI shows the same panel in the Graphics Settings window's **Display** tab.
+
+| Option | Notes |
+|---|---|
+| Window Mode | Windowed · Borderless Fullscreen · Fullscreen (exclusive, changes the display mode) |
+| Monitor | only shown when more than one display is attached |
+| Resolution | window size, or the exclusive mode. Disabled for borderless, which is always desktop-sized |
+| V-Sync | `wi::eventhandler::SetVSync` |
+| Limit Frame Rate / Target FPS | `wi::Application::setFrameRateLock` / `setTargetFrameRate` |
+| Render Scale | renders at a fraction of the output and upscales, via `wi::Application::SetRenderResolution` |
+
+Edits are staged behind **Apply**/**Revert** — a resolution must never change while
+someone is scrolling the dropdown. Applied values persist to `options.stad` under the
+`display` compound and are re-applied at startup, before the render path is built.
+
+The engine-quality knobs (AO, shadows, post, tonemapping, FSR/FSR2, MSAA) stay on the
+Graphics Settings **Engine** tab and are DevUI-only — expose your own curated subset
+from the game if players should reach them.
+
+### Loading progress
+
+`Scene::Load()` blocks the main thread, so no ImGui frame can be drawn during a
+transition. The framework raises the native `SubWinStatus` window (its own thread)
+for the duration; `Scene::ReportProgress(percent, status)` writes into it:
+
+```cpp
+void MyScene::Load() {
+    ReportProgress(0,  "creating sky");
+    ReportProgress(40, "building ground");
+    ReportProgress(100, "ready");
+}
+```
+
+`st::App::RenderLoadingScreen(state)` covers the non-blocking cases — chiefly the
+first-launch shader/pipeline warm-up — and is overridable for custom art.
 
 ## CMake API
 
@@ -91,6 +237,10 @@ cmake --build --preset win_x86-64
 Add `-DSIMTARY_BUILD_PROJECTS=ON` to build every sibling game in the same tree — the
 fast way to check a framework change still compiles everywhere. `ctest` runs the
 framework tests.
+
+`build_number.txt` is project-level, so only a build of that project advances it: the
+sweep above forces `SIMTARY_BUMP_BUILD_NUMBER=OFF` and leaves every game's counter
+untouched. Pass `-DSIMTARY_BUMP_BUILD_NUMBER=OFF` by hand for CI or throwaway builds.
 
 ## Shader cache
 

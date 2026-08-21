@@ -26,23 +26,46 @@
 #include "imgui_impl_sdl2.h"
 #include "SceneManager.h"
 #include "ZmqHandler.h"
-#include "sysui/imbacklog.h"
-#include "sysui/imgraphicsettings.h"
-#include "sysui/imhierarchy.h"
+#include "devui/imbacklog.h"
+#include "devui/imgraphicsettings.h"
+#include "devui/imhierarchy.h"
 #include "SubWinStatus.h"
 #include "render/LensFlare.h"
+#include "display/DisplaySettings.h"
 #include "io/SettingsManager.h"
 #include "audio/faust/FaustManager.h"
 
+#include <SDL_scancode.h>
+#include <SDL_events.h>
 #include <string>
 
 using namespace wi::graphics;
 
 namespace st {
 
+// How much of the framework's developer tooling a build exposes. DevUI is the menu
+// bar, backlog, graphics settings, hierarchy/properties, scene manager and Faust
+// panel — tooling, not game UI. A game's own UI (App::RenderUI, Scene::OnGUI) is
+// never affected by this.
+enum class DevUIMode {
+    Visible,   // starts open — the development default
+    Hidden,    // compiled in but starts closed; AppConfig::devUIToggleKey opens it
+    Disabled,  // never drawn; RenderDevUI() and Scene::OnDevGUI() are not called
+};
+
+// What the framework is loading right now, for the loading screen. Scenes push into
+// this with Scene::ReportProgress(); read it back with App::Loading().
+struct LoadingState {
+    bool        active  = false;
+    int         percent = -1;   // 0..100, or -1 for indeterminate
+    std::string status;         // "loading terrain"
+    std::string scene;          // scene being loaded; empty during startup
+};
+
 // Project properties. Filled in the project's src/main.cpp and handed to st::Run,
 // which owns the instance for the lifetime of the process.
 struct AppConfig {
+
     // Window title, About box, crash reports and the per-user data folder
     // (%LOCALAPPDATA%Low/<organization>/<name>/).
     std::string name         = "Simtary";
@@ -65,6 +88,12 @@ struct AppConfig {
     // Background ZMQ subscriber; messages are re-published on the main thread as
     // the "zmq.message" event. Empty = do not start the bridge.
     std::string zmqEndpoint = "tcp://127.0.0.1:5556";
+
+    // Developer tooling. Ship a game with Hidden (or Disabled); Visible is the
+    // development default.
+    DevUIMode devUI = DevUIMode::Visible;
+    // Toggles DevUI when it is Visible or Hidden. 0 = no toggle key.
+    int devUIToggleKey = SDL_SCANCODE_F1;
 };
 
 struct ImGui_Impl_Data {};
@@ -81,10 +110,40 @@ public:
     void Initialize() override;
     void Compose(wi::graphics::CommandList cmd) override;
     void Update(float dt) override;
+    void FixedUpdate() override;
+    void Render() override;
     void Exit() override;
 
     // The config st::Run was given. Valid from Run() onwards.
     static const AppConfig& Config();
+
+    // ── developer tooling ──────────────────────────────────────────────────────
+    // Whether the framework's dev panels are on screen. Always false when the
+    // config says DevUIMode::Disabled, and SetDevUIVisible(true) cannot override
+    // that — a shipped build stays shut.
+    bool IsDevUIVisible() const { return devUIVisible_; }
+    void SetDevUIVisible(bool visible);
+    void ToggleDevUI() { SetDevUIVisible(!devUIVisible_); }
+
+    // ── display ────────────────────────────────────────────────────────────────
+    // Window mode, monitor, resolution, v-sync, frame cap and render scale. Render
+    // its panel from the game's own options menu:
+    //     ImGui::Begin("Options"); Display().GUI(*this); ImGui::End();
+    // Applied settings persist to options.stad and come back on the next launch.
+    DisplaySettings& Display() { return displaySettings_; }
+
+    // ── loading ────────────────────────────────────────────────────────────────
+    // What is loading right now. Driven by SceneManager transitions and by scenes
+    // calling Scene::ReportProgress().
+    const LoadingState& Loading() const { return loading_; }
+    // Push a status line (and optionally a percentage) into the loading screen.
+    // Routed to the native startup window while it is up, and to
+    // RenderLoadingScreen() afterwards.
+    void SetLoadingStatus(std::string status, int percent = -1);
+
+    // Raw SDL event, forwarded by st::Run before the engine sees it. Returns true
+    // if the app consumed it. Public because st::Run calls it from the main loop.
+    virtual bool OnEvent(const SDL_Event& /*event*/) { return false; }
 
 protected:
     // ── project hooks ──────────────────────────────────────────────────────────
@@ -95,10 +154,36 @@ protected:
     virtual void OnInitialize() {}
     // Once per frame, after the scene manager has updated.
     virtual void OnUpdate(float /*dt*/) {}
-    // Inside the ImGui frame — draw project windows here.
-    virtual void OnGUI() {}
+    // Engine fixed tick (wi::Application::FixedUpdate) — physics-rate game logic.
+    virtual void OnFixedUpdate() {}
+
+    // ── UI ─────────────────────────────────────────────────────────────────────
+    // The game's own ImGui UI. Drawn every frame regardless of DevUIMode.
+    virtual void RenderUI() {}
+    // Extra developer panels. Only called while DevUI is visible.
+    virtual void RenderDevUI() {}
+    // Called inside the DevUI main menu bar; add your own ImGui::BeginMenu here.
+    virtual void OnDevUIMenu() {}
+    // Drawn on top of everything while LoadingState::active. The default is the
+    // framework's status/progress overlay; override for custom loading art.
+    virtual void RenderLoadingScreen(const LoadingState& state);
+
+    // ── render ─────────────────────────────────────────────────────────────────
+    // After the render path is created and loaded, before it is activated. Set
+    // render-path options here, or activate a path of your own instead.
+    virtual void OnRenderPathSetup(wi::RenderPath3D& /*path*/) {}
+    // The game's own GPU work, after the engine has rendered the frame.
+    virtual void OnRender() {}
+    // Under the composed 3D frame — a backdrop drawn before everything else.
+    virtual void OnPreCompose(wi::graphics::CommandList /*cmd*/) {}
     // Additively over the composed 3D frame, before the UI is drawn.
     virtual void OnCompose(wi::graphics::CommandList /*cmd*/) {}
+
+    // ── scenes ─────────────────────────────────────────────────────────────────
+    // Fired by SceneManager around a deferred transition (Reload() fires both).
+    virtual void OnSceneLoaded(const std::string& /*name*/) {}
+    virtual void OnSceneUnloaded(const std::string& /*name*/) {}
+
     // Before the framework tears itself down.
     virtual void OnExit() {}
 
@@ -116,6 +201,7 @@ private:
     PipelineState imguiPSO;
     BacklogViewer backlogViewer;
     GraphicsSettings graphicsSettings;
+    DisplaySettings  displaySettings_;
     SubWinStatus m_loadingScreen;
 
     // Loads/unloads AOT Faust processors, played through the engine OpenAL stream.
@@ -134,13 +220,12 @@ private:
     void ImguiUpdate();
     void ImguiExit();
 
-    void SysUIRender();
-    void SysUIMenuBar();
-    void SysUISceneSelector();
-    void SysUISceneManager();   // dockable window: list/select/load scenes + reload from scratch
-    void SysUILoadingScreen();
-    void SysUIAbout(bool *show);
-    void SysUIHierarchy();      // Hierarchy (Explorer) + Properties (Inspector) windows
+    void DevUIRender();
+    void DevUIMenuBar();
+    void DevUISceneSelector();
+    void DevUISceneManager();   // dockable window: list/select/load scenes + reload from scratch
+    void DevUIAbout(bool *show);
+    void DevUIHierarchy();      // Hierarchy (Explorer) + Properties (Inspector) windows
 
 
 
@@ -181,11 +266,16 @@ private:
 
     bool isStop = false;
 
+    // DevUI + loading state (see the public accessors above).
+    bool         devUIVisible_ = true;
+    LoadingState loading_;
+
     // Startup shader/pipeline compile overlay. ImGui's own shaders load first
     // (ImguiInit), so this overlay can render while the engine compiles the rest.
     bool loadingDone_       = false;  // latched true once compilation settles
     bool loadingSawWork_    = false;  // saw IsPipelineCreationActive() > 0 at least once
     int  loadingIdleFrames_ = 0;      // consecutive frames with no active compile jobs
+    int  loadingFrames_     = 0;      // frames the overlay has been up (hard-stop guard)
 };
 
 } // namespace st

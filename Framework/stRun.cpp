@@ -49,8 +49,8 @@ void DisableWindowRounding(SDL_Window* sdlWindow) {
 namespace st::detail { void SetActiveConfig(const AppConfig* config); }
 
 int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
-    // Install the project properties first: the crash reporter, the user-data
-    // folder and App::Config() all read from here during startup.
+    // Install the project properties first: the crash reporter, the user-data folder
+    // and App::Config() all read from here during startup.
     st::detail::SetActiveConfig(&config);
     st::userdata::Configure(config.organization, config.name);
 
@@ -165,6 +165,21 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
                              || event.type == SDL_TEXTINPUT;
             if ((isPointer && io.WantCaptureMouse) || (isKey && io.WantCaptureKeyboard))
                 continue;
+
+            // Developer-tooling toggle. Checked before the project so a game cannot
+            // accidentally swallow the one key that brings the tooling back.
+            if (config.devUIToggleKey != 0
+                && event.type == SDL_KEYDOWN
+                && event.key.repeat == 0
+                && event.key.keysym.scancode == (SDL_Scancode)config.devUIToggleKey) {
+                application.ToggleDevUI();
+                continue;
+            }
+
+            // Project hook: raw SDL, before the engine. Returning true consumes it.
+            if (application.OnEvent(event))
+                continue;
+
             wi::input::sdlinput::ProcessEvent(event);
         }
     }
