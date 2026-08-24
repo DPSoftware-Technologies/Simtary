@@ -262,3 +262,6 @@ the cold ~360-shader compile. After a shader-heavy change, publish the result ba
 ```
 cmake --build <project>/build/win_x86-64 --target simtary_shadercache_update
 ```
+
+# New game from Template
+Please Contact to `contact@platoonlabs.com` for get template project.
