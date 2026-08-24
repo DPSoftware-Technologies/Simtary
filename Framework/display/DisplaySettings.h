@@ -72,6 +72,28 @@ public:
     // 1.0 = native. Drives wi::Application::SetRenderResolution.
     float       renderScale  = 1.0f;
 
+    // ── standby frame rate ─────────────────────────────────────────────────────
+    // Drop the frame cap when nobody is watching: the window lost focus, or the
+    // player has not touched anything for a while. Saves power and GPU on a machine
+    // that is alt-tabbed or left sitting on a menu.
+    //
+    // Unlike the rest of this class these apply LIVE — UpdateStandby() reads them
+    // every frame, so no Apply is needed and they are not part of Dirty().
+    bool  standbyOnUnfocus = true;    // window does not have input focus
+    int   unfocusedFps     = 30;
+    bool  standbyOnIdle    = false;   // no input for idleSeconds
+    float idleSeconds      = 60.0f;
+    int   idleFps          = 30;
+
+    // Per-frame standby check. st::App::Update calls this; it caps the frame rate
+    // while unfocused or idle and restores the player's own cap when they come back.
+    void UpdateStandby(wi::Application& app, float dt);
+    // Real user input arrived — resets the idle timer. st::Run calls this from the
+    // SDL event loop.
+    void NotifyActivity() { idleTimer_ = 0.0f; }
+    // Whether a standby cap is in force right now (for HUD / debug readouts).
+    bool StandbyActive() const { return standbyActive_; }
+
     // Push the pending state to the window + engine, then rebuild the swapchain.
     void Apply(wi::Application& app);
     // Throw away pending edits and re-read what is actually live.
@@ -110,6 +132,11 @@ private:
     float       appliedTargetFps_  = 60.0f;
     float       appliedScale_      = 1.0f;
     bool        initialized_       = false;
+
+    // Standby runtime state.
+    float idleTimer_     = 0.0f;
+    bool  standbyActive_ = false;
+    int   standbyTarget_ = 0;
 };
 
 } // namespace st

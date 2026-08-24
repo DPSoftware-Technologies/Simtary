@@ -155,6 +155,23 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
                     break;
             }
 
+            // Any genuine input resets the idle standby timer. Done before the
+            // ImGui-capture guard below, so typing into a DevUI window still counts
+            // as the player being present.
+            switch (event.type) {
+                case SDL_KEYDOWN: case SDL_KEYUP: case SDL_TEXTINPUT:
+                case SDL_MOUSEMOTION: case SDL_MOUSEBUTTONDOWN:
+                case SDL_MOUSEBUTTONUP: case SDL_MOUSEWHEEL:
+                case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP:
+                case SDL_CONTROLLERAXISMOTION:
+                case SDL_JOYBUTTONDOWN: case SDL_JOYAXISMOTION:
+                case SDL_FINGERDOWN: case SDL_FINGERMOTION:
+                    application.Display().NotifyActivity();
+                    break;
+                default:
+                    break;
+            }
+
             // Don't forward pointer/keyboard events to the engine when ImGui owns them
             const bool isPointer = event.type == SDL_MOUSEMOTION
                                 || event.type == SDL_MOUSEBUTTONDOWN

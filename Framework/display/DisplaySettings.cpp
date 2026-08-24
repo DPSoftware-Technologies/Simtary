@@ -129,6 +129,50 @@ bool DisplaySettings::Dirty() const {
         || renderScale     != appliedScale_;
 }
 
+// -- standby --------------------------------------------------------------------
+// The engine has its own inactive path (wiApplication.cpp: `if (!is_window_active
+// && !alwaysactive)` sleeps and skips the whole frame), but nothing in this fork ever
+// assigns is_window_active, so it never triggers -- and a hard stop would leave the
+// window unrepainted anyway. Capping the frame rate keeps the window alive while
+// still handing the GPU back.
+void DisplaySettings::UpdateStandby(wi::Application& app, float dt) {
+    SDL_Window* win = app.window;
+    if (win == nullptr)
+        return;
+
+    idleTimer_ += dt;
+
+    const bool focused = (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) != 0;
+
+    // Unfocused wins over idle: alt-tabbed is the stronger signal, and a player who
+    // alt-tabs is idle by definition.
+    int target = 0;   // 0 = not in standby
+    if (standbyOnUnfocus && !focused)
+        target = unfocusedFps;
+    else if (standbyOnIdle && idleTimer_ >= idleSeconds)
+        target = idleFps;
+
+    if (target > 0) {
+        if (!standbyActive_ || target != standbyTarget_) {
+            standbyActive_ = true;
+            standbyTarget_ = target;
+            app.setFrameRateLock(true);
+            app.setTargetFrameRate((float)target);
+        }
+        return;
+    }
+
+    if (standbyActive_) {
+        standbyActive_ = false;
+        standbyTarget_ = 0;
+        // Restore what was last APPLIED, not the pending edits: the player may be
+        // mid-edit in the options panel, and coming back from standby must not
+        // silently commit that.
+        app.setFrameRateLock(appliedLock_);
+        app.setTargetFrameRate(appliedTargetFps_);
+    }
+}
+
 // ── apply ───────────────────────────────────────────────────────────────────────
 void DisplaySettings::Apply(wi::Application& app) {
     SDL_Window* win = app.window;
@@ -186,6 +230,10 @@ void DisplaySettings::Apply(wi::Application& app) {
     wi::eventhandler::SetVSync(vsync);
     app.setFrameRateLock(framerateLock);
     app.setTargetFrameRate(targetFrameRate);
+    // Drop any standby cap; UpdateStandby() re-evaluates on the next frame and will
+    // re-apply it if the window is still unfocused or idle.
+    standbyActive_ = false;
+    standbyTarget_ = 0;
 
     // Rebuild the swapchain against the new window size. st::Run does the same on a
     // resize event; doing it here means the change lands on this frame instead of
@@ -212,6 +260,12 @@ void DisplaySettings::SaveTo(nbt::Tag& out) const {
     out.putBool ("framerateLock",   appliedLock_);
     out.putFloat("targetFrameRate", appliedTargetFps_);
     out.putFloat("renderScale",     appliedScale_);
+    // Standby applies live, so persist the live values rather than an applied_ copy.
+    out.putBool ("standbyOnUnfocus", standbyOnUnfocus);
+    out.putInt  ("unfocusedFps",     unfocusedFps);
+    out.putBool ("standbyOnIdle",    standbyOnIdle);
+    out.putFloat("idleSeconds",      idleSeconds);
+    out.putInt  ("idleFps",          idleFps);
 }
 
 void DisplaySettings::LoadFrom(const nbt::Tag& in) {
@@ -224,6 +278,11 @@ void DisplaySettings::LoadFrom(const nbt::Tag& in) {
     framerateLock          = in.getBool ("framerateLock",   framerateLock);
     targetFrameRate        = in.getFloat("targetFrameRate", targetFrameRate);
     renderScale            = in.getFloat("renderScale",     renderScale);
+    standbyOnUnfocus       = in.getBool ("standbyOnUnfocus", standbyOnUnfocus);
+    unfocusedFps           = in.getInt  ("unfocusedFps",     unfocusedFps);
+    standbyOnIdle          = in.getBool ("standbyOnIdle",    standbyOnIdle);
+    idleSeconds            = in.getFloat("idleSeconds",      idleSeconds);
+    idleFps                = in.getInt  ("idleFps",          idleFps);
 
     // A saved display that is no longer plugged in would leave the window on a
     // monitor that does not exist.
@@ -314,6 +373,26 @@ void DisplaySettings::GUI(wi::Application& app) {
         ImGui::TextDisabled("Rendering at %d x %d, presented at %d x %d",
             (int)(w * renderScale), (int)(h * renderScale), w, h);
     }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Standby");
+    ImGui::TextDisabled("Applies immediately - Apply/Revert below do not affect these.");
+
+    ImGui::Checkbox("Limit FPS when unfocused", &standbyOnUnfocus);
+    ImGui::BeginDisabled(!standbyOnUnfocus);
+    ImGui::SliderInt("Unfocused FPS", &unfocusedFps, 5, 120);
+    ImGui::EndDisabled();
+
+    ImGui::Checkbox("Limit FPS when idle", &standbyOnIdle);
+    ImGui::BeginDisabled(!standbyOnIdle);
+    ImGui::SliderFloat("Idle after", &idleSeconds, 5.0f, 600.0f, "%.0f s");
+    ImGui::SliderInt("Idle FPS", &idleFps, 5, 120);
+    ImGui::EndDisabled();
+
+    if (standbyActive_)
+        ImGui::Text("Standby active - capped at %d FPS", standbyTarget_);
+    else if (standbyOnIdle)
+        ImGui::TextDisabled("Idle for %.0f s", idleTimer_);
 
     ImGui::Spacing();
     ImGui::Separator();

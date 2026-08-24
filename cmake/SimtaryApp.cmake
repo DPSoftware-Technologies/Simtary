@@ -56,7 +56,7 @@ option(SIMTARY_BUMP_BUILD_NUMBER "Advance <project>/build_number.txt on every bu
 # A missing dxc is a warning, never a hard error: SIMTARY_DXC is empty and the call
 # is skipped, exactly like the engine's own shader tooling.
 function(simtary_compile_shader)
-    cmake_parse_arguments(SH "" "TARGET;SOURCE;PROFILE;ENTRY;OUTPUT_NAME" "" ${ARGN})
+    cmake_parse_arguments(SH "ENGINE_ENV" "TARGET;SOURCE;PROFILE;ENTRY;OUTPUT_NAME" "" ${ARGN})
     if (NOT SH_TARGET OR NOT SH_SOURCE OR NOT SH_PROFILE)
         message(FATAL_ERROR "simtary_compile_shader: TARGET, SOURCE and PROFILE are required")
     endif()
@@ -78,9 +78,42 @@ function(simtary_compile_shader)
         set(_spirv -spirv)
     endif()
 
+    # ENGINE_ENV: the shader includes globals.hlsli and reads the engine's bindless
+    # heaps, camera and frame constants. That needs the same compiler environment
+    # wi::shadercompiler builds for the engine's own shaders - the include path, the
+    # default root signature on DX12, and the binding shifts + descriptor set numbers
+    # on Vulkan (mirroring GraphicsDevice_Vulkan's VULKAN_BINDING_SHIFT_* and
+    # DESCRIPTOR_SET_*). Runtime compilation is not an option here: dxcompiler.dll is
+    # not shipped next to the exe, so a shader that is not built now is never built.
+    set(_engine_args "")
+    if (SH_ENGINE_ENV)
+        list(APPEND _engine_args
+            -I "${SIMTARY_ROOT}/Engine/shaders"
+            -I "${SIMTARY_ROOT}/assets/shaders")
+        if (WIN32)
+            list(APPEND _engine_args -rootsig-define WICKED_ENGINE_DEFAULT_ROOTSIGNATURE)
+        else()
+            list(APPEND _engine_args
+                -fspv-target-env=vulkan1.3
+                -fvk-use-dx-layout
+                -fvk-use-dx-position-w
+                -fvk-b-shift 0 0
+                -fvk-t-shift 1000 0
+                -fvk-u-shift 2000 0
+                -fvk-s-shift 3000 0
+                -D DESCRIPTOR_SET_BINDLESS_SAMPLER=1
+                -D DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER=2
+                -D DESCRIPTOR_SET_BINDLESS_UNIFORM_TEXEL_BUFFER=3
+                -D DESCRIPTOR_SET_BINDLESS_SAMPLED_IMAGE=4
+                -D DESCRIPTOR_SET_BINDLESS_STORAGE_IMAGE=5
+                -D DESCRIPTOR_SET_BINDLESS_STORAGE_TEXEL_BUFFER=6
+                -D DESCRIPTOR_SET_BINDLESS_ACCELERATION_STRUCTURE=7)
+        endif()
+    endif()
+
     add_custom_command(TARGET ${SH_TARGET} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:${SH_TARGET}>/shaders/${_backend}
-        COMMAND ${SIMTARY_DXC} -T ${SH_PROFILE} -E ${SH_ENTRY} ${_spirv}
+        COMMAND ${SIMTARY_DXC} -T ${SH_PROFILE} -E ${SH_ENTRY} ${_spirv} ${_engine_args}
             "${SH_SOURCE}"
             -Fo $<TARGET_FILE_DIR:${SH_TARGET}>/shaders/${_backend}/${SH_OUTPUT_NAME}.cso
         COMMENT "Compiling ${SH_OUTPUT_NAME} -> shaders/${_backend}/"
@@ -291,6 +324,7 @@ function(simtary_add_app)
         ${SIMTARY_FRAMEWORK_DIR}    # stApp.h, stRun.h, io/, sysui/, input/, ...
         ${SIMTARY_ROOT}/Engine      # Simtary.h and the rest of the engine core
         ${SIMTARY_ROOT}/include     # vendored headers (faust ABI, stb_image)
+        ${SIMTARY_ROOT}/assets/shaders  # shader interop headers shared with C++ (StProjectorInterop.h)
         ${APP_SOURCE_DIR}           # the project's own scenes/ + components/
         ${_gendir}                  # generated version.h
         ${APP_EXTRA_INCLUDES}
@@ -356,6 +390,12 @@ function(simtary_add_app)
     simtary_compile_shader(TARGET ${APP_NAME} PROFILE vs_6_0 SOURCE ${SIMTARY_ROOT}/assets/shaders/StLensFlareVS.hlsl)
     simtary_compile_shader(TARGET ${APP_NAME} PROFILE ps_6_0 SOURCE ${SIMTARY_ROOT}/assets/shaders/StLensFlarePS.hlsl)
 
+    # ENGINE_ENV: unlike the shaders above, the projector pass runs inside the engine's
+    # frame - it reads the depth buffer, the camera constants and the bindless texture
+    # heap, so it includes globals.hlsli and needs the engine's compiler flags.
+    simtary_compile_shader(TARGET ${APP_NAME} PROFILE cs_6_0 ENGINE_ENV
+        SOURCE ${SIMTARY_ROOT}/assets/shaders/StProjectorCS.hlsl)
+
     # ── engine shader sources + shared compiled cache ─────────────────────────
     # The engine compiles its ~360 HLSL shaders on first launch and caches the DXIL
     # in "<exe>/shaders/hlsl6/" (Vulkan: "spirv/"). Simtary/shaders/ holds that cache
@@ -369,6 +409,7 @@ function(simtary_add_app)
         COMMENT "Staging engine shader sources -> <exe>/shaders/"
         VERBATIM
     )
+
     if (EXISTS ${SIMTARY_ROOT}/shaders)
         add_custom_command(TARGET ${APP_NAME} PRE_LINK
             COMMAND ${CMAKE_COMMAND} -E ${SIMTARY_COPY_DIR_CMD}
@@ -431,24 +472,54 @@ function(simtary_add_app)
     #   <build>/assets     the whole project assets tree (source shaders, dsp, ...)
     #   <exe>/assets       just the game content, which is what the running game
     #                      resolves paths against ("assets/splash.bmp", scenes, ...)
+    #
+    # BOTH live on a custom target, not on POST_BUILD. A POST_BUILD command only runs
+    # when the executable itself is rebuilt, so editing nothing but a .wiscene left
+    # the old copy sitting in the output: the build was "up to date" and the copy step
+    # never fired. A custom target is always considered out of date, so `cmake --build`
+    # re-syncs content whether or not a single line of C++ changed.
     if (EXISTS ${APP_ASSETS_DIR})
-        add_custom_target(${APP_NAME}_Assets
+        set(_asset_copy_commands
             COMMAND ${CMAKE_COMMAND} -E ${SIMTARY_COPY_DIR_CMD}
                 ${APP_ASSETS_DIR} ${CMAKE_CURRENT_BINARY_DIR}/assets
-            COMMENT "Copying ${APP_NAME} assets directory"
+        )
+        if (APP_CONTENT_SUBDIR AND EXISTS ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR})
+            list(APPEND _asset_copy_commands
+                # make_directory first: on a clean tree the output folder does not
+                # exist yet when this runs (it runs BEFORE the link, not after).
+                COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:${APP_NAME}>/assets
+                COMMAND ${CMAKE_COMMAND} -E ${SIMTARY_COPY_DIR_CMD}
+                    ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}
+                    $<TARGET_FILE_DIR:${APP_NAME}>/assets
+            )
+        endif()
+
+        add_custom_target(${APP_NAME}_Assets
+            ${_asset_copy_commands}
+            COMMENT "Syncing ${APP_NAME} assets -> <build>/assets and <exe>/assets"
             VERBATIM
         )
         set_target_properties(${APP_NAME}_Assets PROPERTIES FOLDER "${APP_NAME}/Build")
         add_dependencies(${APP_NAME} ${APP_NAME}_Assets)
 
+        # copy_directory_if_different only ADDS and OVERWRITES; it never deletes. A
+        # renamed or removed asset therefore lingers in the output and the game can
+        # still load it, which hides the breakage until someone ships. This target
+        # wipes the output copies first, so build it after deleting or renaming
+        # content:  cmake --build <dir> --target ${APP_NAME}_AssetsResync
         if (APP_CONTENT_SUBDIR AND EXISTS ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR})
-            add_custom_command(TARGET ${APP_NAME} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E ${SIMTARY_COPY_DIR_CMD}
+            add_custom_target(${APP_NAME}_AssetsResync
+                COMMAND ${CMAKE_COMMAND} -E rm -rf $<TARGET_FILE_DIR:${APP_NAME}>/assets
+                COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/assets
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    ${APP_ASSETS_DIR} ${CMAKE_CURRENT_BINARY_DIR}/assets
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
                     ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}
                     $<TARGET_FILE_DIR:${APP_NAME}>/assets
-                COMMENT "Copying game content directly to output /assets"
+                COMMENT "Re-syncing ${APP_NAME} assets from scratch (drops removed files)"
                 VERBATIM
             )
+            set_target_properties(${APP_NAME}_AssetsResync PROPERTIES FOLDER "${APP_NAME}/Build")
         endif()
     endif()
 

@@ -527,7 +527,7 @@ void GraphicsSettings::drawDisplayTab(st::DisplaySettings& display, wi::Applicat
     display.GUI(app);
 }
 
-void GraphicsSettings::drawContentTab(st::LensFlare& lensFlare) {
+void GraphicsSettings::drawContentTab(st::LensFlare& lensFlare, st::ProjectorSystem& projectors) {
     // Applies live — Apply/Reset at the bottom of the window only govern the Engine
     // tab's snapshot, so say so rather than let the buttons imply otherwise.
     ImGui::TextDisabled("Applies immediately (Apply/Reset only affect the Engine tab).");
@@ -540,10 +540,19 @@ void GraphicsSettings::drawContentTab(st::LensFlare& lensFlare) {
         ImGui::Spacing();
         lensFlare.GUI();
     }
+
+    if (ImGui::CollapsingHeader("Projectors", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Square/rectangular image projection (assets/shaders/StProjectorCS.hlsl).
+        // The list itself is scene content - this only edits what is registered.
+        ImGui::TextDisabled("Framework projectors: square light projection with projector optics.");
+        ImGui::Spacing();
+        projectors.GUI();
+    }
 }
 
 void GraphicsSettings::render(bool* isopen, wi::RenderPath3D& path, wi::Application& app,
-                              st::LensFlare& lensFlare, st::DisplaySettings& display) {
+                              st::LensFlare& lensFlare, st::DisplaySettings& display,
+                              st::ProjectorSystem& projectors) {
     if (!initialized_) {
         readFromEngine(path, app);
         initialized_ = true;
@@ -561,7 +570,7 @@ void GraphicsSettings::render(bool* isopen, wi::RenderPath3D& path, wi::Applicat
     if (ImGui::BeginTabBar("##gfx_tabbar")) {
         if (ImGui::BeginTabItem("Display")) { drawDisplayTab(display, app); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Engine"))  { drawEngineTab();  ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Content")) { drawContentTab(lensFlare); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Content")) { drawContentTab(lensFlare, projectors); ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
     ImGui::EndChild();
