@@ -47,6 +47,9 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `input/InputSystem.*` | Centralized action/axis keymap, refreshed once per frame. |
 | `crash/CrashHandler.*` | sentry-native + Crashpad, offline only; launches `SimtaryCrashReporter`. |
 | `render/LensFlare.*` | Procedural screen-space flare (`assets/shaders/StLensFlare*`). |
+| `render/Projector.*` | `st::Projector` + `st::ProjectorSystem` — SQUARE (or rect/ellipse/rounded) image projection with projector optics: throw ratio, aspect, lens shift, keystone, barrel/pincushion, edge softness, vignette, plus a rectangular volumetric beam. Runs as a `RenderPath3D` custom post process (`assets/shaders/StProjectorCS.hlsl`). Reach it anywhere via `st::ProjectorSystem::Get()`. |
+| `render/ProjectorComponent.cpp` | The `"Projector"` NATIVE COMPONENT — attach `st::Projector` to a spot light from the editor (`NCI_0 = "Projector"`, optics as `NCA_0_*` args). Follows its own entity, takes the image off it (video / camera render / material base colour, pinned with `NCA_0_imageSource`), and zeroes that light by default since the light IS the circle. |
+| `render/Framebuffer.*` | `st::gfx::Framebuffer` — an off-screen surface you draw into and hand to a material, a light mask or a projector. CPU mode wraps libgfx (`GFXcanvas`) and owns the staging texture, row pitch and flip; GPU mode is a render target you draw into with `wi::image`/`wi::font` between `Begin()`/`End()`. |
 | `display/DisplaySettings.*` | Player-facing video options: window mode, monitor, resolution, refresh rate, v-sync, frame cap, render scale. NOT DevUI — `st::App::Display().GUI(app)` drops into a game's own options menu, and DevUI renders the same panel in its Display tab. Sole owner of v-sync and the frame cap; `GraphicsSettings` deliberately no longer carries them. |
 | `audio/faust/` | `FaustManager` (OpenAL DSP host) + `FaustProcessor<T>`. Starts with no processors — games register their own AOT instruments. |
 | `anim/`, `eventBus.*`, `ZmqHandler.*`, `SubWinStatus.*` | Animation descriptors, main-thread event bus, ZMQ bridge, native (Win32/X11) loading window. |
@@ -125,6 +128,18 @@ transition, and `Scene::ReportProgress()` writes into it. The ImGui
 `RenderLoadingScreen` overlay only covers the non-blocking cases — chiefly the
 first-launch pipeline warm-up. Do not "simplify" one into the other.
 
+**Assets sync on a custom target, not on POST_BUILD.** `<APP>_Assets` copies
+`assets/` to `<build>/assets` and `assets/contents/` to `<exe>/assets`, and the app
+target depends on it. It has to be a custom target: a POST_BUILD command only runs
+when the executable is actually relinked, so editing nothing but a scene or a texture
+left the stale copy in the output and the build reported success. Custom targets are
+always out of date, so `cmake --build` re-syncs content either way.
+
+The copy is `copy_directory_if_different` — it adds and overwrites, it never deletes.
+After removing or renaming content, build `<APP>_AssetsResync`, which wipes both
+output copies first; otherwise the old file is still sitting next to the exe and the
+game happily keeps loading it.
+
 **The `.stpd` manifest is build-time only, and identity only.** `assets/project.stpd`
 is read by CMake at configure time and never at runtime; it lives in `assets/` rather
 than `assets/contents/` precisely because `contents/` is what ships next to the exe.
@@ -162,6 +177,25 @@ Its shaders live in `assets/shaders/ImGui{VS,PS}.hlsl` and are compiled by
 **Lens flare shaders are named `StLensFlare*`, not `LensFlare*`** — the engine ships
 its own `lensFlareVS/PS.hlsl` and both land in the same output folder, which is
 case-insensitive on Windows.
+
+**A framework shader that includes `globals.hlsli` needs `ENGINE_ENV`.**
+`simtary_compile_shader(... ENGINE_ENV ...)` adds the engine's include path plus the
+DX12 default root signature / the Vulkan binding shifts, which the bare dxc call the
+other framework shaders use does not have. Runtime compilation is not a fallback
+here: `dxcompiler.dll` is not shipped next to the exe, so `wi::renderer::LoadShader`
+can only ever load a `.cso` that the build already produced. `StProjectorCS.hlsl` is
+the first shader in this category.
+
+**Why the projector is not a `LightComponent`.** `light_spot()` in
+`Engine/shaders/lightingHF.hlsli` clips to a circular cone, so a mask texture, a
+video or a camera render on a spot light always lands as a CIRCLE with the image
+cropped inside it. Squaring that means changing the cone test in the engine core
+repo. `st::ProjectorSystem` gets the same picture without touching `Engine/`, at the
+cost of being screen space: no shadow map (there is a screen-space approximation), no
+lighting of transparent surfaces, no contribution to reflections or GI. Note also
+that a spot light projects along its entity's local **-Y** (see `SHCAM::init` in
+`wiRenderer.cpp`) while `LightComponent::direction` stores the opposite vector —
+`Projector::Forward::MinusY` is the setting that matches a spot light.
 
 **Shader cache.** `Simtary/shaders/` is staged into every game's output before the
 incremental `offlineshadercompiler` pre-pass, so first launch is never cold. After a

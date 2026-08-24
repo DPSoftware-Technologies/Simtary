@@ -77,6 +77,7 @@ void st::App::Initialize() {
     // After ImguiInit, which runs wi::Application::Initialize() and so guarantees the
     // graphics device exists and the shader path has its backend subfolder appended.
     lensFlare.Init();
+    projectors_.Init();
 
     renderPath.init(canvas);
     renderPath.Load();
@@ -96,12 +97,18 @@ void st::App::Initialize() {
     // Only claim the path if the project did not activate one of its own.
     if (GetActivePath() == nullptr) ActivatePath(&renderPath);
 
+    // The projector pass rides on the render path's custom post process list, so it
+    // has to be told which path after OnRenderPathSetup has had its say. It only
+    // inserts itself while there is something to draw.
+    projectors_.Bind(renderPath);
+
     // Push saved graphics options to the engine now, so the first frame reflects them.
     // Get() constructs the manager on first call and its constructor already reads
     // options.stad (in AppData/LocalLow/PlatoonLabs/Milistry) — no explicit Load() needed.
     graphicsSettings.loadAndApply(st::SettingsManager::Get().GraphicsTag(), renderPath, *this);
     // lensFlare.Init() already ran above; this just fills its settings from disk.
     lensFlare.LoadFrom(st::SettingsManager::Get().SubCompound("lensflare"));
+    projectors_.LoadFrom(st::SettingsManager::Get().SubCompound("projectors"));
 
     // Centralized input: install the default keymap before any scene updates.
     st::InputSystem::Get().LoadDefaults();
@@ -156,6 +163,10 @@ void st::App::Update(float dt) {
     for (const std::string& msg : zmqHandler.Drain())
         EventBus::Get().Emit("zmq.message", msg);
 
+    // Frame-rate standby: caps the frame rate while the window is unfocused or the
+    // player has been idle, and restores their own cap when they come back.
+    displaySettings_.UpdateStandby(*this, dt);
+
     // Refresh action/axis state + relative-mouse delta once per frame, after
     // wi::Application::Update (wi::input fresh) + ImguiUpdate (io.WantCapture* fresh),
     // before scenes/components read it in sceneManager.Update.
@@ -187,6 +198,10 @@ void st::App::Update(float dt) {
     // direction and the camera has already moved this frame, so the projected sun
     // position matches what the render path is about to draw.
     lensFlare.Update(wi::scene::GetScene(), wi::scene::GetCamera(), dt);
+
+    // Same reason: followed entities carry this frame's transform only after the
+    // scene update, and the pass' constants must be in place before Render().
+    projectors_.Update(wi::scene::GetScene(), dt);
 
     flagsChangedThisFrame = 
         (STDDBoneLines != lastState.BoneLines) ||
@@ -247,6 +262,7 @@ void st::App::Exit() {
     graphicsSettings.SaveTo(st::SettingsManager::Get().GraphicsTag());
     displaySettings_.SaveTo(st::SettingsManager::Get().SubCompound("display"));
     lensFlare.SaveTo(st::SettingsManager::Get().SubCompound("lensflare"));
+    projectors_.SaveTo(st::SettingsManager::Get().SubCompound("projectors"));
     st::SettingsManager::Get().Save();
     zmqHandler.Stop(); // join receiver thread before tearing anything else down
     faustManager.Unload(); // join audio thread + close OpenAL before teardown

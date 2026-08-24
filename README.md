@@ -65,6 +65,9 @@ int main (int argc, char* argv[]) {
 | `eventBus.h` | Main-thread publish/subscribe (`loading.progress`, `zmq.message`, …). |
 | `anim/AnimationDescriptor.h` | NBT-backed animation descriptors. |
 | `render/LensFlare.h` | Procedural screen-space flare. |
+| `render/Projector.h` | `st::Projector` / `st::ProjectorSystem` — square, rectangular, elliptical or rounded image projection with projector optics (throw ratio, aspect, lens shift, keystone, distortion, softness, vignette) and a matching volumetric beam. `st::ProjectorSystem::Get()` from anywhere. |
+| `render/ProjectorComponent.cpp` | `"Projector"` native component — the same thing attached from the editor: `NCI_0 = "Projector"` on a spot light, optics as `NCA_0_*` args. |
+| `render/Framebuffer.h` | `st::gfx::Framebuffer` — draw off screen (libgfx canvas, or `wi::image`/`wi::font` on a render target) and bind the result to a material, a light mask or a projector. |
 | `audio/faust/FaustProcessor.h` | `st::audio::FaustProcessor<T>` around an AOT Faust dsp. |
 | `Engine/stNativeComponent.h` | The Unity-like native component model (engine core). |
 
@@ -189,6 +192,18 @@ DevUI shows the same panel in the Graphics Settings window's **Display** tab.
 | V-Sync | `wi::eventhandler::SetVSync` |
 | Limit Frame Rate / Target FPS | `wi::Application::setFrameRateLock` / `setTargetFrameRate` |
 | Render Scale | renders at a fraction of the output and upscales, via `wi::Application::SetRenderResolution` |
+| Standby: unfocused FPS | caps the frame rate while the window has no input focus |
+| Standby: idle FPS + idle-after | caps it after N seconds with no keyboard/mouse/controller input |
+
+The standby options are the exception to the staging below: they apply live, because
+they change nothing a player has to confirm. `UpdateStandby()` reads them every frame
+from `st::App::Update`, and `st::Run` resets the idle timer on real input.
+
+Worth knowing: the engine has its own inactive path (`wiApplication.cpp` sleeps and
+skips the frame entirely when `is_window_active` is false), but nothing in this fork
+ever assigns that flag, so it never fires — and a hard stop would leave the window
+unrepainted. Capping the frame rate keeps the window alive while still handing the GPU
+back.
 
 Edits are staged behind **Apply**/**Revert** — a resolution must never change while
 someone is scrolling the dropdown. Applied values persist to `options.stad` under the

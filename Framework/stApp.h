@@ -31,6 +31,7 @@
 #include "devui/imhierarchy.h"
 #include "SubWinStatus.h"
 #include "render/LensFlare.h"
+#include "render/Projector.h"
 #include "display/DisplaySettings.h"
 #include "io/SettingsManager.h"
 #include "audio/faust/FaustManager.h"
@@ -106,6 +107,17 @@ public:
     SceneManager     sceneManager;
     ZmqHandler       zmqHandler;
     st::LensFlare    lensFlare;
+
+    // Square/rectangular image projection with projector optics. Not a LightComponent:
+    // the engine's spot light is a cone by construction, so a mask texture on one
+    // always lands as a circle. See Framework/render/Projector.h.
+    //
+    // Also reachable from anywhere as st::ProjectorSystem::Get(), which is how a
+    // scene or a native component gets at it:
+    //
+    //   ProjectorSystem::ID id = st::ProjectorSystem::Get().Add(projector);
+    //   st::ProjectorSystem::Get().Find(id)->intensity = 12.0f;
+    st::ProjectorSystem& Projectors() { return projectors_; }
 
     void Initialize() override;
     void Compose(wi::graphics::CommandList cmd) override;
@@ -206,6 +218,9 @@ private:
 
     // Loads/unloads AOT Faust processors, played through the engine OpenAL stream.
     st::audio::FaustManager faustManager;
+
+    // Reached through Projectors(); the framework drives Init/Bind/Update itself.
+    st::ProjectorSystem projectors_;
 
     Texture fontTexture;
 
