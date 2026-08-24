@@ -150,6 +150,28 @@ public:
 
 		Apply();
 
+		// Say so in the backlog. A projector attached through scene metadata is
+		// otherwise invisible in code review - the beam appears with nothing in the
+		// game's source to explain it.
+		std::string owner = "entity " + std::to_string(entity);
+		if (scene != nullptr) {
+			if (const wi::scene::NameComponent* name = scene->names.GetComponent(entity)) {
+				owner = "'" + name->name + "' (entity " + std::to_string(entity) + ")";
+			}
+		}
+		// Which image source the entity actually offers. A projector with none of them
+		// throws flat white, which reads as "broken" rather than "no picture assigned".
+		std::string sources;
+		if (scene != nullptr) {
+			if (scene->videos.GetComponent(entity) != nullptr) sources += " video";
+			if (scene->cameras.GetComponent(entity) != nullptr) sources += " camera";
+			if (scene->materials.GetComponent(entity) != nullptr) sources += " material";
+		}
+		if (sources.empty()) sources = " none (flat colour)";
+
+		wi::backlog::post("[Projector] component attached to " + owner +
+			" from scene metadata, imageSource=" + imageSource + ", available:" + sources);
+
 		// The engine spot light is the circle this component exists to replace.
 		if (dimLight) {
 			if (wi::scene::LightComponent* light = GetComponent<wi::scene::LightComponent>()) {
@@ -211,4 +233,4 @@ public:
 	}
 };
 
-ST_REGISTER_NATIVE_COMPONENT_AS(StProjectorComponent, "Projector")
+ST_REGISTER_NATIVE_COMPONENT_AS(StProjectorComponent, "sticProjector")
