@@ -26,6 +26,7 @@
 #include <vector>
 #include <iostream>
 #include <cstdlib>
+#include <cstring>
 
 #if defined(_WIN32)
 #include <direct.h>
@@ -1270,9 +1271,48 @@ namespace wi::helper
 		return 0;
 	}
 
+	// --- SIMTARY EXTENSION: read-only asset source override ---
+	static AssetSourceOverride g_asset_source;
+
+	void SetAssetSourceOverride(const AssetSourceOverride& source)
+	{
+		g_asset_source = source;
+	}
+	const AssetSourceOverride& GetAssetSourceOverride()
+	{
+		return g_asset_source;
+	}
+	// ----------------------------------------------------------
+
 	template<template<typename T, typename A> typename vector_interface>
 	bool FileRead_Impl(const std::string& fileName, vector_interface<uint8_t, std::allocator<uint8_t>>& data, size_t max_read, size_t offset)
 	{
+		// SIMTARY: give a packaged asset source first refusal on this path. Declining is
+		// normal - anything it does not own falls through to the filesystem below.
+		if (g_asset_source.file_read != nullptr)
+		{
+			const uint8_t* mapped = nullptr;
+			size_t mapped_size = 0;
+			if (g_asset_source.file_read(fileName, &mapped, &mapped_size, g_asset_source.userdata))
+			{
+				size_t dataSize = 0;
+				if (mapped_size > offset)
+				{
+					dataSize = std::min(mapped_size - offset, max_read);
+				}
+				data.resize(dataSize);
+				if (dataSize > 0)
+				{
+					std::memcpy(data.data(), mapped + offset, dataSize);
+				}
+				if (g_asset_source.file_free != nullptr)
+				{
+					g_asset_source.file_free(mapped, g_asset_source.userdata);
+				}
+				return true;
+			}
+		}
+
 #ifdef _WIN32
 		std::ifstream file(ToNativeString(fileName), std::ios::binary | std::ios::ate);
 #else
@@ -1326,6 +1366,13 @@ namespace wi::helper
 
 	bool FileExists(const std::string& fileName)
 	{
+		// SIMTARY: same first refusal as FileRead, so a packaged asset reports as present
+		// even though there is no file behind it.
+		if (g_asset_source.file_exists != nullptr &&
+			g_asset_source.file_exists(fileName, g_asset_source.userdata))
+		{
+			return true;
+		}
 		bool exists = std::filesystem::exists(ToNativeString(fileName));
 		return exists;
 	}

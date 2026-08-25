@@ -2614,6 +2614,11 @@ std::mutex queue_locker;
 		capabilities |= GraphicsDeviceCapability::PREDICATION;
 		capabilities |= GraphicsDeviceCapability::DEPTH_RESOLVE_MIN_MAX;
 		capabilities |= GraphicsDeviceCapability::STENCIL_RESOLVE_MIN_MAX;
+		// SIMTARY: both are guaranteed at feature level 11_0, which this device already
+		// requires. Stated explicitly so callers can branch on the capability instead of
+		// on the backend.
+		capabilities |= GraphicsDeviceCapability::GEOMETRY_SHADER;
+		capabilities |= GraphicsDeviceCapability::TEXTURE_COMPRESSION_BC;
 
 #ifdef PLATFORM_XBOX
 		adapterName = wi::graphics::xbox::GetAdapterName();

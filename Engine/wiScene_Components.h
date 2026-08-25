@@ -15,6 +15,7 @@
 #include "wiBVH.h"
 #include "wiPathQuery.h"
 #include "wiAllocator.h"
+#include "stWorldScalar.h"
 
 namespace wi::scene
 {
@@ -47,6 +48,13 @@ namespace wi::scene
         {
             EMPTY = 0,
             DIRTY = 1 << 0,
+            // SIMTARY: this transform's position is driven by world_translation_* rather
+            // than by translation_local. Set the first time a large-world position is
+            // assigned, and only then does UpdateTransform rebase around the render
+            // origin. Without it a transform behaves exactly like stock Wicked, which is
+            // what code that writes translation_local straight - wi::gui widgets above
+            // all - depends on.
+            LARGE_WORLD = 1 << 1,
         };
 
         XMFLOAT3 scale_local = XMFLOAT3(1, 1, 1);
@@ -54,26 +62,72 @@ namespace wi::scene
         XMFLOAT4 rotation_local = XMFLOAT4(0, 0, 0, 1);
         XMFLOAT3 translation_local = XMFLOAT3(0, 0, 0);
 
-        // --- SIMTARY EXTENSION: 64-bit Large World Coordinates ---
-        // Absolute position in the massive 100x100km world
-        double world_translation_x = 0.0;
-        double world_translation_y = 0.0;
-        double world_translation_z = 0.0;
-        // ---------------------------------------------------------
+        // --- SIMTARY EXTENSION: large world coordinates ---
+        // Absolute position in world space. Authoritative for root transforms; for a
+        // parented transform the local offset in translation_local is what counts, and
+        // these stay in sync with it only as far as the mutators can keep them.
+        //
+        // world_float is double when the build defines SIMTARY_WORLD_FLOAT64 and float
+        // when it does not - see stWorldScalar.h. translation_local always mirrors this
+        // position rebased around the active render origin, and every matrix downstream
+        // is built from that, so nothing below this struct ever sees a double.
+        world_float world_translation_x = 0;
+        world_float world_translation_y = 0;
+        world_float world_translation_z = 0;
+        // --------------------------------------------------
 
         XMFLOAT4X4 world = wi::math::IDENTITY_MATRIX;
 
         constexpr void SetDirty(bool value = true) { set_flag(_flags, DIRTY, value); }
         constexpr bool IsDirty() const { return _flags & DIRTY; }
+        constexpr void SetLargeWorld(bool value = true) { set_flag(_flags, LARGE_WORLD, value); }
+        constexpr bool IsLargeWorld() const { return _flags & LARGE_WORLD; }
 
-        // --- SIMTARY EXTENSION: 64-bit Getters/Setters ---
-        void SetWorldPosition(double x, double y, double z) {
-            world_translation_x = x;
-            world_translation_y = y;
-            world_translation_z = z;
+        // --- SIMTARY EXTENSION: large world position accessors ---
+        // These take and return double in both precision modes, so game code compiles
+        // unchanged either way; the value narrows to world_float on the way in.
+        void SetWorldPosition(double x, double y, double z)
+        {
+            world_translation_x = (world_float)x;
+            world_translation_y = (world_float)y;
+            world_translation_z = (world_float)z;
+            SetLargeWorld();
             SetDirty();
         }
-        // -------------------------------------------------
+        void SetWorldPosition(const RenderOrigin& position)
+        {
+            SetWorldPosition(position.x, position.y, position.z);
+        }
+        void TranslateWorld(double x, double y, double z)
+        {
+            world_translation_x += (world_float)x;
+            world_translation_y += (world_float)y;
+            world_translation_z += (world_float)z;
+            SetLargeWorld();
+            SetDirty();
+        }
+        double GetWorldPositionX() const { return (double)world_translation_x; }
+        double GetWorldPositionY() const { return (double)world_translation_y; }
+        double GetWorldPositionZ() const { return (double)world_translation_z; }
+
+        // Fold the absolute position down into translation_local, relative to origin.
+        // This is the single place where large-world precision collapses to float, which
+        // is why the renderer never has to know which mode the build is in.
+        void RebaseToOrigin(const RenderOrigin& origin)
+        {
+            translation_local.x = (float)(world_translation_x - (world_float)origin.x);
+            translation_local.y = (float)(world_translation_y - (world_float)origin.y);
+            translation_local.z = (float)(world_translation_z - (world_float)origin.z);
+        }
+        // Adopt translation_local as the truth and back-solve the absolute position from
+        // it. Used by the mutators that work in origin-relative float space.
+        void SyncWorldFromLocal(const RenderOrigin& origin)
+        {
+            world_translation_x = (world_float)translation_local.x + (world_float)origin.x;
+            world_translation_y = (world_float)translation_local.y + (world_float)origin.y;
+            world_translation_z = (world_float)translation_local.z + (world_float)origin.z;
+        }
+        // ---------------------------------------------------------
 
         XMFLOAT3 GetPosition() const;
         XMFLOAT4 GetRotation() const;
@@ -92,9 +146,14 @@ namespace wi::scene
         XMMATRIX GetLocalMatrix() const;
         XMMATRIX GetWorldMatrix() const { return XMLoadFloat4x4(&world); };
         
-        // You will rewrite the implementation of these inside wiScene.cpp
-        void UpdateTransform(const double camera_x = 0.0, const double camera_y = 0.0, const double camera_z = 0.0);
-        void UpdateTransform_Parented(const TransformComponent& parent, const double camera_x = 0.0, const double camera_y = 0.0, const double camera_z = 0.0);
+        // Root transform: rebases the absolute position around the active render origin,
+        // then builds the world matrix from it.
+        void UpdateTransform();
+        // Same, against an explicit origin instead of the global one.
+        void UpdateTransform(double origin_x, double origin_y, double origin_z);
+        // Child transform: translation_local is an offset from the parent and is already
+        // origin-relative through the parent's world matrix, so it is never rebased here.
+        void UpdateTransform_Parented(const TransformComponent& parent);
         
         void ApplyTransform();
         void ClearTransform();
@@ -1441,12 +1500,14 @@ namespace wi::scene
 		XMFLOAT2 aperture_shape = XMFLOAT2(1, 1);
 		float ortho_vertical_size = 1;
 
-		// --- SIMTARY EXTENSION: 64-bit Large World Coordinates for Camera ---
-		// Absolute position in the massive 100x100km world
-		double world_position_x = 0.0;
-		double world_position_y = 0.0;
-		double world_position_z = 0.0;
-		// ---------------------------------------------------------
+		// --- SIMTARY EXTENSION: large world coordinates for camera ---
+		// Absolute position in world space. This is normally what the render origin is set
+		// from each frame, which makes the camera the point float precision is best around.
+		// world_float follows the SIMTARY_WORLD_FLOAT64 switch - see stWorldScalar.h.
+		world_float world_position_x = 0;
+		world_float world_position_y = 0;
+		world_float world_position_z = 0;
+		// --------------------------------------------------------------
 
 		// Non-serialized attributes:
 		XMFLOAT3 Eye = XMFLOAT3(0, 0, 0);
@@ -1513,17 +1574,26 @@ namespace wi::scene
 		inline XMVECTOR GetUp() const { return XMLoadFloat3(&Up); }
 		inline XMVECTOR GetRight() const { return XMVector3Cross(GetUp(), GetAt()); }
 		
-		// --- SIMTARY EXTENSION: 64-bit World Position Getters/Setters ---
+		// --- SIMTARY EXTENSION: large world position accessors ---
+		// double in the signature in both precision modes, so game code is unaffected by
+		// the switch; the value narrows to world_float on the way in.
 		void SetWorldPosition(double x, double y, double z) {
-			world_position_x = x;
-			world_position_y = y;
-			world_position_z = z;
+			world_position_x = (world_float)x;
+			world_position_y = (world_float)y;
+			world_position_z = (world_float)z;
 			SetDirty();
 		}
-		double GetWorldPositionX() const { return world_position_x; }
-		double GetWorldPositionY() const { return world_position_y; }
-		double GetWorldPositionZ() const { return world_position_z; }
-		// -------------------------------------------------
+		void SetWorldPosition(const RenderOrigin& position) { SetWorldPosition(position.x, position.y, position.z); }
+		double GetWorldPositionX() const { return (double)world_position_x; }
+		double GetWorldPositionY() const { return (double)world_position_y; }
+		double GetWorldPositionZ() const { return (double)world_position_z; }
+		// The camera's absolute position packaged as a render origin, ready to hand to
+		// wi::scene::SetRenderOrigin before a transform update.
+		RenderOrigin GetWorldPosition() const
+		{
+			return RenderOrigin{ (double)world_position_x, (double)world_position_y, (double)world_position_z };
+		}
+		// ---------------------------------------------------------
 		
 		inline XMMATRIX GetView() const { return XMLoadFloat4x4(&View); }
 		inline XMMATRIX GetInvView() const { return XMLoadFloat4x4(&InvView); }

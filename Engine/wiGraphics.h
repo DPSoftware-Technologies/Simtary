@@ -457,6 +457,10 @@ namespace wi::graphics
 		VIDEO_DECODE_H265 = 1 << 21,
 		R9G9B9E5_SHAREDEXP_RENDERABLE = 1 << 22, // indicates supporting R9G9B9E5_SHAREDEXP format for rendering to
 		COPY_BETWEEN_DIFFERENT_IMAGE_ASPECTS_NOT_SUPPORTED = 1 << 23, // indicates that CopyTexture src and dst ImageAspect must match
+		GEOMETRY_SHADER = 1 << 24,			// SIMTARY: absent on most mobile GPUs (Adreno never exposes it). Only the voxel GI passes need it.
+		TEXTURE_COMPRESSION_BC = 1 << 25,	// SIMTARY: BC1-BC7. Desktop-only in practice; mobile ships ASTC/ETC2 instead.
+		TEXTURE_COMPRESSION_ASTC = 1 << 26,	// SIMTARY: the mobile counterpart to BC.
+		TEXTURE_COMPRESSION_ETC2 = 1 << 27,	// SIMTARY: baseline compressed format on every Vulkan-capable Android GPU.
 		
 		// Compat:
 		GENERIC_SPARSE_TILE_POOL = ALIASING_GENERIC,

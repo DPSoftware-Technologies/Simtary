@@ -118,6 +118,34 @@ namespace wi::helper
 
 	void DirectoryCreate(const std::string& path);
 
+	// --- SIMTARY EXTENSION: read-only asset source override ---
+	//
+	// Everything the engine loads at runtime goes through FileRead and FileExists, which
+	// read the local filesystem. That holds on desktop and stops holding the moment the
+	// assets are not files: on Android they live compressed inside the APK and are only
+	// reachable through AAssetManager, and a console package is its own container again.
+	//
+	// Installing an override redirects both functions. Return false from either callback
+	// to decline a path and let the normal filesystem handling take it, which is what
+	// makes a mixed setup work - read-only assets from the package, save data and shader
+	// cache from real files on disk.
+	//
+	// file_read hands back a buffer the engine immediately copies out of and then releases
+	// through file_free, so the callback can point straight at a memory-mapped asset
+	// instead of allocating. Install it before wi::initializer runs, and expect it to be
+	// called from many loading threads at once.
+	struct AssetSourceOverride
+	{
+		bool (*file_read)(const std::string& fileName, const uint8_t** out_data, size_t* out_size, void* userdata) = nullptr;
+		void (*file_free)(const uint8_t* data, void* userdata) = nullptr;
+		bool (*file_exists)(const std::string& fileName, void* userdata) = nullptr;
+		void* userdata = nullptr;
+	};
+
+	void SetAssetSourceOverride(const AssetSourceOverride& source);
+	const AssetSourceOverride& GetAssetSourceOverride();
+	// ----------------------------------------------------------
+
 	// Returns the file size if the file exists, otherwise 0
 	size_t FileSize(const std::string& fileName);
 
