@@ -2385,16 +2385,47 @@ using namespace vulkan_internal;
 			// This fills the properties and features again of the finally selected graphics card:
 			checkPhysicalDeviceAndFillPropertiesFeatures(physicalDevice);
 
+			// SIMTARY: these were hard asserts, which is fine while every target is a desktop
+			// GPU and fatal the moment one is not. Split into two groups.
+			//
+			// Load-bearing: the renderer has no path that works without them, so a device
+			// missing one is genuinely unusable and the assert stays.
 			assert(properties2.properties.limits.timestampComputeAndGraphics == VK_TRUE);
-
 			assert(features2.features.imageCubeArray == VK_TRUE);
 			assert(features2.features.independentBlend == VK_TRUE);
-			assert(features2.features.geometryShader == VK_TRUE);
 			assert(features2.features.samplerAnisotropy == VK_TRUE);
-			assert(features2.features.shaderClipDistance == VK_TRUE);
-			assert(features2.features.textureCompressionBC == VK_TRUE);
 			assert(features2.features.occlusionQueryPrecise == VK_TRUE);
 			assert(features_1_3.dynamicRendering == VK_TRUE);
+
+			// Optional: reported as capabilities so callers can branch instead of crashing.
+			// Every one of these is routinely absent on mobile GPUs, which is the whole reason
+			// they are not asserts any more:
+			//
+			//   geometryShader        Adreno does not expose it at all. Only the voxel GI
+			//                         passes use it, and they have a non-GS path already.
+			//   textureCompressionBC  BC1-BC7. Mobile ships ASTC and ETC2 instead, so texture
+			//                         assets have to be re-encoded per target.
+			//   shaderClipDistance    patchy across mobile vendors.
+			if (features2.features.geometryShader == VK_TRUE)
+			{
+				capabilities |= GraphicsDeviceCapability::GEOMETRY_SHADER;
+			}
+			if (features2.features.textureCompressionBC == VK_TRUE)
+			{
+				capabilities |= GraphicsDeviceCapability::TEXTURE_COMPRESSION_BC;
+			}
+			if (features2.features.textureCompressionASTC_LDR == VK_TRUE)
+			{
+				capabilities |= GraphicsDeviceCapability::TEXTURE_COMPRESSION_ASTC;
+			}
+			if (features2.features.textureCompressionETC2 == VK_TRUE)
+			{
+				capabilities |= GraphicsDeviceCapability::TEXTURE_COMPRESSION_ETC2;
+			}
+			if (features2.features.shaderClipDistance != VK_TRUE)
+			{
+				wilog_warning("Vulkan: shaderClipDistance is not supported by this device.");
+			}
 
 			// Init adapter properties
 			vendorId = properties2.properties.vendorID;

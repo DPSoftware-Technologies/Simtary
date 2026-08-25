@@ -1358,6 +1358,17 @@ using namespace metal_internal;
 		capabilities |= GraphicsDeviceCapability::STENCIL_RESOLVE_MIN_MAX;
 		capabilities |= GraphicsDeviceCapability::MESH_SHADER;
 		capabilities |= GraphicsDeviceCapability::COPY_BETWEEN_DIFFERENT_IMAGE_ASPECTS_NOT_SUPPORTED;
+		// SIMTARY: Metal has no geometry shader stage at all, so GEOMETRY_SHADER is left
+		// unset here. BC is Mac-only; Apple silicon GPUs (and every iOS device) expose
+		// ASTC instead.
+		if (device->supportsFamily(MTL::GPUFamilyMac2))
+		{
+			capabilities |= GraphicsDeviceCapability::TEXTURE_COMPRESSION_BC;
+		}
+		if (device->supportsFamily(MTL::GPUFamilyApple2))
+		{
+			capabilities |= GraphicsDeviceCapability::TEXTURE_COMPRESSION_ASTC;
+		}
 		
 		if (device->hasUnifiedMemory())
 		{

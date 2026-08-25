@@ -5,9 +5,16 @@
 
 // If enabled, geometry shader will be used to voxelize, and axis will be selected by geometry shader
 //	If disabled, vertex shader with instance replication will be used for each axis
-#if !defined(__APPLE__) && !defined(__metal__)
+//
+// SIMTARY: this header is compiled twice, once as C++ and once as HLSL, and the two must
+// agree or the voxelize pass binds a pipeline the shaders were not built for. __APPLE__
+// and __ANDROID__ only exist on the C++ side, so a GS-less shader build has to be told
+// explicitly: pass SIMTARY_NO_GEOMETRY_SHADER to the shader compiler (ShaderCompilerInput
+// carries a defines list for exactly this) whenever the target GPU has no geometry shader
+// stage. Adreno never exposes one, so an Android build always wants it.
+#if !defined(__APPLE__) && !defined(__metal__) && !defined(__ANDROID__) && !defined(SIMTARY_NO_GEOMETRY_SHADER)
 #define VOXELIZATION_GEOMETRY_SHADER_ENABLED
-#endif // !defined(__APPLE__) && !defined(__metal__)
+#endif // no geometry shader stage
 
 // If enabled, conservative rasterization will be used to voxelize
 //	This can more accurately voxelize thin geometry, but slower

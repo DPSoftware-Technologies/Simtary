@@ -12,7 +12,11 @@ if(DEFINED SIMTARY_PLATFORM_ARCH)
     return()
 endif()
 
-if(WIN32)
+# Android must be tested before UNIX: the NDK toolchain sets both, and tagging an APK
+# build "linux_arm64" would have it share a build tree with a desktop ARM Linux build.
+if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "Android")
+    set(_st_os android)
+elseif(WIN32)
     set(_st_os win)
 elseif(APPLE)
     set(_st_os macos)
@@ -25,7 +29,9 @@ endif()
 # Prefer the target architecture the toolchain actually emits. On MSVC multi-config
 # generators CMAKE_SIZEOF_VOID_P is only known after the compiler test, which has
 # already run by the time any project() call includes this.
-if(CMAKE_GENERATOR_PLATFORM)
+if(CMAKE_ANDROID_ARCH_ABI)
+    string(TOLOWER "${CMAKE_ANDROID_ARCH_ABI}" _st_arch_raw)
+elseif(CMAKE_GENERATOR_PLATFORM)
     string(TOLOWER "${CMAKE_GENERATOR_PLATFORM}" _st_arch_raw)
 elseif(CMAKE_OSX_ARCHITECTURES)
     string(TOLOWER "${CMAKE_OSX_ARCHITECTURES}" _st_arch_raw)
@@ -35,8 +41,10 @@ endif()
 
 if(_st_arch_raw MATCHES "^(x64|amd64|x86_64|x86-64)$")
     set(_st_arch x86-64)
-elseif(_st_arch_raw MATCHES "^(arm64|aarch64)$")
+elseif(_st_arch_raw MATCHES "^(arm64|aarch64|arm64-v8a)$")
     set(_st_arch arm64)
+elseif(_st_arch_raw STREQUAL "armeabi-v7a")
+    set(_st_arch arm32)
 elseif(_st_arch_raw MATCHES "^(x86|win32|i.86)$")
     set(_st_arch x86)
 elseif(_st_arch_raw STREQUAL "")

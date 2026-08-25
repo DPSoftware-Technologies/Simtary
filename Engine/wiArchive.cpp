@@ -15,7 +15,9 @@
 namespace wi
 {
 	// this should always be only INCREMENTED and only if a new serialization is implemeted somewhere!
-	static constexpr uint64_t __archiveVersion = 93;
+	// SIMTARY: 94 adds TransformComponent's absolute large-world position (3 doubles).
+	// Watch this line when merging upstream Wicked - both sides increment it.
+	static constexpr uint64_t __archiveVersion = 94;
 	// this is the version number of which below the archive is not compatible with the current version
 	static constexpr uint64_t __archiveVersionBarrier = 22;
 

@@ -240,6 +240,22 @@ endif()
 
 target_compile_definitions(Simtary_common PUBLIC WICKED_CMAKE_BUILD)
 
+# Declared by the workspace CMakeLists normally; repeated here so the engine repo still
+# defaults to large-world when it is configured on its own.
+if (NOT DEFINED SIMTARY_LARGE_WORLD)
+    option(SIMTARY_LARGE_WORLD "Store absolute world positions in 64-bit precision" ON)
+endif()
+
+# World position precision. PUBLIC so game code compiled against the engine agrees with
+# it on the size and layout of TransformComponent - getting this out of sync is an ODR
+# violation that shows up as garbled positions, not a link error.
+if (SIMTARY_LARGE_WORLD)
+    target_compile_definitions(Simtary_common PUBLIC SIMTARY_WORLD_FLOAT64=1)
+    message(STATUS "Simtary: world positions are 64-bit (SIMTARY_LARGE_WORLD=ON)")
+else()
+    message(STATUS "Simtary: world positions are 32-bit (SIMTARY_LARGE_WORLD=OFF)")
+endif()
+
 
 if (WIN32)
     target_compile_definitions(Simtary_common PUBLIC

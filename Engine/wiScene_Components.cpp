@@ -32,7 +32,38 @@ using namespace wi::primitive;
 
 namespace wi::scene
 {
+	// --- SIMTARY EXTENSION: render origin ---
+	// The point in absolute world space that float (0,0,0) currently stands for. Root
+	// transforms are rebased around it so the floats the renderer works with stay small
+	// however far the world extends. Written once per frame before the transform update
+	// system runs, read by many jobs during it; never write it while an update is in
+	// flight and no synchronisation is needed.
+	static RenderOrigin g_render_origin;
+	static bool g_render_origin_follows_camera = false;
 
+	void SetRenderOrigin(double x, double y, double z)
+	{
+		g_render_origin.x = x;
+		g_render_origin.y = y;
+		g_render_origin.z = z;
+	}
+	void SetRenderOrigin(const RenderOrigin& origin)
+	{
+		g_render_origin = origin;
+	}
+	const RenderOrigin& GetRenderOrigin()
+	{
+		return g_render_origin;
+	}
+	void SetRenderOriginFollowsCamera(bool value)
+	{
+		g_render_origin_follows_camera = value;
+	}
+	bool GetRenderOriginFollowsCamera()
+	{
+		return g_render_origin_follows_camera;
+	}
+	// ----------------------------------------
 
 	XMFLOAT3 TransformComponent::GetPosition() const
 	{
@@ -111,33 +142,45 @@ namespace wi::scene
 		XMStoreFloat4(&rotation, R);
 		XMStoreFloat3(&scale, S);
 	}
-	void TransformComponent::UpdateTransform(const double camera_x, const double camera_y, const double camera_z)
+	void TransformComponent::UpdateTransform()
 	{
 		if (IsDirty())
 		{
 			SetDirty(false);
 
-			// --- SIMTARY EXTENSION: Calculate origin-shifted position ---
-			// For testing, we use camera origin parameters.
-			// Later, you can grab your active camera's double position here!
-
-			translation_local.x = static_cast<float>(world_translation_x - camera_x);
-			translation_local.y = static_cast<float>(world_translation_y - camera_y);
-			translation_local.z = static_cast<float>(world_translation_z - camera_z);
-			// -------------------------------------------------------------
+			// --- SIMTARY EXTENSION: origin-shifted position ---
+			// Only for transforms that actually carry a large-world position. Everything
+			// else keeps translation_local as its truth, exactly as stock Wicked does.
+			if (IsLargeWorld())
+			{
+				RebaseToOrigin(g_render_origin);
+			}
+			// --------------------------------------------------
 
 			XMStoreFloat4x4(&world, GetLocalMatrix());
 		}
 	}
 
-	void TransformComponent::UpdateTransform_Parented(const TransformComponent& parent, const double camera_x, const double camera_y, const double camera_z)
+	void TransformComponent::UpdateTransform(double origin_x, double origin_y, double origin_z)
 	{
-		// --- SIMTARY EXTENSION: Calculate origin-shifted position ---
-		translation_local.x = static_cast<float>(world_translation_x - camera_x);
-		translation_local.y = static_cast<float>(world_translation_y - camera_y);
-		translation_local.z = static_cast<float>(world_translation_z - camera_z);
-		// -------------------------------------------------------------
+		if (IsDirty())
+		{
+			SetDirty(false);
 
+			if (IsLargeWorld())
+			{
+				RebaseToOrigin(RenderOrigin{ origin_x, origin_y, origin_z });
+			}
+
+			XMStoreFloat4x4(&world, GetLocalMatrix());
+		}
+	}
+
+	void TransformComponent::UpdateTransform_Parented(const TransformComponent& parent)
+	{
+		// No rebasing here on purpose. translation_local is this transform's offset from
+		// its parent, and the parent's world matrix has already been rebased, so applying
+		// the origin a second time would shift every child twice.
 		XMMATRIX W = GetLocalMatrix();
 		XMMATRIX W_parent = XMLoadFloat4x4(&parent.world);
 		W = W * W_parent;
@@ -153,6 +196,13 @@ namespace wi::scene
 		XMStoreFloat3(&scale_local, S);
 		XMStoreFloat4(&rotation_local, R);
 		XMStoreFloat3(&translation_local, T);
+		// The decomposed translation is origin-relative, so put the origin back to recover
+		// the absolute position. Without this the next UpdateTransform would rebase from a
+		// stale absolute and undo the change.
+		if (IsLargeWorld())
+		{
+			SyncWorldFromLocal(g_render_origin);
+		}
 	}
 	void TransformComponent::ClearTransform()
 	{
@@ -160,6 +210,10 @@ namespace wi::scene
 		scale_local = XMFLOAT3(1, 1, 1);
 		rotation_local = XMFLOAT4(0, 0, 0, 1);
 		translation_local = XMFLOAT3(0, 0, 0);
+		world_translation_x = 0;
+		world_translation_y = 0;
+		world_translation_z = 0;
+		SetLargeWorld(false);
 	}
 	void TransformComponent::Translate(const XMFLOAT3& value)
 	{
@@ -167,6 +221,15 @@ namespace wi::scene
 		translation_local.x += value.x;
 		translation_local.y += value.y;
 		translation_local.z += value.z;
+		// Accumulate in world space directly rather than round-tripping through the
+		// origin: a large-world position keeps its precision that way. Transforms that
+		// never took a large-world position stay on translation_local alone.
+		if (IsLargeWorld())
+		{
+			world_translation_x += (world_float)value.x;
+			world_translation_y += (world_float)value.y;
+			world_translation_z += (world_float)value.z;
+		}
 	}
 	void TransformComponent::Translate(const XMVECTOR& value)
 	{
@@ -240,6 +303,10 @@ namespace wi::scene
 		XMStoreFloat3(&scale_local, S);
 		XMStoreFloat4(&rotation_local, R);
 		XMStoreFloat3(&translation_local, T);
+		if (IsLargeWorld())
+		{
+			SyncWorldFromLocal(g_render_origin);
+		}
 	}
 	void TransformComponent::Lerp(const TransformComponent& a, const TransformComponent& b, float t)
 	{
@@ -258,6 +325,10 @@ namespace wi::scene
 		XMStoreFloat3(&scale_local, S);
 		XMStoreFloat4(&rotation_local, R);
 		XMStoreFloat3(&translation_local, T);
+		if (IsLargeWorld())
+		{
+			SyncWorldFromLocal(g_render_origin);
+		}
 	}
 	void TransformComponent::CatmullRom(const TransformComponent& a, const TransformComponent& b, const TransformComponent& c, const TransformComponent& d, float t)
 	{
@@ -294,6 +365,10 @@ namespace wi::scene
 		XMStoreFloat3(&translation_local, T);
 		XMStoreFloat4(&rotation_local, R);
 		XMStoreFloat3(&scale_local, S);
+		if (IsLargeWorld())
+		{
+			SyncWorldFromLocal(g_render_origin);
+		}
 	}
 
 	void MaterialComponent::WriteShaderMaterial(ShaderMaterial* dest) const

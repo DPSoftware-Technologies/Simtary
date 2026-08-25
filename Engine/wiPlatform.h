@@ -31,6 +31,16 @@
 #endif // TARGET_OS_OSX
 #include "wiAppleHelper.h"
 #include <cstdlib>
+#elif defined(__ANDROID__)
+// SIMTARY: Android is Linux, so PLATFORM_LINUX stays defined and every POSIX path in the
+// engine keeps compiling. PLATFORM_ANDROID is the extra tag for the parts where it is not
+// just Linux: no X11 or Wayland surface, assets live inside the APK behind AAssetManager,
+// the activity owns the window and can destroy the render surface at any time, and there
+// is no second process to run the crash reporter in. Anything currently reached only
+// through #ifdef PLATFORM_LINUX should be read as "desktop Linux" until audited - the
+// list of what still needs auditing is in Simtary/PORTING-ANDROID.md.
+#define PLATFORM_ANDROID
+#define PLATFORM_LINUX
 #else
 #define PLATFORM_LINUX
 #endif // _WIN32

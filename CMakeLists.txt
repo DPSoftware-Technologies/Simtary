@@ -45,6 +45,14 @@ set(SIMTARY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}" CACHE INTERNAL "Simtary engine ro
 list(APPEND CMAKE_MODULE_PATH "${SIMTARY_ROOT}/cmake")
 include(SimtaryPlatform)
 
+# Absolute entity positions in double instead of float. ON gives a 100x100 km world
+# sub-micrometre precision at its far corner, at the cost of 12 bytes per
+# TransformComponent and one double subtract per transform update. Turn it OFF for
+# small-world projects, and on targets where fp64 is emulated or rate-limited - mobile
+# GPUs and CPUs above all. Scene files stay compatible either way: the absolute position
+# is always double on disk. See Engine/stWorldScalar.h.
+option(SIMTARY_LARGE_WORLD "Store absolute world positions in 64-bit precision" ON)
+
 option(WICKED_DYNAMIC_LIBRARY "Build the engine as a dynamic library" OFF)
 option(WICKED_PIC "Build the engine as position-independent code" WICKED_DYNAMIC_LIBRARY)
 option(USE_LIBCXX "Link the engine to llvm libc++ library - only available with the Clang compiler" OFF)

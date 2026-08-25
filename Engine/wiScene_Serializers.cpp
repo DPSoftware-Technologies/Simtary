@@ -48,17 +48,31 @@ namespace wi::scene
 			archive >> rotation_local;
 			archive >> translation_local;
 
-			// SIMTARY: world_translation (the 64-bit large-world position) is not
-			// serialized, so it defaults to 0. UpdateTransform() derives
-			// translation_local from (world_translation - camera), which would zero
-			// out the authored local offset of every loaded transform — collapsing
-			// child parts (wheels, etc.) onto their parent origin. Seed the double
-			// position from the authored local translation so the round-trip is
-			// non-destructive. Entities explicitly placed via SetWorldPosition still
-			// override this afterwards.
-			world_translation_x = translation_local.x;
-			world_translation_y = translation_local.y;
-			world_translation_z = translation_local.z;
+			// SIMTARY: absolute large-world position.
+			//
+			// Archives from before version 94 have no absolute position in them, so seed it
+			// from the authored local translation: those files were written with the render
+			// origin at zero, which makes the two the same number. Entities placed through
+			// SetWorldPosition still override it afterwards.
+			//
+			// Always stored as double on disk regardless of the SIMTARY_WORLD_FLOAT64
+			// setting, so a scene saved by a large-world build stays loadable by a float
+			// build and vice versa - only the in-memory precision changes with the switch.
+			if (archive.GetVersion() >= 94)
+			{
+				double wx = 0, wy = 0, wz = 0;
+				archive >> wx;
+				archive >> wy;
+				archive >> wz;
+				SetWorldPosition(wx, wy, wz);
+			}
+			else
+			{
+				world_translation_x = (world_float)translation_local.x;
+				world_translation_y = (world_float)translation_local.y;
+				world_translation_z = (world_float)translation_local.z;
+				SetLargeWorld();
+			}
 
 			SetDirty();
 			UpdateTransform();
@@ -69,6 +83,9 @@ namespace wi::scene
 			archive << scale_local;
 			archive << rotation_local;
 			archive << translation_local;
+			archive << (double)world_translation_x;
+			archive << (double)world_translation_y;
+			archive << (double)world_translation_z;
 		}
 	}
 	void HierarchyComponent::Serialize(wi::Archive& archive, EntitySerializer& seri)

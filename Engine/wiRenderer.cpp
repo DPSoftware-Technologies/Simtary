@@ -1750,7 +1750,14 @@ void LoadShaders()
 		case DEBUGRENDERING_VOXEL:
 			desc.vs = &shaders[VSTYPE_VOXEL];
 			desc.ps = &shaders[PSTYPE_VOXEL];
-			desc.gs = &shaders[GSTYPE_VOXEL];
+			// SIMTARY: the voxel debug view expands each point into a cube in a geometry
+			// shader. Devices without that stage - Metal, and most mobile GPUs - still get
+			// a valid PSO here and simply draw the points unexpanded, which beats failing
+			// pipeline creation over a debug visualiser.
+			if (device->CheckCapability(GraphicsDeviceCapability::GEOMETRY_SHADER))
+			{
+				desc.gs = &shaders[GSTYPE_VOXEL];
+			}
 			desc.dss = &depthStencils[DSSTYPE_DEFAULT];
 			desc.rs = &rasterizers[RSTYPE_BACK];
 			desc.bs = &blendStates[BSTYPE_OPAQUE];
