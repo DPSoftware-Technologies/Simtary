@@ -25,6 +25,8 @@
 
 #include "wiInput.h"   // wi::input::BUTTON / GAMEPAD_ANALOG + DirectXMath (XMFLOAT2)
 
+struct SDL_Window; // only ever held as a pointer here; SDL.h stays out of this header
+
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -82,6 +84,57 @@ public:
 	bool     IsMouseCaptured() const { return mouseCaptured_; }
 	XMFLOAT2 MouseDelta() const { return mouseDelta_; } // pixels since last frame (0 when not captured)
 
+	// Developer-tooling override, for a UI that drives a camera with the mouse (the
+	//	editor's free camera — Framework/devui/imeditor.h). While it is on:
+	//	  - SDL relative-mouse mode is on, so the cursor is hidden and the pointer cannot
+	//	    run off the window or hit a screen edge mid-drag;
+	//	  - MouseDelta() keeps reporting motion, which is what the tool reads;
+	//	  - every keyboard and mouse SOURCE stays gated, so the game does not also walk
+	//	    forward while the editor is flying;
+	//	  - SetMouseCaptured() from game code is remembered but not applied, so a scene's
+	//	    own fly camera cannot yank the cursor back mid-look. It is applied on release.
+	void SetUIMouseLook(bool on);
+	bool IsUIMouseLook() const { return uiMouseLook_; }
+
+	// Confine the cursor to the window without hiding it (SDL window mouse-grab). This is
+	//	the other half of the editor's drag handling: a gizmo drag is an ordinary visible-
+	//	cursor drag, and without a grab the pointer walks off onto another monitor or app
+	//	while the drag is still live. Unlike SetUIMouseLook it does not gate game input.
+	void SetUIMouseConfined(bool on);
+	bool IsUIMouseConfined() const { return uiMouseConfined_; }
+
+	// ── developer tooling owns input ────────────────────────────────────────
+	// Hard gate for Editor mode: while this is on, the GAME receives no keyboard or mouse
+	//	input at all, whether it reads through this class or straight from wi::input.
+	//
+	//	The ImGui WantCapture* flags are not enough on their own. A focused panel does not
+	//	set WantCaptureKeyboard - ImGui only raises that for text fields and nav - so typing
+	//	WASD into the editor viewport still reached the game's fly camera. This flag is the
+	//	missing piece: st::Run consults it before handing an SDL event to
+	//	wi::input::sdlinput::ProcessEvent, so the event never enters the engine's input state.
+	//
+	//	Gamepad is gated for actions read through this class, but gamepad SDL events are
+	//	still forwarded: an axis has no "released" event, so dropping them would freeze a
+	//	stick at whatever value it last held.
+	void SetUIInputCapture(bool on);
+	bool IsUIInputCaptured() const { return uiInputCaptured_; }
+
+	// The other direction, and the one that is easy to miss: hand input BACK to the game
+	//	even though ImGui says it owns it.
+	//
+	//	Editor mode's Game Viewport is itself an ImGui window. Hovering it raises
+	//	WantCaptureMouse, and clicking in it gives ImGui an ActiveId which raises
+	//	WantCaptureKeyboard - so the panel whose entire job is to play the game was the thing
+	//	suppressing the game's input. While this is set, the WantCapture* gating is bypassed
+	//	and the flags are forced low, so components reading through this class AND game code
+	//	reading wi::input behind a WantCapture* check both work normally.
+	//
+	//	keyboard : the Game Viewport is the focused panel (and no text field is live)
+	//	mouse    : the pointer is actually over the Game Viewport image, so clicking the
+	//	           Hierarchy does not also shoot in the game
+	//	UI input capture always wins over this.
+	void SetGameViewportInput(bool keyboard, bool mouse);
+
 private:
 	InputSystem() = default;
 
@@ -99,6 +152,13 @@ private:
 	bool     relativeActive_ = false; // mirrors SDL_SetRelativeMouseMode
 	bool     keyboardSuspended_ = false; // ImGui owns keyboard / window unfocused
 	bool     mouseSuspended_    = false; // ImGui owns mouse
+	bool     uiMouseLook_       = false; // developer tooling is driving a camera (see SetUIMouseLook)
+	bool     gameCaptureWanted_ = false; // what game code asked for while uiMouseLook_ was on
+	bool     uiMouseConfined_   = false; // cursor grabbed to the window (see SetUIMouseConfined)
+	bool     uiInputCaptured_   = false; // developer tooling owns input (see SetUIInputCapture)
+	bool     gameViewKeyboard_  = false; // game viewport owns the keyboard (see SetGameViewportInput)
+	bool     gameViewMouse_     = false; // game viewport owns the mouse
+	SDL_Window* grabbedWindow_  = nullptr; // the window the grab was applied to, to release the same one
 };
 
 } // namespace st

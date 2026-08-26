@@ -15,6 +15,8 @@ void st::App::DevUIMenuBar() {
         }
 
         if (ImGui::BeginMenu("Simtary")) {
+            editor_.MenuItems();
+            ImGui::Separator();
             if (ImGui::BeginMenu("Window")) {
                 ImGui::MenuItem("Scene Manager", NULL, &showSceneManager);
                 ImGui::MenuItem("Hierarchy", NULL, &showHierarchy);
@@ -218,7 +220,16 @@ void st::App::DevUIAbout(bool *show) {
 }
 
 void st::App::DevUIRender() {
+    // F2 toggles editor mode. Read before the menu bar so the flag is settled for the
+    // whole frame; gated on DevUI being visible, so a shipped build never sees it.
+    if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_F2, false))
+        editor_.Toggle();
+
     DevUIMenuBar();
+
+    // Editor mode owns the screen: the dock host plus its own Hierarchy/Properties. The
+    // floating DevUI panels below still work and dock into it like any other window.
+    editor_.Draw(*this, renderPath, selectedEntity_);
 
     if (showBackLog) backlogViewer.render(&showBackLog);
     if (showImguiDemo) ImGui::ShowDemoWindow(&showImguiDemo);

@@ -168,6 +168,27 @@ namespace wi::scene
 	// Look up a registration by the metadata name (returns nullptr if not registered).
 	const NativeComponentRegistration* FindNativeComponentRegistration(const std::string& name);
 
+	// Every component name currently registered through ST_REGISTER_NATIVE_COMPONENT(_AS),
+	//	sorted alphabetically. This is what an editor's "Add Component" list is built from:
+	//	the registry is populated by static initializers, so by the time any frame runs it
+	//	holds every native component the engine AND the game linked in.
+	void GetRegisteredNativeComponentNames(wi::vector<std::string>& out);
+
+	// ------------------------------------------------------------------
+	// Editor-side attach / detach.
+	//	Both work purely on the entity's MetadataComponent — the same NCI_/NCA_/NCE_ keys the
+	//	system already reconciles in NativeComponentManager::RunUpdate — so a change takes
+	//	effect on the next frame, needs no engine restart, and is saved with the scene.
+	//
+	//	AttachNativeComponent : writes NCI_<LocalID> = name using the lowest free LocalID on
+	//	                        the entity (creating a MetadataComponent if it has none).
+	//	                        Returns the LocalID, or -1 if `name` is not registered.
+	//	DetachNativeComponent : erases NCI_<LocalID>, NCE_<LocalID> and every
+	//	                        NCA_<LocalID>_* argument. The instance's OnDisable()/Destroy()
+	//	                        run on the next RunUpdate, not inside this call.
+	int  AttachNativeComponent(Scene& scene, wi::ecs::Entity entity, const std::string& name);
+	void DetachNativeComponent(Scene& scene, wi::ecs::Entity entity, int localID);
+
 	// ------------------------------------------------------------------
 	// Stable entity references (GUID-based).
 	//	Engine entity IDs are session-local and names are mutable / non-unique, so neither is a

@@ -97,6 +97,16 @@ void st::App::ImguiInit(SDL_Window *window) {
     io.BackendRendererName = "Simtary";
     io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
 
+    // Docking: what Editor mode's layout is built on (devui/imeditor.h), and what lets any
+    // DevUI panel be dragged into a tab group. libs/ImGui is pinned to the v1.91.9b-docking
+    // tag for exactly this — same ImGui version as the master tag, plus the docking branch.
+    //
+    // Multi-viewport (ImGuiConfigFlags_ViewportsEnable) is deliberately NOT enabled: it
+    // needs the RENDERER backend to create a swapchain per platform window, and the backend
+    // here is hand-rolled on the engine's graphics device (ImguiCompose below draws exactly
+    // one viewport's draw data into the main swapchain).
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
     // theme
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec4* colors = style.Colors;

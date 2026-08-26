@@ -26,6 +26,11 @@ void st::App::SetDevUIVisible(bool visible) {
     // DevUIMode::Disabled is a build decision, not a runtime one: a shipped game
     // cannot be talked into opening the tooling.
     devUIVisible_ = visible && Config().devUI != DevUIMode::Disabled;
+
+    // Hiding the DevUI stops EditorUI::Draw from running, and with it the per-frame
+    // reconcile that decides who owns the mouse and keyboard. Hand both back explicitly,
+    // or the game stays input-dead behind an editor nobody can see.
+    if (!devUIVisible_) editor_.ReleaseInput();
 }
 
 void st::App::SetLoadingStatus(std::string status, int percent) {
@@ -146,6 +151,7 @@ void st::App::Initialize() {
 }
 
 void st::App::Update(float dt) {
+    lastDt_ = dt;
     if (isStop) {
         isStop = false;
         SDL_Event quitEvent;
@@ -236,10 +242,26 @@ void st::App::FixedUpdate() {
 
 void st::App::Render() {
     wi::Application::Render();
+
+    // The editor's second viewport has its own RenderPath3D and its own camera. The
+    // engine only ever renders wi::Application::activePath, so it is stepped by hand
+    // here — after the game path, against the scene both of them share.
+    editor_.RenderEditorView(lastDt_);
+    editor_.RenderCameraViews(lastDt_);
+
     OnRender();
 }
 
 void st::App::Compose(wi::graphics::CommandList cmd) {
+    // Editor mode draws the 3D through ImGui (each viewport panel samples its path's
+    // render target), so the full-screen compose is skipped entirely: the dock host
+    // covers the whole window anyway, and blitting under it would only cost a pass and
+    // make the game's aspect ratio visible behind the panels for a frame after a resize.
+    if (editor_.IsEnabled()) {
+        ImguiCompose(cmd);
+        return;
+    }
+
     // Under everything: a backdrop drawn before the engine composes the frame.
     OnPreCompose(cmd);
 
@@ -256,6 +278,9 @@ void st::App::Compose(wi::graphics::CommandList cmd) {
 
 void st::App::Exit() {
     OnExit();
+
+    // Frees the editor's render path (and waits for the GPU) before the device goes away.
+    editor_.Shutdown();
 
     // Persist current graphics + any option edits on the way out, so quitting without
     // pressing Apply still keeps the live settings.

@@ -23,6 +23,8 @@ namespace {
 }
 
 bool InputSystem::gated(const InputBinding& b) const {
+	if (uiInputCaptured_)
+		return true;                        // Editor mode: nothing reaches the game, gamepad included
 	if (b.IsAnalog())
 		return false;                       // gamepad analog: never gated
 	if (wi::input::IsGamepadButton(b.button))
@@ -82,12 +84,50 @@ void InputSystem::Update(float /*dt*/) {
 	//	required so we don't read keys while another OS window is active.
 	const ImGuiIO& io = ImGui::GetIO();
 	const bool unfocused = (SDL_GetKeyboardFocus() == nullptr);
-	keyboardSuspended_ = unfocused || (!mouseCaptured_ && io.WantCaptureKeyboard);
-	mouseSuspended_    = !mouseCaptured_ && io.WantCaptureMouse;
+	//	uiMouseLook_ is the developer-tooling override: the editor's free camera is flying,
+	//	so nothing reaches the game at all until the look ends.
+	//	Three-way ownership, in priority order:
+	//	  1. developer tooling (Editor mode outside the Game Viewport, or a freecam look)
+	//	  2. the Game Viewport, which bypasses the WantCapture* gating entirely
+	//	  3. nobody in particular - the original WantCapture* behaviour
+	const bool toolingOwns = uiMouseLook_ || uiInputCaptured_;
+	const bool kbToGame    = gameViewKeyboard_ && !toolingOwns && !io.WantTextInput;
+	const bool mouseToGame = gameViewMouse_ && !toolingOwns;
+
+	keyboardSuspended_ = unfocused || toolingOwns ||
+		(!kbToGame && !mouseCaptured_ && io.WantCaptureKeyboard);
+	mouseSuspended_    = toolingOwns ||
+		(!mouseToGame && !mouseCaptured_ && io.WantCaptureMouse);
+
+	// While developer tooling owns input, also raise ImGui's own capture flags. This is the
+	//	only gate that reaches EVERY reader:
+	//
+	//	  - on Windows wi::input takes the keyboard from Raw Input and the mouse from
+	//	    GetCursorPos/VK_LBUTTON, neither of which passes through the SDL event queue, so
+	//	    filtering events in st::Run cannot suppress them;
+	//	  - game code is already written against WantCapture* (that is the documented contract
+	//	    for "the UI has the keyboard"), so raising it makes an existing fly camera or
+	//	    native component back off with no change on the game's side.
+	//
+	//	SetNextFrame* applies from the following frame, and this runs every frame the capture
+	//	is held, so the flags stay raised for as long as it lasts and are released with it.
+	if (toolingOwns)
+	{
+		ImGui::SetNextFrameWantCaptureKeyboard(true);
+		ImGui::SetNextFrameWantCaptureMouse(true);
+	}
+	else
+	{
+		// ...and force them LOW when the Game Viewport has input, for the same reason: game
+		// code that checks WantCapture* has to see "the UI does not want this" or it backs
+		// off inside the very panel that is meant to be playing.
+		if (kbToGame)    ImGui::SetNextFrameWantCaptureKeyboard(false);
+		if (mouseToGame) ImGui::SetNextFrameWantCaptureMouse(false);
+	}
 
 	// Relative-mouse delta: only meaningful while captured. SDL accumulates motion
 	// between calls, so reading once per frame here is the single consumer.
-	if (relativeActive_) {
+	if (relativeActive_ || uiMouseLook_) {
 		int dx = 0, dy = 0;
 		SDL_GetRelativeMouseState(&dx, &dy);
 		mouseDelta_ = XMFLOAT2((float)dx, (float)dy);
@@ -98,6 +138,12 @@ void InputSystem::Update(float /*dt*/) {
 
 // ── mouse capture (single owner of SDL relative mode) ────────────────────────
 void InputSystem::SetMouseCaptured(bool captured) {
+	if (uiMouseLook_) {
+		// Developer tooling owns the cursor. Remember what the game wanted so releasing the
+		// override hands it straight back, instead of the scene having to ask again.
+		gameCaptureWanted_ = captured;
+		return;
+	}
 	mouseCaptured_ = captured;
 	if (captured && !relativeActive_) {
 		SDL_SetRelativeMouseMode(SDL_TRUE);
@@ -107,6 +153,63 @@ void InputSystem::SetMouseCaptured(bool captured) {
 		SDL_SetRelativeMouseMode(SDL_FALSE);
 		relativeActive_ = false;
 		mouseDelta_ = XMFLOAT2(0, 0);
+	}
+}
+
+void InputSystem::SetUIMouseLook(bool on) {
+	if (on == uiMouseLook_)
+		return;
+
+	if (on) {
+		gameCaptureWanted_ = mouseCaptured_;
+		uiMouseLook_ = true;
+		if (!relativeActive_) {
+			SDL_SetRelativeMouseMode(SDL_TRUE);
+			SDL_GetRelativeMouseState(nullptr, nullptr); // flush the first-frame jump
+			relativeActive_ = true;
+		}
+		return;
+	}
+
+	// Releasing: restore whatever the game had asked for in the meantime. SDL puts the
+	// cursor back where it was when relative mode started.
+	uiMouseLook_ = false;
+	mouseCaptured_ = gameCaptureWanted_;
+	if (relativeActive_ && !mouseCaptured_) {
+		SDL_SetRelativeMouseMode(SDL_FALSE);
+		relativeActive_ = false;
+		mouseDelta_ = XMFLOAT2(0, 0);
+	}
+}
+
+void InputSystem::SetUIInputCapture(bool on) {
+	uiInputCaptured_ = on;
+}
+
+void InputSystem::SetGameViewportInput(bool keyboard, bool mouse) {
+	gameViewKeyboard_ = keyboard;
+	gameViewMouse_ = mouse;
+}
+
+void InputSystem::SetUIMouseConfined(bool on) {
+	if (on == uiMouseConfined_)
+		return;
+	uiMouseConfined_ = on;
+
+	if (on) {
+		// SDL_GetKeyboardFocus() is the window the user is actually on; the app only ever
+		// has one. If nothing is focused there is nothing to confine to.
+		grabbedWindow_ = SDL_GetKeyboardFocus();
+		if (grabbedWindow_ != nullptr)
+			SDL_SetWindowMouseGrab(grabbedWindow_, SDL_TRUE);
+		return;
+	}
+
+	// Release the SAME window we grabbed: focus may have moved on in the meantime, and SDL
+	// drops the grab by itself on focus loss, so re-releasing a different window is wrong.
+	if (grabbedWindow_ != nullptr) {
+		SDL_SetWindowMouseGrab(grabbedWindow_, SDL_FALSE);
+		grabbedWindow_ = nullptr;
 	}
 }
 
