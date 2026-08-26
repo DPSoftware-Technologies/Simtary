@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <cstdio>
+#include <algorithm>
 
 using namespace wi::ecs;
 
@@ -35,6 +36,16 @@ namespace wi::scene
 		if (it == registry.end())
 			return nullptr;
 		return &it->second;
+	}
+
+	void GetRegisteredNativeComponentNames(wi::vector<std::string>& out)
+	{
+		auto& registry = GetRegistry();
+		out.clear();
+		out.reserve(registry.size());
+		for (auto& kv : registry)
+			out.push_back(kv.first);
+		std::sort(out.begin(), out.end());
 	}
 
 	// ------------------------------------------------------------------
@@ -205,6 +216,64 @@ namespace wi::scene
 		if (m == nullptr)
 			return;
 		m->bool_values.set(EnableKey(this), value);
+	}
+
+	// ------------------------------------------------------------------
+	// Editor-side attach / detach (metadata only; the manager reconciles next frame)
+	// ------------------------------------------------------------------
+	int AttachNativeComponent(Scene& scene, Entity entity, const std::string& name)
+	{
+		if (entity == INVALID_ENTITY || name.empty())
+			return -1;
+		if (FindNativeComponentRegistration(name) == nullptr)
+		{
+			wi::backlog::post("AttachNativeComponent: '" + name + "' is not registered.",
+				wi::backlog::LogLevel::Warning);
+			return -1;
+		}
+
+		MetadataComponent* m = scene.metadatas.GetComponent(entity);
+		if (m == nullptr)
+			m = &scene.metadatas.Create(entity); // attaching implies the entity carries metadata
+
+		// Lowest free LocalID, so stacking N copies of a component gives 0,1,2... and a
+		// detach in the middle is reused by the next attach.
+		int localID = 0;
+		while (m->string_values.has("NCI_" + std::to_string(localID)))
+			++localID;
+
+		m->string_values.set("NCI_" + std::to_string(localID), name);
+		m->bool_values.set("NCE_" + std::to_string(localID), true); // explicit: visible in the editor
+		return localID;
+	}
+
+	void DetachNativeComponent(Scene& scene, Entity entity, int localID)
+	{
+		MetadataComponent* m = scene.metadatas.GetComponent(entity);
+		if (m == nullptr)
+			return;
+
+		const std::string idstr = std::to_string(localID);
+		m->string_values.erase("NCI_" + idstr);
+		m->bool_values.erase("NCE_" + idstr);
+
+		// Every NCA_<localID>_* argument goes with it. Collect first: erase() reorders the
+		// backing vectors, so mutating while iterating them would skip entries.
+		const std::string argPrefix = "NCA_" + idstr + "_";
+		auto sweep = [&argPrefix](auto& values) {
+			wi::vector<std::string> doomed;
+			for (const std::string& key : values.names)
+			{
+				if (key.rfind(argPrefix, 0) == 0)
+					doomed.push_back(key);
+			}
+			for (const std::string& key : doomed)
+				values.erase(key);
+		};
+		sweep(m->bool_values);
+		sweep(m->int_values);
+		sweep(m->float_values);
+		sweep(m->string_values);
 	}
 
 	// ------------------------------------------------------------------

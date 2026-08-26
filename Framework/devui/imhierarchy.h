@@ -18,6 +18,7 @@
 #include <string>
 
 namespace wi::scene { struct Scene; struct NativeComponent; }
+namespace st { class EditorHistory; }
 
 // ImGui drag-drop payload type that Hierarchy rows publish and EntityField accepts.
 //	Payload is a single wi::ecs::Entity. Exposed so other panels can author drop targets too.
@@ -33,14 +34,21 @@ bool EntityField(wi::scene::Scene& scene, const char* label,
 
 // Emit the hierarchy tree into the CURRENT window (no Begin/End). Clicking a row writes
 //	the clicked entity into `selected`.
-void HierarchyGUI(wi::scene::Scene& scene, wi::ecs::Entity& selected);
+//	`history` is optional. Pass one (Editor mode does) and the panel also grows a Create
+//	button and a right-click menu — create child / duplicate / delete — each recorded as a
+//	single undo step. Without it the panel is read-only apart from selection, which is what
+//	the plain DevUI Hierarchy window wants.
+void HierarchyGUI(wi::scene::Scene& scene, wi::ecs::Entity& selected,
+	st::EditorHistory* history = nullptr);
 
 // Standalone "Hierarchy" window wrapper. p_open is optional (pass a bool* for a close box).
 void HierarchyWindow(wi::scene::Scene& scene, wi::ecs::Entity& selected, bool* p_open = nullptr);
 
 // Emit the inspector for `selected` into the CURRENT window (no Begin/End). Pass `selected`
 //	by reference so the panel can clear it (set to INVALID_ENTITY) when the entity is gone.
-void PropertiesGUI(wi::scene::Scene& scene, wi::ecs::Entity& selected);
+//	`history` is optional; pass one to make every edit here undoable.
+void PropertiesGUI(wi::scene::Scene& scene, wi::ecs::Entity& selected,
+	st::EditorHistory* history = nullptr);
 
 // Standalone "Properties" window wrapper. p_open is optional.
 void PropertiesWindow(wi::scene::Scene& scene, wi::ecs::Entity& selected, bool* p_open = nullptr);

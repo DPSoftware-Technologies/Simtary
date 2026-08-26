@@ -6,6 +6,7 @@
 #include "stRun.h"
 #include "crash/CrashHandler.h"
 #include "io/UserData.h"
+#include "input/InputSystem.h"
 #include <cstdio>
 #include <cstring>
 
@@ -172,26 +173,42 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
                     break;
             }
 
-            // Don't forward pointer/keyboard events to the engine when ImGui owns them
-            const bool isPointer = event.type == SDL_MOUSEMOTION
-                                || event.type == SDL_MOUSEBUTTONDOWN
-                                || event.type == SDL_MOUSEBUTTONUP
-                                || event.type == SDL_MOUSEWHEEL;
-            const bool isKey = event.type == SDL_KEYDOWN
-                             || event.type == SDL_KEYUP
-                             || event.type == SDL_TEXTINPUT;
-            if ((isPointer && io.WantCaptureMouse) || (isKey && io.WantCaptureKeyboard))
-                continue;
-
-            // Developer-tooling toggle. Checked before the project so a game cannot
-            // accidentally swallow the one key that brings the tooling back.
+            // Developer-tooling toggle. Checked before the capture guard below, not just
+            // before the project hook: with an editor panel focused the guard swallows every
+            // key, and the one key that brings the tooling back has to survive that. Only a
+            // live text field outranks it.
             if (config.devUIToggleKey != 0
                 && event.type == SDL_KEYDOWN
                 && event.key.repeat == 0
+                && !io.WantTextInput
                 && event.key.keysym.scancode == (SDL_Scancode)config.devUIToggleKey) {
                 application.ToggleDevUI();
                 continue;
             }
+
+            // Don't forward pointer/keyboard events to the engine when the UI owns them.
+            //
+            // Two owners: ImGui's own WantCapture* (the pointer is over a panel, a text field
+            // has the keyboard), and st::InputSystem's UI input capture, which Editor mode
+            // raises whenever the Game Viewport is not the focused panel. The second exists
+            // because a merely focused ImGui window does NOT set WantCaptureKeyboard, so
+            // without it WASD typed at the editor viewport still drove the game camera.
+            const bool uiOwnsInput = st::InputSystem::Get().IsUIInputCaptured();
+
+            // Releases are never swallowed. Dropping a KEYUP would leave wi::input believing
+            // the key is still held once focus moves away mid-press - a camera that flies off
+            // forever - so only the press side is filtered.
+            const bool isRelease = event.type == SDL_KEYUP
+                                || event.type == SDL_MOUSEBUTTONUP;
+            const bool isPointer = event.type == SDL_MOUSEMOTION
+                                || event.type == SDL_MOUSEBUTTONDOWN
+                                || event.type == SDL_MOUSEWHEEL;
+            const bool isKey = event.type == SDL_KEYDOWN
+                             || event.type == SDL_TEXTINPUT;
+            if (!isRelease
+                && ((isPointer && (io.WantCaptureMouse || uiOwnsInput))
+                 || (isKey && (io.WantCaptureKeyboard || uiOwnsInput))))
+                continue;
 
             // Project hook: raw SDL, before the engine. Returning true consumes it.
             if (application.OnEvent(event))

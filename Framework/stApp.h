@@ -29,6 +29,7 @@
 #include "devui/imbacklog.h"
 #include "devui/imgraphicsettings.h"
 #include "devui/imhierarchy.h"
+#include "devui/imeditor.h"
 #include "SubWinStatus.h"
 #include "render/LensFlare.h"
 #include "render/Projector.h"
@@ -137,6 +138,14 @@ public:
     void SetDevUIVisible(bool visible);
     void ToggleDevUI() { SetDevUIVisible(!devUIVisible_); }
 
+    // Editor mode: the DevUI becomes a docked scene editor (two viewports, hierarchy,
+    // properties, ImGuizmo, scene save). Off by default and only reachable while DevUI
+    // is visible, so it is developer tooling like the rest of devui/. F2 toggles it.
+    // See Framework/devui/imeditor.h.
+    bool IsEditorMode() const { return editor_.IsEnabled(); }
+    void SetEditorMode(bool on) { editor_.SetEnabled(on); }
+    void ToggleEditorMode() { editor_.Toggle(); }
+
     // ── display ────────────────────────────────────────────────────────────────
     // Window mode, monitor, resolution, v-sync, frame cap and render scale. Render
     // its panel from the game's own options menu:
@@ -242,6 +251,10 @@ private:
     void DevUIAbout(bool *show);
     void DevUIHierarchy();      // Hierarchy (Explorer) + Properties (Inspector) windows
 
+    // Editor mode. Owns the second render path + free camera, so it has to outlive any
+    // single frame; st::App::Exit() tears it down.
+    EditorUI editor_;
+
 
 
     bool showImguiDemo = false;
@@ -280,6 +293,10 @@ private:
     std::string selectedScene_;
 
     bool isStop = false;
+
+    // Last dt seen by Update(). Render() needs it to step the editor's own render path,
+    // which the engine does not drive because it is not the active path.
+    float lastDt_ = 0.0f;
 
     // DevUI + loading state (see the public accessors above).
     bool         devUIVisible_ = true;

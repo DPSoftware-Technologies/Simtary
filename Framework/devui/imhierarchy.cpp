@@ -1,9 +1,12 @@
 #include "imhierarchy.h"
+#include "imcomponents.h"
+#include "imeditorhistory.h"
 
 #include "stNativeComponent.h"
 #include "wiScene.h"
 #include "wiMath.h"
 #include "imgui.h"
+#include "ImGuizmo.h"   // IsUsingAny(): tells the drift check a drag is in progress
 
 #include <string>
 #include <vector>
@@ -66,9 +69,67 @@ static bool EntityExists(Scene& scene, Entity e)
 
 // ---------------------------------------------------------------- hierarchy ---
 
+// Collect an entity and every descendant, deepest first, so a delete step can snapshot the
+//	whole subtree before Scene::Entity_Remove takes it apart.
+static void GatherSubtree(Scene& scene, Entity root, wi::vector<Entity>& out)
+{
+	out.push_back(root);
+	for (size_t i = 0; i < scene.hierarchy.GetCount(); ++i)
+	{
+		if (scene.hierarchy[i].parentID == root)
+			GatherSubtree(scene, scene.hierarchy.GetEntity(i), out);
+	}
+}
+
+// Right-click menu on a Hierarchy row (and on empty space, with e == INVALID_ENTITY).
+//	Only drawn when the caller supplied a history, i.e. in Editor mode.
+static void EntityContextMenu(Scene& scene, Entity e, Entity& selected, st::EditorHistory& history)
+{
+	if (!ImGui::BeginPopupContextItem())
+		return;
+
+	// Spawn at the origin: this menu has no camera to aim from, and the editor's own
+	// Create menu (which does) is the one that places things in front of you.
+	if (ImGui::BeginMenu("Create child"))
+	{
+		const Entity created = CreateObjectMenuItems(scene, XMFLOAT3(0, 0, 0), e, &history);
+		if (created != INVALID_ENTITY)
+			selected = created;
+		ImGui::EndMenu();
+	}
+
+	ImGui::Separator();
+
+	if (ImGui::MenuItem("Duplicate"))
+	{
+		const Entity clone = scene.Entity_Duplicate(e);
+		if (clone != INVALID_ENTITY)
+		{
+			// Entity_Duplicate copies the stable GUID too, which would make two entities
+			// answer to the same reference. Re-stamp the clone (see stNativeComponent.h).
+			RegenerateEntityGUID(scene, clone);
+			history.RecordCreated(scene, clone, "Duplicate");
+			selected = clone;
+		}
+	}
+
+	if (ImGui::MenuItem("Delete"))
+	{
+		wi::vector<Entity> subtree;
+		GatherSubtree(scene, e, subtree);
+		history.BeginEntities(scene, subtree, "Delete");
+		scene.Entity_Remove(e, true);
+		history.Commit(scene);
+		if (selected == e)
+			selected = INVALID_ENTITY;
+	}
+
+	ImGui::EndPopup();
+}
+
 static void DrawNode(Scene& scene, Entity e,
 	const std::unordered_map<Entity, std::vector<Entity>>& children,
-	Entity& selected, std::unordered_set<Entity>& visited)
+	Entity& selected, std::unordered_set<Entity>& visited, st::EditorHistory* history)
 {
 	if (!visited.insert(e).second) return; // cycle guard: never recurse an entity twice
 
@@ -95,16 +156,45 @@ static void DrawNode(Scene& scene, Entity e,
 		ImGui::EndDragDropSource();
 	}
 
+	if (history != nullptr)
+		EntityContextMenu(scene, e, selected, *history);
+
 	if (open && hasChildren)
 	{
 		for (Entity c : it->second)
-			DrawNode(scene, c, children, selected, visited);
+			DrawNode(scene, c, children, selected, visited, history);
 		ImGui::TreePop();
 	}
 }
 
-void HierarchyGUI(Scene& scene, Entity& selected)
+void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 {
+	// Editor mode gets the create/delete toolbar; the plain DevUI window stays a viewer.
+	if (history != nullptr)
+	{
+		if (ImGui::Button("+ Create"))
+			ImGui::OpenPopup("##hierarchy_create");
+		if (ImGui::BeginPopup("##hierarchy_create"))
+		{
+			const Entity created = CreateObjectMenuItems(scene, XMFLOAT3(0, 0, 0), INVALID_ENTITY, history);
+			if (created != INVALID_ENTITY)
+				selected = created;
+			ImGui::EndPopup();
+		}
+		ImGui::SameLine();
+		ImGui::BeginDisabled(selected == INVALID_ENTITY);
+		if (ImGui::Button("Delete"))
+		{
+			wi::vector<Entity> subtree;
+			GatherSubtree(scene, selected, subtree);
+			history->BeginEntities(scene, subtree, "Delete");
+			scene.Entity_Remove(selected, true);
+			history->Commit(scene);
+			selected = INVALID_ENTITY;
+		}
+		ImGui::EndDisabled();
+	}
+
 	static ImGuiTextFilter filter;
 	filter.Draw("Filter", -1.0f);
 
@@ -144,6 +234,8 @@ void HierarchyGUI(Scene& scene, Entity& selected)
 				ImGui::Text("%s", EntityLabel(scene, e).c_str());
 				ImGui::EndDragDropSource();
 			}
+			if (history != nullptr)
+				EntityContextMenu(scene, e, selected, *history);
 		}
 	}
 	else
@@ -170,7 +262,7 @@ void HierarchyGUI(Scene& scene, Entity& selected)
 
 		std::unordered_set<Entity> visited;
 		for (Entity e : roots)
-			DrawNode(scene, e, children, selected, visited);
+			DrawNode(scene, e, children, selected, visited, history);
 	}
 
 	ImGui::EndChild();
@@ -199,49 +291,139 @@ static bool EditString(const char* label, std::string& s)
 	return false;
 }
 
-static void DrawTransform(Scene& scene, Entity e)
+// One component's collapsing header plus the right-aligned "x" that detaches it.
+//	Returns true when the caller should draw the component's body — i.e. the header is open
+//	AND the component still exists. The "x" calls ComponentManager::Remove immediately, so
+//	any pointer the caller is holding is dangling the moment this returns false.
+static bool ComponentHeader(Scene& scene, Entity e, const char* libraryKey,
+	const char* label, bool defaultOpen, st::EditorHistory* history)
+{
+	ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_AllowOverlap;
+	if (defaultOpen) flags |= ImGuiTreeNodeFlags_DefaultOpen;
+
+	const bool open = ImGui::CollapsingHeader(label, flags);
+
+	bool removed = false;
+	if (const EngineComponentType* type = FindEngineComponentByKey(libraryKey))
+		removed = RemoveEngineComponentButton(scene, e, *type, history);
+
+	return open && !removed;
+}
+
+static void DrawTransform(Scene& scene, Entity e, st::EditorHistory* history)
 {
 	TransformComponent* t = scene.transforms.GetComponent(e);
 	if (!t) return;
-	if (!ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) return;
+	if (!ComponentHeader(scene, e, "wi::scene::Scene::transforms", "Transform", true, history)) return;
 
-	// Euler is cached per-selection so dragging the rotation field doesn't fight the
-	//	quaternion<->euler round-trip (re-extracting every frame would jitter the values).
+	// Euler is cached rather than re-extracted every frame, so dragging the rotation field
+	//	doesn't fight the quaternion<->euler round-trip (re-extracting each frame jitters the
+	//	values). The cache also remembers WHICH quaternion it was derived from: when something
+	//	else rewrites the rotation - the gizmo, an undo, an animation - the two no longer match
+	//	and the euler is rebuilt. Without that the field sat at 0,0,0 after a gizmo rotate.
 	static Entity   eulerEntity = INVALID_ENTITY;
-	static XMFLOAT3 eulerDeg = XMFLOAT3(0, 0, 0);
-	if (eulerEntity != e)
+	static XMFLOAT3 eulerDeg    = XMFLOAT3(0, 0, 0);
+	static XMFLOAT4 eulerSource = XMFLOAT4(0, 0, 0, 1);
+	const bool rotatedElsewhere =
+		t->rotation_local.x != eulerSource.x || t->rotation_local.y != eulerSource.y ||
+		t->rotation_local.z != eulerSource.z || t->rotation_local.w != eulerSource.w;
+	if (eulerEntity != e || rotatedElsewhere)
 	{
 		const XMFLOAT3 rpy = wi::math::QuaternionToRollPitchYaw(t->rotation_local);
 		eulerDeg = XMFLOAT3(Deg(rpy.x), Deg(rpy.y), Deg(rpy.z));
+		eulerSource = t->rotation_local;
 		eulerEntity = e;
 	}
 
+	// One undo step per drag, not one per frame: open the step when the widget takes the
+	//	mouse and close it when the widget gives it back having actually changed something.
+	auto trackEdit = [&](const char* label) {
+		if (history == nullptr) return;
+		if (ImGui::IsItemActivated())            history->BeginTransform(scene, e, label);
+		if (ImGui::IsItemDeactivatedAfterEdit()) history->Commit(scene);
+		else if (ImGui::IsItemDeactivated())     history->Abort();
+	};
+
+	// ── is something else driving this transform? ────────────────────────────────
+	//	An animation, a physics body or a native component that writes translation_local
+	//	every frame owns this transform, and a gizmo drag into the same field is overwritten
+	//	before the next frame is drawn — which looks exactly like the object being locked.
+	//	Watch the value while nobody is editing it: if it moves on its own, say so.
+	static Entity   driftEntity = INVALID_ENTITY;
+	static XMFLOAT3 driftLast   = XMFLOAT3(0, 0, 0);
+	static int      driftFrames = 0;
+	{
+		const bool beingEdited = ImGui::IsAnyItemActive() || ImGuizmo::IsUsingAny();
+		if (driftEntity != e)
+		{
+			driftEntity = e;
+			driftFrames = 0;
+		}
+		else if (!beingEdited)
+		{
+			const bool moved =
+				driftLast.x != t->translation_local.x ||
+				driftLast.y != t->translation_local.y ||
+				driftLast.z != t->translation_local.z;
+			// A couple of consecutive frames, so one-off writes (an undo, a scene load)
+			// do not raise it.
+			driftFrames = moved ? driftFrames + 1 : 0;
+		}
+		driftLast = t->translation_local;
+	}
+
+	if (driftFrames >= 3)
+	{
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.3f, 1.0f));
+		ImGui::TextWrapped(
+			"Position (local) is being rewritten every frame by something else - an "
+			"animation, a physics body, or one of the native components below. Dragging the "
+			"gizmo or this field will not stick. Edit World pos (abs) instead (it wins on a "
+			"large-world transform), or untick the driver's 'enabled' box first.");
+		ImGui::PopStyleColor();
+	}
+
+	// Editing the local offset has to push through to the ABSOLUTE position, for parented
+	//	transforms as much as for roots. On a LARGE_WORLD transform translation_local is
+	//	derived - UpdateTransform rebases it from world_translation_* every frame, children
+	//	included - so a write that stopped at the local field would be gone next frame. And
+	//	the absolute position is the one that gets serialized either way.
 	bool dirty = false;
-	dirty |= ImGui::DragFloat3("Position (local)", &t->translation_local.x, 0.01f);
+	if (ImGui::DragFloat3("Position (local)", &t->translation_local.x, 0.01f))
+	{
+		t->SyncWorldFromLocal(wi::scene::GetRenderOrigin());
+		dirty = true;
+	}
+	trackEdit("Move");
 
 	if (ImGui::DragFloat3("Rotation (deg)", &eulerDeg.x, 0.5f))
 	{
 		const XMVECTOR q = XMQuaternionRotationRollPitchYaw(Rad(eulerDeg.x), Rad(eulerDeg.y), Rad(eulerDeg.z));
 		XMStoreFloat4(&t->rotation_local, q);
+		eulerSource = t->rotation_local; // this change is ours: don't re-extract over the drag
 		dirty = true;
 	}
+	trackEdit("Rotate");
 
 	dirty |= ImGui::DragFloat3("Scale", &t->scale_local.x, 0.01f);
+	trackEdit("Scale");
 
 	// Simtary 64-bit large-world absolute position.
 	double wp[3] = { t->world_translation_x, t->world_translation_y, t->world_translation_z };
-	if (ImGui::InputScalarN("World pos (abs)", ImGuiDataType_Double, wp, 3))
-		t->SetWorldPosition(wp[0], wp[1], wp[2]); // already flags dirty
+	if (ImGui::DragScalarN("World pos (abs)", ImGuiDataType_Double, wp, 3, 0.1f)) {
+		t->SetWorldPosition(wp[0], wp[1], wp[2]);
+	}
+	trackEdit("Set World Position");
 
 	if (dirty)
 		t->SetDirty();
 }
 
-static void DrawLight(Scene& scene, Entity e)
+static void DrawLight(Scene& scene, Entity e, st::EditorHistory* history)
 {
 	LightComponent* l = scene.lights.GetComponent(e);
 	if (!l) return;
-	if (!ImGui::CollapsingHeader("Light", ImGuiTreeNodeFlags_DefaultOpen)) return;
+	if (!ComponentHeader(scene, e, "wi::scene::Scene::lights", "Light", true, history)) return;
 
 	const char* types[] = { "Directional", "Point", "Spot", "Rectangle" };
 	int ty = (int)l->type;
@@ -265,11 +447,11 @@ static void DrawLight(Scene& scene, Entity e)
 	if (ImGui::Checkbox("Volumetrics", &vol)) l->SetVolumetricsEnabled(vol);
 }
 
-static void DrawCamera(Scene& scene, Entity e)
+static void DrawCamera(Scene& scene, Entity e, st::EditorHistory* history)
 {
 	CameraComponent* c = scene.cameras.GetComponent(e);
 	if (!c) return;
-	if (!ImGui::CollapsingHeader("Camera")) return;
+	if (!ComponentHeader(scene, e, "wi::scene::Scene::cameras", "Camera", false, history)) return;
 
 	ImGui::DragFloat("FOV (rad)", &c->fov, 0.01f, 0.01f, XM_PI - 0.01f);
 	ImGui::DragFloat("Near", &c->zNearP, 0.01f, 0.001f, 100000.0f);
@@ -278,11 +460,11 @@ static void DrawCamera(Scene& scene, Entity e)
 	ImGui::DragFloat("Aperture size", &c->aperture_size, 0.01f, 0.0f, 100.0f);
 }
 
-static void DrawObject(Scene& scene, Entity e)
+static void DrawObject(Scene& scene, Entity e, st::EditorHistory* history)
 {
 	ObjectComponent* o = scene.objects.GetComponent(e);
 	if (!o) return;
-	if (!ImGui::CollapsingHeader("Object", ImGuiTreeNodeFlags_DefaultOpen)) return;
+	if (!ComponentHeader(scene, e, "wi::scene::Scene::objects", "Object", true, history)) return;
 
 	ImGui::ColorEdit4("Color", &o->color.x);
 	ImGui::ColorEdit4("Emissive", &o->emissiveColor.x);
@@ -298,11 +480,11 @@ static void DrawObject(Scene& scene, Entity e)
 		ImGui::TextDisabled("mesh: %s", EntityLabel(scene, o->meshID).c_str());
 }
 
-static void DrawMaterial(Scene& scene, Entity e)
+static void DrawMaterial(Scene& scene, Entity e, st::EditorHistory* history)
 {
 	MaterialComponent* m = scene.materials.GetComponent(e);
 	if (!m) return;
-	if (!ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) return;
+	if (!ComponentHeader(scene, e, "wi::scene::Scene::materials", "Material", true, history)) return;
 
 	bool dirty = false;
 	dirty |= ImGui::ColorEdit4("Base color", &m->baseColor.x);
@@ -319,29 +501,38 @@ static void DrawMaterial(Scene& scene, Entity e)
 		m->SetDirty();
 }
 
-static void DrawLayer(Scene& scene, Entity e)
+static void DrawLayer(Scene& scene, Entity e, st::EditorHistory* history)
 {
 	LayerComponent* layer = scene.layers.GetComponent(e);
 	if (!layer) return;
-	if (!ImGui::CollapsingHeader("Layer")) return;
+	if (!ComponentHeader(scene, e, "wi::scene::Scene::layers", "Layer", false, history)) return;
 
 	int mask = (int)layer->layerMask;
 	if (ImGui::InputScalar("Layer mask", ImGuiDataType_S32, &mask, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal))
 		layer->layerMask = (uint32_t)mask;
 }
 
-static void DrawName(Scene& scene, Entity e)
+static void DrawName(Scene& scene, Entity e, st::EditorHistory* history)
 {
 	NameComponent* n = scene.names.GetComponent(e);
 	if (!n) return;
+
+	// Leave room on the row for the detach button RemoveEngineComponentButton parks at the
+	//	right edge, otherwise the field draws underneath it.
+	const float reserved = ImGui::GetFrameHeight() + ImGui::CalcTextSize("Name").x +
+		ImGui::GetStyle().ItemSpacing.x * 2.0f;
+	ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - reserved);
 	EditString("Name", n->name);
+
+	if (const EngineComponentType* type = FindEngineComponentByKey("wi::scene::Scene::names"))
+		RemoveEngineComponentButton(scene, e, *type, history);
 }
 
-static void DrawMetadata(Scene& scene, Entity e)
+static void DrawMetadata(Scene& scene, Entity e, st::EditorHistory* history)
 {
 	MetadataComponent* md = scene.metadatas.GetComponent(e);
 	if (!md) return;
-	if (!ImGui::CollapsingHeader("Metadata")) return;
+	if (!ComponentHeader(scene, e, "wi::scene::Scene::metadatas", "Metadata", false, history)) return;
 
 	ImGui::TextDisabled("Native-component attachments (NCI_/NCA_/NCE_) live here.");
 
@@ -388,7 +579,7 @@ static void DrawMetadata(Scene& scene, Entity e)
 	ImGui::PopID();
 }
 
-static void DrawNativeComponents(Scene& scene, Entity e)
+static void DrawNativeComponents(Scene& scene, Entity e, st::EditorHistory* history)
 {
 	auto it = scene.nativeComponents.instances.find(e);
 	if (it == scene.nativeComponents.instances.end() || it->second.empty())
@@ -400,24 +591,49 @@ static void DrawNativeComponents(Scene& scene, Entity e)
 		if (!inst.component) continue;
 		ImGui::PushID(inst.localID);
 		const std::string title = inst.name + " [" + std::to_string(inst.localID) + "]";
-		if (ImGui::TreeNodeEx(title.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
-		{
-			bool enabled = inst.component->IsEnabled();
-			if (ImGui::Checkbox("enabled", &enabled))
-				inst.component->SetEnabled(enabled); // writes NCE_<id> metadata (persisted)
-			ImGui::SameLine();
-			ImGui::TextDisabled(inst.started ? "(started)" : "(awaiting start)");
+		const bool open = ImGui::TreeNodeEx(title.c_str(),
+			ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
 
-			ImGui::BeginDisabled(!enabled);
-			inst.component->DrawDebug(); // component-supplied widgets bound to live members
-			ImGui::EndDisabled();
+		// Detach only erases the NCI_/NCA_/NCE_ metadata keys. The instance's OnDisable()
+		//	and Destroy() run in the next NativeComponentManager::RunUpdate, so `inst` stays
+		//	valid for the rest of this frame — but its widgets would be editing something
+		//	already on its way out, so stop drawing it here.
+		ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight());
+		const bool detached = ImGui::SmallButton("x");
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Detach %s (NCI_%d) from this entity", inst.name.c_str(), inst.localID);
+		if (detached)
+		{
+			if (history) history->BeginEntity(scene, e, "Detach Component");
+			DetachNativeComponent(scene, e, inst.localID);
+			if (history) history->Commit(scene);
+		}
+
+		if (open)
+		{
+			if (!detached)
+			{
+				bool enabled = inst.component->IsEnabled();
+				if (ImGui::Checkbox("enabled", &enabled))
+					inst.component->SetEnabled(enabled); // writes NCE_<id> metadata (persisted)
+				ImGui::SameLine();
+				ImGui::TextDisabled(inst.started ? "(started)" : "(awaiting start)");
+
+				ImGui::BeginDisabled(!enabled);
+				inst.component->DrawDebug(); // component-supplied widgets bound to live members
+				ImGui::EndDisabled();
+			}
+			else
+			{
+				ImGui::TextDisabled("detaching...");
+			}
 			ImGui::TreePop();
 		}
 		ImGui::PopID();
 	}
 }
 
-void PropertiesGUI(Scene& scene, Entity& selected)
+void PropertiesGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 {
 	if (selected == INVALID_ENTITY)
 	{
@@ -439,17 +655,17 @@ void PropertiesGUI(Scene& scene, Entity& selected)
 	ImGui::Separator();
 
 	// Rich, realtime editors for the common engine components.
-	DrawName(scene, selected);
-	DrawTransform(scene, selected);
-	DrawObject(scene, selected);
-	DrawMaterial(scene, selected);
-	DrawLight(scene, selected);
-	DrawCamera(scene, selected);
-	DrawLayer(scene, selected);
-	DrawMetadata(scene, selected);
+	DrawName(scene, selected, history);
+	DrawTransform(scene, selected, history);
+	DrawObject(scene, selected, history);
+	DrawMaterial(scene, selected, history);
+	DrawLight(scene, selected, history);
+	DrawCamera(scene, selected, history);
+	DrawLayer(scene, selected, history);
+	DrawMetadata(scene, selected, history);
 
 	// Native components.
-	DrawNativeComponents(scene, selected);
+	DrawNativeComponents(scene, selected, history);
 
 	// Completeness: list every OTHER engine component present that has no inline editor,
 	//	so the inspector always reflects the full component set on the entity.
@@ -470,7 +686,7 @@ void PropertiesGUI(Scene& scene, Entity& selected)
 		const auto* mgr = kv.second.component_manager.get();
 		if (!mgr || !mgr->Contains(selected)) continue;
 		if (handled.count(kv.first)) continue;
-		others.push_back(ShortCompName(kv.first));
+		others.push_back(kv.first); // full library key: the detach table is keyed by it
 	}
 	std::sort(others.begin(), others.end());
 
@@ -478,11 +694,21 @@ void PropertiesGUI(Scene& scene, Entity& selected)
 	{
 		if (ImGui::CollapsingHeader("Other components", ImGuiTreeNodeFlags_DefaultOpen))
 		{
-			for (const std::string& name : others)
-				ImGui::BulletText("%s", name.c_str());
+			for (const std::string& key : others)
+			{
+				const EngineComponentType* type = FindEngineComponentByKey(key);
+				ImGui::BulletText("%s", type ? type->name : ShortCompName(key).c_str());
+				// Detachable even with no inline editor: the table knows how to Remove() it.
+				//	Removal invalidates `others` for this frame, so stop the loop right after.
+				if (type && RemoveEngineComponentButton(scene, selected, *type, history))
+					break;
+			}
 			ImGui::TextDisabled("(present on entity; no inline editor)");
 		}
 	}
+
+	ImGui::Separator();
+	AddComponentButton(scene, selected, history);
 }
 
 void PropertiesWindow(Scene& scene, Entity& selected, bool* p_open)
