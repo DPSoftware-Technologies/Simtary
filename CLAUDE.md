@@ -47,8 +47,14 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `input/InputSystem.*` | Centralized action/axis keymap, refreshed once per frame. |
 | `crash/CrashHandler.*` | sentry-native + Crashpad, offline only; launches `SimtaryCrashReporter`. |
 | `render/LensFlare.*` | Procedural screen-space flare (`assets/shaders/StLensFlare*`). |
-| `render/Projector.*` | `st::Projector` + `st::ProjectorSystem` — SQUARE (or rect/ellipse/rounded) image projection with projector optics: throw ratio, aspect, lens shift, keystone, barrel/pincushion, edge softness, vignette, plus a rectangular volumetric beam. Runs as a `RenderPath3D` custom post process (`assets/shaders/StProjectorCS.hlsl`), plus one depth-only pass per shadow-casting projector (`RenderShadows()`, driven from `st::App::Render()` BEFORE the render path so the command list is recorded ahead of the pass that samples it). Reach it anywhere via `st::ProjectorSystem::Get()`. |
+| `render/Projector.*` | `st::Projector` + `st::ProjectorSystem` — SQUARE (or rect/ellipse/rounded) image projection with projector optics: throw ratio, aspect, lens shift, keystone, barrel/pincushion, edge softness, vignette, plus a rectangular volumetric beam. `opticBounces` reflects the image off `st::Mirror` and images it through `st::Lens` by uploading a virtual projector clipped to that element's aperture. Runs as a `RenderPath3D` custom post process (`assets/shaders/StProjectorCS.hlsl`), plus one depth-only pass per shadow-casting projector (`RenderShadows()`, driven from `st::App::Render()` BEFORE the render path so the command list is recorded ahead of the pass that samples it). Reach it anywhere via `st::ProjectorSystem::Get()`. |
 | `render/ProjectorComponent.cpp` | The `"Projector"` NATIVE COMPONENT — attach `st::Projector` to a spot light from the editor (`NCI_0 = "Projector"`, optics as `NCA_0_*` args). Follows its own entity, takes the image off it (video / camera render / material base colour, pinned with `NCA_0_imageSource`), and zeroes that light by default since the light IS the circle. |
+| `render/Laser.*` | `st::Laser` + `st::LaserSystem` — traced laser beams. Millimetre-thin core plus a wide halo, both integrated ANALYTICALLY per pixel (`assets/shaders/StLaserCS.hlsl`) rather than ray marched. Walks the beam through the optics below and stops it on the first surface `st::Raycast` reports, so one laser can be several straight legs. The impact spot leaves a fading persistence trail, which is what makes a moving beam draw a line instead of blinking a dot. `LaserArray` turns one laser into a grid/ring/fan/cross/spiral of rays (off by default — each ray is a full trace). `st::LaserSystem::Get().Path(id)->hit` is what the beam is on. |
+| `render/LaserComponent.cpp` | The `"sticLaser"` NATIVE COMPONENT. Follows its own entity; picks up a sibling `"sticRay"` (mode/range/axis) every frame instead of casting a second time. |
+| `render/Optics.*` | `st::Mirror` + `st::Lens` + `st::OpticsSystem` — flat apertures a beam reflects off (`d' = d - 2(d·n)n`) or bends through. `Lens::Type` covers Spherical / Cylindrical / Toric / Aspheric / Axicon / Prism / Window, all one paraxial ray transfer with a different deviation term. `Mirror::dichroic` splits the beam in two (reflect one band, transmit the rest), which is why `Trace()` walks a stack of branches rather than a single chain. `Trace()` is the sequential walk that turns one ray into a list of legs; it lives on the CPU because leg N+1 depends on where leg N landed, which a per-pixel pass cannot discover. Draws nothing, and carries its own “is a beam reaching me” diagnostics because a silent element is otherwise undebuggable. |
+| `render/OpticsComponents.cpp` | The `"sticMirror"` / `"sticLens"` native components. |
+| `scene/Ray.*` | `st::Raycast` / `st::RayHit` / `st::RayQuery` — one raycast over either backend: `Mesh` (`Scene::Intersects`, hits anything drawn, no body needed), `Physics` (`wi::physics::Intersects`, Jolt bodies only), `Both` (nearer wins) or `None`. Also `st::LocalAxes` — the ONE forward-axis table, shared by the projector, laser, ray and optics. |
+| `scene/RayComponent.*` | The `"sticRay"` native component: a raycast bolted to an entity, re-cast every frame. The shared seam for a laser sight, a rangefinder, an interaction prompt and an “am I aiming at it” HUD. |
 | `render/Framebuffer.*` | `st::gfx::Framebuffer` — an off-screen surface you draw into and hand to a material, a light mask or a projector. CPU mode wraps libgfx (`GFXcanvas`) and owns the staging texture, row pitch and flip; GPU mode is a render target you draw into with `wi::image`/`wi::font` between `Begin()`/`End()`. |
 | `display/DisplaySettings.*` | Player-facing video options: window mode, monitor, resolution, refresh rate, v-sync, frame cap, render scale. NOT DevUI — `st::App::Display().GUI(app)` drops into a game's own options menu, and DevUI renders the same panel in its Display tab. Sole owner of v-sync and the frame cap; `GraphicsSettings` deliberately no longer carries them. |
 | `audio/faust/` | `FaustManager` (OpenAL DSP host) + `FaustProcessor<T>`. Starts with no processors — games register their own AOT instruments. |
@@ -183,8 +189,8 @@ case-insensitive on Windows.
 DX12 default root signature / the Vulkan binding shifts, which the bare dxc call the
 other framework shaders use does not have. Runtime compilation is not a fallback
 here: `dxcompiler.dll` is not shipped next to the exe, so `wi::renderer::LoadShader`
-can only ever load a `.cso` that the build already produced. `StProjectorCS.hlsl` is
-the first shader in this category.
+can only ever load a `.cso` that the build already produced. `StProjectorCS.hlsl` and
+`StLaserCS.hlsl` are the shaders in this category.
 
 **Why the projector is not a `LightComponent`.** `light_spot()` in
 `Engine/shaders/lightingHF.hlsli` clips to a circular cone, so a mask texture, a
@@ -206,6 +212,95 @@ into a D16 depth map, and the shader compares against it (reverse-Z, 2x2 PCF). T
 gate matrix comes from that same CameraComponent, so the two can never drift apart.
 `Projector::occlusion` is the old screen-space march, kept only as the fallback when
 `shadows` is off — it cannot see a blocker the camera does not render.
+
+**A mirror has to WIN the tie against its own mesh, and the test is OWNERSHIP, not
+distance.** `st::Mirror` is a bare plane; what makes it visible is a mesh in the same
+place, on the same entity. Comparing their two distances compares ray-vs-triangle
+against ray-vs-plane, which disagree by however far the mesh surface sits from its own
+origin — a hair for a flat plane, centimetres for a mirror in a frame — and the sign of
+that difference decides whether the beam bounces or stops dead. So `Trace()` asks
+instead: is the geometry hit on this element's OWN `followEntity`? If so, and the ray
+also crosses the aperture, the element wins outright at any distance. `opticBias`
+(2 cm) is only the fallback for an element whose glass belongs to a different entity.
+The aperture still bounds it — a beam landing on the mesh OUTSIDE the aperture
+correctly stops there, and `OpticSurface`'s diagnostics (`hitsThisFrame`,
+`lastMissMargin`) say which of the two happened.
+
+**A mirror with THICKNESS reflects inside itself unless two things are handled.** The
+symptom is unmistakable and misleading: the beam hits, a spot appears on the glass, no
+beam comes off it, and flattening the mesh to zero scale on the normal axis makes it
+work. Both causes are the same mistake in different places - the reflective surface is
+the mesh's FACE, not its middle:
+
+1. `fitToMesh` puts the plane on the front face (`centre + normal * halfThickness`),
+   not the mesh centre. At the centre the outgoing beam is born inside the solid.
+2. The leg leaving an element sets `query.ignoreEntity` to that element's own
+   `followEntity`, so it cannot stop on the glass it just bounced off. Only the leg
+   immediately after the bounce is exempt, so the beam can still stop on that mesh
+   later in its path.
+
+Point the normal axis OUT of the reflective face. A double-sided mirror with real
+thickness is ambiguous by nature; (2) is what keeps the back side usable.
+
+**Optical elements are never latched off by a bad frame.** `OpticSurface::resolved` is
+separate from `enabled` for that reason: a frame in which `followEntity` has no
+transform (mid-load, mid-reload) skips the element for that frame only. Folding it into
+`enabled` made a mirror that had one such frame dead forever, and indistinguishable in
+the inspector from one that simply refuses to work.
+
+**A dichroic mirror is why the tracer is a stack, not a loop.** `Mirror::dichroic`
+reflects `tint * reflectance` and passes `transmitTint * transmittance` on as a SECOND
+beam, so one ray in becomes two out - which a linear walk cannot express.
+`OpticsSystem::Trace` keeps a `pending` stack of branches and runs them depth first,
+deliberately: the reflected chain finishes before the transmitted half starts, so
+`terminals[0]` is the primary beam and `Path(id)->hit` still hands gameplay the beam
+the player is aiming. `BeamTraceDesc::maxSplits` caps the branching and `MAX_LEGS`
+(64) is the backstop, because splits compound - two dichroics facing each other are an
+exponential, not a loop. A 50/50 beam splitter is the same feature with both tints
+white and both coefficients at 0.5.
+
+**Array projection multiplies the trace, not the draw.** `LaserArray` turns one laser
+into a Grid / Ring / Fan / Cross / Spiral of rays, each a full trace through the same
+optics, so a pattern pointed at a mirror reflects as a pattern. `spreadAngle` and
+`offset` are different instruments and both exist on purpose: angle is a dot projector
+(the pattern grows with distance), offset is a lenslet array (it does not). Trails are
+per RAY, so `trailMax` is per ray too and a 5x5 grid asks for 25x the dot budget. The
+GPU side is affordable only because both shader loops reject on a squared distance
+before reaching any `atan` - without that early-out 128 segments is two transcendentals
+per segment per pixel.
+
+**A projector reflects by standing a VIRTUAL projector behind the glass.** A projector
+is a cone, not a ray, so it cannot use the beam tracer. `Projector::opticBounces`
+instead uploads one extra `StProjector` per element: for a mirror, the apex and both
+orientation vectors reflected through the plane (the handedness flips, which is correct
+- a projected image in a mirror IS mirror-writing); for a lens, the apex moved to where
+the thin lens images it, which zooms and shifts the picture the way a real zoom lens
+does. Each virtual projector is clipped to its element's aperture in the shader
+(`projector_aperture`), without which the cone would light the whole room from inside a
+wall. It is ONE level deep by design - a virtual projector does not itself reflect - so
+two facing mirrors give two images, not an infinite corridor. Every element the image
+reaches costs another `ST_PROJECTOR_MAX` slot and another shadow map, which is why the
+default is 0.
+
+**Optics update BEFORE anything that reflects through them.** `st::App::Update` runs
+`optics_` then `projectors_` then `lasers_`. Reversing it lags every reflection by a
+frame, which reads as the reflection sliding around on its own.
+
+**Every lens type is one ray transfer with a different deviation term.** `Lens::Type`
+is Spherical / Cylindrical / Toric / Aspheric / Axicon / Prism / Window, and all of
+them are `slope' = slope - f(u, v)` in the aperture's own axes. That is the whole model,
+so a Fresnel lens is Spherical (only its appearance differs) and plano-convex vs
+biconvex is just a different focal length. What it structurally cannot do: chromatic
+dispersion (a leg carries one colour), thick-lens and TIR (elements are infinitely
+thin), and anything that turns one beam into many — lenslet arrays, gratings, a beam
+splitter's transmitted half. The tracer carries a single ray per leg by construction.
+
+**Forward-axis numbering is append-only.** `0 +Z, 1 -Z, 2 -Y, 3 +Y, 4 +X, 5 -X`, in
+`st::LocalAxes` (`Framework/scene/Ray.h`). X was appended rather than inserted where it
+would read better because scene metadata already stores these as plain integers, so
+renumbering 0-3 would silently re-aim every projector, laser and mirror already placed.
+`Projector::Forward` is defined against the same table rather than carrying a second
+copy of it.
 
 **Shader cache.** `Simtary/shaders/` is staged into every game's output before the
 incremental `offlineshadercompiler` pre-pass, so first launch is never cold. After a

@@ -25,6 +25,8 @@ namespace st { class EditorHistory; }
 inline constexpr const char* SIMTARY_ENTITY_PAYLOAD = "SIMTARY_ENTITY";
 
 // Unity-like "object field": a button you can drag an entity from the Hierarchy onto.
+//	Safe to draw inside the Properties panel: a Hierarchy drag does not change the selection, so
+//	the field under the cursor survives until the drop.
 //	Shows the current target's name (or "(none)"). On drop, points the native component's
 //	`paramName` entity-ref at the dropped entity and persists it to metadata (GUID-based, so it
 //	survives renames / duplicate names / scene reload, and stays editable in the Wicked Editor).
@@ -34,6 +36,13 @@ bool EntityField(wi::scene::Scene& scene, const char* label,
 
 // Emit the hierarchy tree into the CURRENT window (no Begin/End). Clicking a row writes
 //	the clicked entity into `selected`.
+//
+//	A row is BOTH a selection target and a drag source, so the two are told apart by the mouse
+//	release, not the press: selection only moves when the press and the release land on the same
+//	row without passing the drag threshold. Dragging a row therefore leaves `selected` (and with
+//	it the Properties panel you are dropping onto) exactly where it was. The panel shows which
+//	mode it is in above the tree, and tints the row being carried.
+//
 //	`history` is optional. Pass one (Editor mode does) and the panel also grows a Create
 //	button and a right-click menu — create child / duplicate / delete — each recorded as a
 //	single undo step. Without it the panel is read-only apart from selection, which is what

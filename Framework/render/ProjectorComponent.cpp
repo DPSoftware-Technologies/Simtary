@@ -62,6 +62,8 @@ private:
 	float beamDensity = 0.02f;
 	float beamAnisotropy = 0.6f;
 	int beamSamples = 24;
+	int opticBounces = 0;
+	float opticMinThroughput = 0.02f;
 	bool dimLight = true;
 	std::string imageSource = "auto"; // auto | video | camera | material | none
 
@@ -80,7 +82,7 @@ private:
 		if (projector == nullptr) return;
 
 		projector->shape = (st::Projector::Shape)wi::math::Clamp((float)shape, 0.0f, 2.0f);
-		projector->forward = (st::Projector::Forward)wi::math::Clamp((float)forwardAxis, 0.0f, 3.0f);
+		projector->forward = (st::Projector::Forward)wi::math::Clamp((float)forwardAxis, 0.0f, 5.0f);
 		projector->aspect = aspect;
 		projector->throwRatio = throwRatio;
 		projector->fov = fov;
@@ -107,6 +109,8 @@ private:
 		projector->beamDensity = beamDensity;
 		projector->beamAnisotropy = beamAnisotropy;
 		projector->beamSamples = beamSamples;
+		projector->opticBounces = opticBounces;
+		projector->opticMinThroughput = opticMinThroughput;
 		projector->imageSource = ParseImageSource(imageSource);
 
 		if (range > 0.0f) {
@@ -149,6 +153,8 @@ public:
 		Bind(beamDensity, "beamDensity");
 		Bind(beamAnisotropy, "beamAnisotropy");
 		Bind(beamSamples, "beamSamples");
+		Bind(opticBounces, "opticBounces");
+		Bind(opticMinThroughput, "opticMinThroughput");
 		Bind(dimLight, "dimLight");
 		Bind(imageSource, "imageSource");
 
@@ -220,7 +226,7 @@ public:
 
 		bool dirty = false;
 		dirty |= ImGui::Combo("Shape", &shape, "Rect\0Ellipse\0Rounded rect\0");
-		dirty |= ImGui::Combo("Forward axis", &forwardAxis, "+Z\0-Z\0-Y (spot light)\0+Y\0");
+		dirty |= ImGui::Combo("Forward axis", &forwardAxis, "+Z\0-Z\0-Y (spot light)\0+Y\0+X\0-X\0");
 		dirty |= ImGui::SliderFloat("Aspect", &aspect, 0.25f, 4.0f);
 		dirty |= ImGui::SliderFloat("Throw ratio", &throwRatio, 0.0f, 4.0f, "%.2f (0 = use FOV)");
 		if (throwRatio <= 0.0001f) dirty |= ImGui::SliderFloat("FOV", &fov, 0.05f, 2.5f);
@@ -244,6 +250,10 @@ public:
 		if (shadows) {
 			dirty |= ImGui::SliderInt("Shadow resolution", &shadowResolution, 128, 4096);
 			dirty |= ImGui::SliderFloat("Shadow bias", &shadowBias, 0.0f, 0.02f, "%.4f");
+		}
+		dirty |= ImGui::SliderInt("Optic bounces", &opticBounces, 0, 1);
+		if (opticBounces > 0) {
+			ImGui::TextDisabled("Reflects off every sticMirror, images through every sticLens.");
 		}
 		dirty |= ImGui::Checkbox("Screen-space occlusion (fallback)", &occlusion);
 		if (!shadows && occlusion) {

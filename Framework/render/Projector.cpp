@@ -1,5 +1,6 @@
 #include "render/Projector.h"
 #include "render/Framebuffer.h"
+#include "render/Optics.h" // mirrors + lenses, for the virtual projectors they produce
 #include "imgui.h"
 
 #include <algorithm>
@@ -19,29 +20,18 @@ ProjectorSystem* g_instance = nullptr;
 
 // Local axes for each Forward setting: {forward, up}. The up vector only has to be
 // non-parallel to the forward one - `roll` rotates it about the axis afterwards.
+//
+// One table, in Framework/scene/Ray.h, shared with the laser, the ray component and
+// the optics: Projector::Forward is defined to have the same numbering, and two
+// copies of it would eventually disagree about which way -Y points. -Y is the one a
+// spot light projects along (the defaults SHCAM::init uses in wiRenderer.cpp), which
+// is what drops a projector straight onto an existing spot light entity.
 void LocalAxes(Projector::Forward forward, XMVECTOR& localForward, XMVECTOR& localUp) {
-	switch (forward) {
-	case Projector::Forward::MinusY:
-		// A spot light projects its mask along local -Y with local +Z as up - the
-		// defaults SHCAM::init uses in wiRenderer.cpp. This is the setting that drops
-		// a projector straight onto an existing spot light entity.
-		localForward = XMVectorSet(0, -1, 0, 0);
-		localUp = XMVectorSet(0, 0, 1, 0);
-		break;
-	case Projector::Forward::PlusY:
-		localForward = XMVectorSet(0, 1, 0, 0);
-		localUp = XMVectorSet(0, 0, -1, 0);
-		break;
-	case Projector::Forward::MinusZ:
-		localForward = XMVectorSet(0, 0, -1, 0);
-		localUp = XMVectorSet(0, 1, 0, 0);
-		break;
-	case Projector::Forward::PlusZ:
-	default:
-		localForward = XMVectorSet(0, 0, 1, 0);
-		localUp = XMVectorSet(0, 1, 0, 0);
-		break;
-	}
+	st::LocalAxes((int)forward, localForward, localUp);
+}
+
+float Luminance(const XMFLOAT3& c) {
+	return c.x * 0.2126f + c.y * 0.7152f + c.z * 0.0722f;
 }
 
 uint32_t ShapeToShader(Projector::Shape shape) {
@@ -263,58 +253,28 @@ void ProjectorSystem::Update(const wi::scene::Scene& scene, float /*dt*/) {
 	StProjector shaderProjectors[ST_PROJECTOR_MAX] = {};
 	uint32_t count = 0;
 
-	for (Entry& entry : projectors_) {
-		if (count >= ST_PROJECTOR_MAX) break;
+	// Fill one upload slot, its shadow map and its culling. Everything a projector
+	// puts on the GPU goes through here, so a VIRTUAL projector - the image of a real
+	// one in a mirror or through a lens - is identical to a real one except for where
+	// it stands, what tints it and the aperture it is clipped to. That is the whole
+	// point of the planar-reflection trick: the reflected image is just a projector
+	// somewhere else, including for the shadow map, which then correctly stops the
+	// reflection at whatever blocks it on the far side.
+	const auto Emit = [&](const Projector& projector, XMVECTOR position, XMVECTOR forward, XMVECTOR up,
+						  const XMFLOAT3& tint, const OpticSurface* clip) -> bool {
+		if (count >= ST_PROJECTOR_MAX) return false;
 
-		Projector& projector = entry.projector;
-		if (!projector.enabled) continue;
-		if (!projector.lightSurfaces && !projector.beam) continue;
-		if (projector.intensity <= 0.0f || projector.range <= 0.0f) continue;
-
-		// Orientation comes from the followed entity's world MATRIX rather than from a
-		// quaternion: decomposing a mirrored or non-uniformly scaled transform loses
-		// the handedness, and the engine's own light direction is taken from the
-		// matrix too (wiScene.cpp), so this is the one that agrees with the light the
-		// projector is standing in for.
-		XMMATRIX orientation = XMMatrixIdentity();
-		bool orientationFromMatrix = false;
-
-		if (projector.followEntity != wi::ecs::INVALID_ENTITY) {
-			const wi::scene::TransformComponent* transform = scene.transforms.GetComponent(projector.followEntity);
-			if (transform == nullptr) continue; // entity gone or not transformable - skip, don't guess
-			projector.position = transform->GetPosition();
-			projector.rotation = transform->GetRotation();
-			orientation = XMLoadFloat4x4(&transform->world);
-			orientationFromMatrix = true;
-		}
-
-		ResolveImage(scene, projector);
-
-		// ── the matrix ───────────────────────────────────────────────────────────
-		XMVECTOR localForward, localUp;
-		LocalAxes(projector.forward, localForward, localUp);
-
-		if (!orientationFromMatrix) {
-			orientation = XMMatrixRotationQuaternion(XMLoadFloat4(&projector.rotation));
-		}
-		XMVECTOR forward = XMVector3Normalize(XMVector3TransformNormal(localForward, orientation));
-		XMVECTOR up = XMVector3Normalize(XMVector3TransformNormal(localUp, orientation));
-
-		if (projector.roll != 0.0f) {
-			up = XMVector3Normalize(XMVector3TransformNormal(up, XMMatrixRotationAxis(forward, projector.roll)));
-		}
+		const uint32_t slot = count;
+		ShadowSlot& shadow = shadowSlots_[slot];
+		shadow.active = false;
 
 		// The matrix is built through a CameraComponent rather than by hand, so the
 		// gate and the shadow map cannot drift apart: the same camera is what
 		// DrawScene() renders the depth map with. It also inherits the engine's
 		// reverse-Z convention (UpdateCamera passes zFarP as the near argument), which
 		// is what the shadow compare in the shader expects.
-		const uint32_t slot = count;
-		ShadowSlot& shadow = shadowSlots_[slot];
-		shadow.active = false;
-
 		wi::scene::CameraComponent& camera = shadow.camera;
-		XMStoreFloat3(&camera.Eye, XMLoadFloat3(&projector.position));
+		XMStoreFloat3(&camera.Eye, position);
 		XMStoreFloat3(&camera.At, forward);
 		XMStoreFloat3(&camera.Up, up);
 		camera.CreatePerspective(
@@ -335,11 +295,11 @@ void ProjectorSystem::Update(const wi::scene::Scene& scene, float /*dt*/) {
 		out.vp2 = XMFLOAT4(viewProjection._31, viewProjection._32, viewProjection._33, viewProjection._34);
 		out.vp3 = XMFLOAT4(viewProjection._41, viewProjection._42, viewProjection._43, viewProjection._44);
 
-		out.position = projector.position;
+		XMStoreFloat3(&out.position, position);
 		out.range = projector.range;
 		XMStoreFloat3(&out.direction, forward);
 		out.intensity = projector.intensity;
-		out.color = projector.color;
+		out.color = XMFLOAT3(projector.color.x * tint.x, projector.color.y * tint.y, projector.color.z * tint.z);
 		out.gamma = std::max(0.01f, projector.gamma);
 
 		out.flags = 0;
@@ -374,7 +334,24 @@ void ProjectorSystem::Update(const wi::scene::Scene& scene, float /*dt*/) {
 		out.occlusion_samples = (uint32_t)std::clamp(projector.occlusionSamples, 1, 32);
 		out.occlusion_thickness = std::max(0.01f, projector.occlusionThickness);
 
-		// ── shadow map ───────────────────────────────────────────────────────────
+		// -- aperture clip --------------------------------------------------------
+		// A real projector has none and lights its whole cone. A virtual one is a cone
+		// from a point behind the glass, and only the part passing through the element
+		// is light that actually exists.
+		if (clip != nullptr) {
+			out.clip_center = clip->position;
+			out.clip_normal = clip->normal;
+			out.clip_tangent = clip->tangent;
+			out.clip_bitangent = clip->bitangent;
+			// Negative half-height is the shader's flag for a circular aperture.
+			out.clip_radius = std::max(clip->halfExtent.x, 1e-4f);
+			out.clip_half_y = clip->circular ? -1.0f : std::max(clip->halfExtent.y, 1e-4f);
+		} else {
+			out.clip_radius = 0.0f;
+			out.clip_half_y = 0.0f;
+		}
+
+		// -- shadow map -----------------------------------------------------------
 		out.shadow_index = 0;
 		if (projector.shadows) {
 			const uint32_t resolution = (uint32_t)std::clamp(projector.shadowResolution, 128, 4096);
@@ -393,9 +370,9 @@ void ProjectorSystem::Update(const wi::scene::Scene& scene, float /*dt*/) {
 			}
 
 			if (shadow.map.IsValid()) {
-				const int descriptor = device->GetDescriptorIndex(&shadow.map, SubresourceType::SRV);
-				if (descriptor >= 0) {
-					out.shadow_index = (uint32_t)descriptor;
+				const int shadowDescriptor = device->GetDescriptorIndex(&shadow.map, SubresourceType::SRV);
+				if (shadowDescriptor >= 0) {
+					out.shadow_index = (uint32_t)shadowDescriptor;
 					out.shadow_bias = projector.shadowBias;
 					out.shadow_texel = 1.0f / (float)resolution;
 
@@ -413,6 +390,157 @@ void ProjectorSystem::Update(const wi::scene::Scene& scene, float /*dt*/) {
 					shadow.active = !visibility.visibleObjects.empty();
 				}
 			}
+		}
+
+		return true;
+	};
+
+	const OpticsSystem& optics = OpticsSystem::Get();
+
+	for (Entry& entry : projectors_) {
+		if (count >= ST_PROJECTOR_MAX) break;
+
+		Projector& projector = entry.projector;
+		if (!projector.enabled) continue;
+		if (!projector.lightSurfaces && !projector.beam) continue;
+		if (projector.intensity <= 0.0f || projector.range <= 0.0f) continue;
+
+		// Orientation comes from the followed entity's world MATRIX rather than from a
+		// quaternion: decomposing a mirrored or non-uniformly scaled transform loses
+		// the handedness, and the engine's own light direction is taken from the
+		// matrix too (wiScene.cpp), so this is the one that agrees with the light the
+		// projector is standing in for.
+		XMMATRIX orientation = XMMatrixIdentity();
+		bool orientationFromMatrix = false;
+
+		if (projector.followEntity != wi::ecs::INVALID_ENTITY) {
+			const wi::scene::TransformComponent* transform = scene.transforms.GetComponent(projector.followEntity);
+			if (transform == nullptr) continue; // entity gone or not transformable - skip, don't guess
+			projector.position = transform->GetPosition();
+			projector.rotation = transform->GetRotation();
+			orientation = XMLoadFloat4x4(&transform->world);
+			orientationFromMatrix = true;
+		}
+
+		ResolveImage(scene, projector);
+
+		XMVECTOR localForward, localUp;
+		LocalAxes(projector.forward, localForward, localUp);
+
+		if (!orientationFromMatrix) {
+			orientation = XMMatrixRotationQuaternion(XMLoadFloat4(&projector.rotation));
+		}
+		XMVECTOR forward = XMVector3Normalize(XMVector3TransformNormal(localForward, orientation));
+		XMVECTOR up = XMVector3Normalize(XMVector3TransformNormal(localUp, orientation));
+
+		if (projector.roll != 0.0f) {
+			up = XMVector3Normalize(XMVector3TransformNormal(up, XMMatrixRotationAxis(forward, projector.roll)));
+		}
+
+		const XMVECTOR position = XMLoadFloat3(&projector.position);
+
+		Emit(projector, position, forward, up, XMFLOAT3(1, 1, 1), nullptr);
+
+		// -- the image in the optics ----------------------------------------------
+		// One level only: a virtual projector does not itself reflect. Two facing
+		// mirrors therefore give two images rather than an endless corridor, which is
+		// the deliberate trade for not making this recursive - each extra level would
+		// square the slot and shadow-map cost, and the second reflection of a
+		// projected image is dim enough that almost nobody would notice it missing.
+		if (projector.opticBounces <= 0) continue;
+
+		for (size_t i = 0; i < optics.MirrorCount(); ++i) {
+			if (count >= ST_PROJECTOR_MAX) break;
+
+			const Mirror* mirror = optics.MirrorAt(i);
+			if (mirror == nullptr) continue;
+			if (!mirror->surface.enabled || !mirror->surface.resolved) continue;
+
+			const XMVECTOR n = XMLoadFloat3(&mirror->surface.normal);
+			const XMVECTOR c = XMLoadFloat3(&mirror->surface.position);
+
+			// Only the silvered face reflects, and only a projector in FRONT of the
+			// glass can light it at all.
+			const float side = XMVectorGetX(XMVector3Dot(XMVectorSubtract(position, c), n));
+			if (!mirror->doubleSided && side <= 0.0f) continue;
+
+			// Reflect the apex through the plane, and the two orientation vectors
+			// through its normal. The handedness flips, which is exactly right: a
+			// projected image seen in a mirror IS mirror-writing.
+			const XMVECTOR mirroredPosition = XMVectorSubtract(position, XMVectorScale(n, 2.0f * side));
+			const XMVECTOR mirroredForward = XMVector3Normalize(XMVector3Reflect(forward, n));
+			const XMVECTOR mirroredUp = XMVector3Normalize(XMVector3Reflect(up, n));
+
+			XMFLOAT3 tint = mirror->tint;
+			const float reflectance = std::max(mirror->reflectance, 0.0f);
+			tint.x *= reflectance;
+			tint.y *= reflectance;
+			tint.z *= reflectance;
+			if (Luminance(tint) < std::max(projector.opticMinThroughput, 0.0f)) continue;
+
+			Emit(projector, mirroredPosition, mirroredForward, mirroredUp, tint, &mirror->surface);
+		}
+
+		for (size_t i = 0; i < optics.LensCount(); ++i) {
+			if (count >= ST_PROJECTOR_MAX) break;
+
+			const Lens* lens = optics.LensAt(i);
+			if (lens == nullptr) continue;
+			if (!lens->surface.enabled || !lens->surface.resolved) continue;
+
+			const XMVECTOR n = XMLoadFloat3(&lens->surface.normal);
+			const XMVECTOR c = XMLoadFloat3(&lens->surface.position);
+
+			// A lens images the apex of the cone, and moving the apex is what zooms and
+			// shifts a projected picture - which is what a projector's own zoom lens
+			// does. Object distance is measured along the axis, from the lens back to
+			// the projector.
+			const XMVECTOR offset = XMVectorSubtract(position, c);
+			const float axial = XMVectorGetX(XMVector3Dot(offset, n));
+			const float object = std::abs(axial);
+			if (object < 1e-3f) continue; // sitting in the glass; no meaningful image
+
+			// The propagation axis points AWAY from the projector, so the image is
+			// placed on the far side for a real image and the near side for a virtual
+			// one, without a separate sign convention to get wrong.
+			const XMVECTOR axis = XMVectorScale(n, axial >= 0.0f ? -1.0f : 1.0f);
+			const XMVECTOR transverse = XMVectorSubtract(offset, XMVectorScale(n, axial));
+
+			const float f = lens->focalLength;
+			float image;      // signed distance from the lens along `axis`
+			float magnification;
+			if (std::abs(f) < 1e-4f || std::abs(object - f) < 1e-4f) {
+				// A window, or the projector sitting exactly at the focal point where
+				// the image runs off to infinity. Pass it through unchanged rather than
+				// emit a projector at a divide-by-zero.
+				image = -object;
+				magnification = 1.0f;
+			} else {
+				image = object * f / (object - f);
+				magnification = -image / object;
+			}
+
+			const XMVECTOR imagedPosition = XMVectorAdd(c,
+				XMVectorAdd(XMVectorScale(axis, image), XMVectorScale(transverse, magnification)));
+
+			// Keep the cone pointing through the lens. A real image (magnification
+			// negative) also turns the picture over, which a thin lens does.
+			XMVECTOR imagedForward = XMVector3Normalize(XMVectorSubtract(c, imagedPosition));
+			XMVECTOR imagedUp = magnification < 0.0f ? XMVectorNegate(up) : up;
+			// Re-orthogonalise: up has to stay perpendicular to the new axis or the
+			// camera matrix comes out sheared.
+			imagedUp = XMVector3Normalize(XMVectorSubtract(imagedUp,
+				XMVectorScale(imagedForward, XMVectorGetX(XMVector3Dot(imagedUp, imagedForward)))));
+			if (XMVectorGetX(XMVector3LengthSq(imagedUp)) < 1e-6f) continue;
+
+			XMFLOAT3 tint = lens->tint;
+			const float transmittance = std::max(lens->transmittance, 0.0f);
+			tint.x *= transmittance;
+			tint.y *= transmittance;
+			tint.z *= transmittance;
+			if (Luminance(tint) < std::max(projector.opticMinThroughput, 0.0f)) continue;
+
+			Emit(projector, imagedPosition, imagedForward, imagedUp, tint, &lens->surface);
 		}
 	}
 
@@ -551,6 +679,15 @@ void ProjectorSystem::GUI() {
 		ImGui::Text("Image: %s", projector.texture.IsValid() ? "attached" : "flat colour");
 	}
 
+	ImGui::SeparatorText("Mirrors and lenses");
+	ImGui::SliderInt("Optic bounces", &projector.opticBounces, 0, 1);
+	if (projector.opticBounces > 0) {
+		ImGui::SliderFloat("Optic min throughput", &projector.opticMinThroughput, 0.0f, 0.5f);
+		ImGui::TextDisabled("One virtual projector per element, each with its own shadow map.");
+	} else {
+		ImGui::TextDisabled("0 = the image ignores every mirror and lens.");
+	}
+
 	ImGui::SeparatorText("Surfaces");
 	ImGui::Checkbox("Light surfaces", &projector.lightSurfaces);
 	ImGui::Checkbox("Lambert", &projector.lambert);
@@ -571,7 +708,7 @@ void ProjectorSystem::GUI() {
 
 	ImGui::SeparatorText("Placement");
 	int forward = (int)projector.forward;
-	if (ImGui::Combo("Forward axis", &forward, "+Z\0+Y (spot light)\0-Z\0")) {
+	if (ImGui::Combo("Forward axis", &forward, "+Z\0-Z\0-Y (spot light)\0+Y\0+X\0-X\0")) {
 		projector.forward = (Projector::Forward)forward;
 	}
 	if (projector.followEntity != wi::ecs::INVALID_ENTITY) {

@@ -83,6 +83,10 @@ void st::App::Initialize() {
     // graphics device exists and the shader path has its backend subfolder appended.
     lensFlare.Init();
     projectors_.Init();
+    // Optics first: it has no GPU state of its own, and the laser system traces
+    // through it from the moment it starts running.
+    optics_.Init();
+    lasers_.Init();
 
     renderPath.init(canvas);
     renderPath.Load();
@@ -110,6 +114,11 @@ void st::App::Initialize() {
     // where this frame's render data is already uploaded (see ProjectorRenderPath).
     renderPath.projectors = &projectors_;
 
+    // The laser pass rides on the same custom post process list, for the same reason
+    // and at the same stage. It has no shadow maps, so it needs nothing from the path
+    // beyond the hook.
+    lasers_.Bind(renderPath);
+
     // Push saved graphics options to the engine now, so the first frame reflects them.
     // Get() constructs the manager on first call and its constructor already reads
     // options.stad (in AppData/LocalLow/PlatoonLabs/Milistry) — no explicit Load() needed.
@@ -117,6 +126,8 @@ void st::App::Initialize() {
     // lensFlare.Init() already ran above; this just fills its settings from disk.
     lensFlare.LoadFrom(st::SettingsManager::Get().SubCompound("lensflare"));
     projectors_.LoadFrom(st::SettingsManager::Get().SubCompound("projectors"));
+    optics_.LoadFrom(st::SettingsManager::Get().SubCompound("optics"));
+    lasers_.LoadFrom(st::SettingsManager::Get().SubCompound("lasers"));
 
     // Centralized input: install the default keymap before any scene updates.
     st::InputSystem::Get().LoadDefaults();
@@ -210,7 +221,13 @@ void st::App::Update(float dt) {
 
     // Same reason: followed entities carry this frame's transform only after the
     // scene update, and the pass' constants must be in place before Render().
+    // Optics FIRST, then everything that reflects through them. A mirror bolted to a
+    // moving rig has to be where it will be DRAWN before a beam is traced off it or a
+    // virtual projector is placed behind it, or the reflection lags the mirror by a
+    // frame - which reads as the reflection sliding around on its own.
+    optics_.Update(wi::scene::GetScene());
     projectors_.Update(wi::scene::GetScene(), dt);
+    lasers_.Update(wi::scene::GetScene(), dt);
 
     flagsChangedThisFrame = 
         (STDDBoneLines != lastState.BoneLines) ||
@@ -291,6 +308,8 @@ void st::App::Exit() {
     displaySettings_.SaveTo(st::SettingsManager::Get().SubCompound("display"));
     lensFlare.SaveTo(st::SettingsManager::Get().SubCompound("lensflare"));
     projectors_.SaveTo(st::SettingsManager::Get().SubCompound("projectors"));
+    optics_.SaveTo(st::SettingsManager::Get().SubCompound("optics"));
+    lasers_.SaveTo(st::SettingsManager::Get().SubCompound("lasers"));
     st::SettingsManager::Get().Save();
     zmqHandler.Stop(); // join receiver thread before tearing anything else down
     faustManager.Unload(); // join audio thread + close OpenAL before teardown

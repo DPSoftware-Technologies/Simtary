@@ -6,6 +6,7 @@
 #include "wiScene.h"
 #include "wiMath.h"
 #include "imgui.h"
+#include "imgui_internal.h"   // IsMouseDragPastThreshold(): click-vs-drag test on the release frame
 #include "ImGuizmo.h"   // IsUsingAny(): tells the drift check a drag is in progress
 
 #include <string>
@@ -36,6 +37,46 @@ static std::string ShortCompName(const std::string& full)
 	if (full.size() > prefix.size() && full.compare(0, prefix.size(), prefix) == 0)
 		return full.substr(prefix.size());
 	return full;
+}
+
+// What the Hierarchy is doing right now: INVALID_ENTITY when idle, otherwise the entity the
+//	user is dragging out of a row. Read straight off ImGui's live payload, so it is correct on
+//	the same frame the drag starts and can never get stuck "dragging" if the drag ends outside
+//	the window.
+static Entity CurrentDragEntity()
+{
+	const ImGuiPayload* p = ImGui::GetDragDropPayload();
+	if (p == nullptr || !p->IsDataType(SIMTARY_ENTITY_PAYLOAD)) return INVALID_ENTITY;
+	if (p->DataSize != (int)sizeof(Entity))                     return INVALID_ENTITY;
+	return *(const Entity*)p->Data;
+}
+
+// Shared row behaviour for both hierarchy views: publish the drag payload, and select ONLY on a
+//	real click.
+//
+//	A click here means press and release on the same row without dragging past ImGui's drag
+//	threshold. Selecting on press (IsItemClicked) meant that starting a drag also re-selected the
+//	row, which swapped the Properties panel -- and with it the EntityField you were dragging onto
+//	-- out from under the cursor mid-drag. Deferring to release separates "I want this entity" from
+//	"I want to carry this entity somewhere".
+static void HierarchyRowInteract(Scene& scene, Entity e, Entity& selected)
+{
+	// Snapshot before BeginDragDropSource, which overwrites the last-item state.
+	const bool hovered      = ImGui::IsItemHovered();
+	const bool toggledOpen  = ImGui::IsItemToggledOpen();   // click landed on the expand arrow
+
+	// Drag source: lets you drag this entity onto an EntityField (Unity-style object reference).
+	if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
+	{
+		ImGui::SetDragDropPayload(SIMTARY_ENTITY_PAYLOAD, &e, sizeof(Entity));
+		ImGui::Text("%s", EntityLabel(scene, e).c_str());
+		ImGui::EndDragDropSource();
+	}
+
+	if (hovered && !toggledOpen
+		&& ImGui::IsMouseReleased(ImGuiMouseButton_Left)
+		&& !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left))
+		selected = e;
 }
 
 static float Deg(float rad) { return rad * (180.0f / XM_PI); }
@@ -142,19 +183,17 @@ static void DrawNode(Scene& scene, Entity e,
 
 	// "##<id>" keeps the visible label clean while giving every row a unique ImGui id.
 	const std::string label = EntityLabel(scene, e) + "##" + std::to_string((unsigned)e);
+	// Tint the row that is currently being carried, so the tree shows what the drag is holding.
+	const bool isDragged = (e == CurrentDragEntity());
+	if (isDragged)
+		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.00f, 0.78f, 0.25f, 1.00f));
+
 	const bool open = ImGui::TreeNodeEx(label.c_str(), flags);
 
-	// Select on a label click, but ignore the click that only toggled the expand arrow.
-	if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
-		selected = e;
+	if (isDragged)
+		ImGui::PopStyleColor();
 
-	// Drag source: lets you drag this entity onto an EntityField (Unity-style object reference).
-	if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
-	{
-		ImGui::SetDragDropPayload(SIMTARY_ENTITY_PAYLOAD, &e, sizeof(Entity));
-		ImGui::Text("%s", EntityLabel(scene, e).c_str());
-		ImGui::EndDragDropSource();
-	}
+	HierarchyRowInteract(scene, e, selected);
 
 	if (history != nullptr)
 		EntityContextMenu(scene, e, selected, *history);
@@ -205,6 +244,15 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 	ImGui::SameLine();
 	if (ImGui::SmallButton("Deselect"))
 		selected = INVALID_ENTITY;
+
+	// Mode readout: tells you whether the next mouse-up selects a row or drops a reference.
+	if (const Entity dragging = CurrentDragEntity(); dragging != INVALID_ENTITY)
+		ImGui::TextColored(ImVec4(1.00f, 0.78f, 0.25f, 1.00f),
+			"Dragging \"%s\" -- drop it on an entity field (selection kept)",
+			EntityLabel(scene, dragging).c_str());
+	else
+		ImGui::TextDisabled("Click a row to select -- drag a row onto an entity field to reference it");
+
 	ImGui::Separator();
 
 	ImGui::BeginChild("##hierarchy_tree", ImVec2(0, 0), false);
@@ -226,14 +274,19 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 		for (Entity e : matches)
 		{
 			const std::string label = EntityLabel(scene, e) + "##" + std::to_string((unsigned)e);
-			if (ImGui::Selectable(label.c_str(), e == selected))
-				selected = e;
-			if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
-			{
-				ImGui::SetDragDropPayload(SIMTARY_ENTITY_PAYLOAD, &e, sizeof(Entity));
-				ImGui::Text("%s", EntityLabel(scene, e).c_str());
-				ImGui::EndDragDropSource();
-			}
+
+			const bool isDragged = (e == CurrentDragEntity());
+			if (isDragged)
+				ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.00f, 0.78f, 0.25f, 1.00f));
+
+			// Selection is applied by HierarchyRowInteract on release, not by Selectable's own
+			//	press-time return, so a drag out of the list leaves the selection alone.
+			ImGui::Selectable(label.c_str(), e == selected);
+
+			if (isDragged)
+				ImGui::PopStyleColor();
+
+			HierarchyRowInteract(scene, e, selected);
 			if (history != nullptr)
 				EntityContextMenu(scene, e, selected, *history);
 		}

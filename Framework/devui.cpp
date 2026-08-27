@@ -233,7 +233,7 @@ void st::App::DevUIRender() {
 
     if (showBackLog) backlogViewer.render(&showBackLog);
     if (showImguiDemo) ImGui::ShowDemoWindow(&showImguiDemo);
-    if (showGraphicsSettings) graphicsSettings.render(&showGraphicsSettings, renderPath, *this, lensFlare, displaySettings_, projectors_);
+    if (showGraphicsSettings) graphicsSettings.render(&showGraphicsSettings, renderPath, *this, lensFlare, displaySettings_, projectors_, lasers_, optics_);
     if (showAbout) DevUIAbout(&showAbout);
     if (showSceneManager) DevUISceneManager();
     if (showHierarchy || showProperties) DevUIHierarchy();

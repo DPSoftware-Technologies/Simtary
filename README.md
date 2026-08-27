@@ -7,10 +7,11 @@ The shared engine for every game in this workspace.
 Simtary/
 ├── Engine/         engine core
 ├── Framework/      the layer this workspace adds: st::App, st::Run, SceneManager,
-│                   system UI, io/NBT, input, crash, lens flare, Faust, ZMQ
+│                   system UI, io/NBT, input, crash, lens flare, projectors,
+│                   lasers + optics, raycasts, Faust, ZMQ
 ├── libs/           SDL2, ImGui, ImGuizmo, libzmq (submodules) + libgfx, faust
 ├── include/        vendored headers (faust ABI, stb_image)
-├── assets/         ImGui + StLensFlare shaders, faust_arch.h
+├── assets/         ImGui + StLensFlare + StProjector + StLaser shaders, faust_arch.h
 ├── shaders/        compiled engine shader cache — shared, committed
 ├── deps/           sentry-native + openal-soft clones (gitignored, reused)
 ├── crashreporter/  SimtaryCrashReporter — one reporter GUI for all games
@@ -69,6 +70,12 @@ int main (int argc, char* argv[]) {
 | `render/LensFlare.h` | Procedural screen-space flare. |
 | `render/Projector.h` | `st::Projector` / `st::ProjectorSystem` — square, rectangular, elliptical or rounded image projection with projector optics (throw ratio, aspect, lens shift, keystone, distortion, softness, vignette) and a matching volumetric beam. `st::ProjectorSystem::Get()` from anywhere. |
 | `render/ProjectorComponent.cpp` | `"Projector"` native component — the same thing attached from the editor: `NCI_0 = "Projector"` on a spot light, optics as `NCA_0_*` args. |
+| `render/Laser.h` | `st::Laser` / `st::LaserSystem` — traced laser beams: millimetre-thin core plus halo, analytically integrated (no ray march), reflected off mirrors and bent through lenses, stopped on the first surface the ray hits. The impact spot leaves a fading **persistence trail**, so a moving beam draws a line instead of blinking a dot. `st::LaserSystem::Get().Path(id)->hit` is what the beam is on. |
+| `render/LaserComponent.cpp` | `"sticLaser"` native component — the same thing attached from the editor. Picks up a `"sticRay"` on the same entity instead of casting twice. |
+| `render/Optics.h` | `st::Mirror` / `st::Lens` / `st::OpticsSystem` — what laser beams reflect off and refract through: aperture, reflectance/transmittance, tint, scatter, beam scale, spread, and a `Lens::Type` of Spherical / Cylindrical / Toric / Aspheric / Axicon / Prism / Window. Draws nothing itself; `Trace()` is the walk that turns one ray into a list of legs. |
+| `render/OpticsComponents.cpp` | `"sticMirror"` / `"sticLens"` native components. |
+| `scene/Ray.h` | `st::Raycast` / `st::RayHit` / `st::RayQuery` — one raycast over either backend: mesh (`Scene::Intersects`, no physics body needed) or Jolt (`wi::physics::Intersects`), or both with the nearer hit kept. |
+| `scene/RayComponent.h` | `"sticRay"` native component — a raycast bolted to an entity, re-cast every frame. The shared seam for a laser sight, a rangefinder, an interaction prompt and an “am I aiming at it” HUD. |
 | `render/Framebuffer.h` | `st::gfx::Framebuffer` — draw off screen (libgfx canvas, or `wi::image`/`wi::font` on a render target) and bind the result to a material, a light mask or a projector. |
 | `audio/faust/FaustProcessor.h` | `st::audio::FaustProcessor<T>` around an AOT Faust dsp. |
 | `Engine/stNativeComponent.h` | The Unity-like native component model (engine core). |

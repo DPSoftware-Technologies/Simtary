@@ -3,6 +3,8 @@
 #include <Simtary.h>
 #include "render/LensFlare.h"
 #include "render/Projector.h"
+#include "render/Laser.h"
+#include "render/Optics.h"
 #include "display/DisplaySettings.h"
 #include "io/Nbt.h"
 
@@ -27,7 +29,8 @@ public:
     // lensFlare = Milistry's procedural flare, driven by the Content tab.
     void render(bool* isopen, wi::RenderPath3D& path, wi::Application& app,
                 st::LensFlare& lensFlare, st::DisplaySettings& display,
-                st::ProjectorSystem& projectors);
+                st::ProjectorSystem& projectors, st::LaserSystem& lasers,
+                st::OpticsSystem& optics);
 
     // ── persistence (options.stad via SettingsManager) ──────────────────────────
     // Serialize the current pending_ snapshot into an NBT compound, and load it back.
@@ -148,7 +151,8 @@ private:
     void applyToEngine(wi::RenderPath3D& path, wi::Application& app);  // pending_ -> engine
     void drawEngineTab();
     void drawDisplayTab(st::DisplaySettings& display, wi::Application& app);
-    void drawContentTab(st::LensFlare& lensFlare, st::ProjectorSystem& projectors);
+    void drawContentTab(st::LensFlare& lensFlare, st::ProjectorSystem& projectors,
+                        st::LaserSystem& lasers, st::OpticsSystem& optics);
 
     EngineGfx applied_;          // values currently live in the engine
     EngineGfx pending_;          // values being edited in the UI
