@@ -33,6 +33,8 @@
 #include "SubWinStatus.h"
 #include "render/LensFlare.h"
 #include "render/Projector.h"
+#include "render/Laser.h"
+#include "render/Optics.h"
 #include "display/DisplaySettings.h"
 #include "io/SettingsManager.h"
 #include "audio/faust/FaustManager.h"
@@ -119,6 +121,22 @@ public:
     //   ProjectorSystem::ID id = st::ProjectorSystem::Get().Add(projector);
     //   st::ProjectorSystem::Get().Find(id)->intensity = 12.0f;
     st::ProjectorSystem& Projectors() { return projectors_; }
+
+    // Traced laser beams: millimetre-thin shafts that bounce off mirrors, bend
+    // through lenses, stop on the first surface they meet, and leave a fading trail
+    // where they land so a moving beam draws instead of blinking. The projector pass
+    // ray marches and steps straight over something this thin; this one is closed
+    // form. See Framework/render/Laser.h.
+    //
+    // Also reachable from anywhere as st::LaserSystem::Get():
+    //
+    //   LaserSystem::ID id = st::LaserSystem::Get().Add(laser);
+    //   st::LaserSystem::Get().Path(id)->hit.entity;   // what the beam is on
+    st::LaserSystem& Lasers() { return lasers_; }
+
+    // The mirrors and lenses those beams travel through. Separate from the lasers
+    // because one mirror serves every beam in the scene. See Framework/render/Optics.h.
+    st::OpticsSystem& Optics() { return optics_; }
 
     void Initialize() override;
     void Compose(wi::graphics::CommandList cmd) override;
@@ -236,6 +254,12 @@ private:
 
     // Reached through Projectors(); the framework drives Init/Bind/Update itself.
     st::ProjectorSystem projectors_;
+
+    // Reached through Optics() and Lasers(). Declared in this order deliberately: the
+    // laser system traces through the optics, so the optics must outlive it, and
+    // members are destroyed in reverse declaration order.
+    st::OpticsSystem optics_;
+    st::LaserSystem lasers_;
 
     Texture fontTexture;
 

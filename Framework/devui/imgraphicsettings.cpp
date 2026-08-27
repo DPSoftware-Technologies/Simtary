@@ -600,7 +600,8 @@ void GraphicsSettings::drawDisplayTab(st::DisplaySettings& display, wi::Applicat
     display.GUI(app);
 }
 
-void GraphicsSettings::drawContentTab(st::LensFlare& lensFlare, st::ProjectorSystem& projectors) {
+void GraphicsSettings::drawContentTab(st::LensFlare& lensFlare, st::ProjectorSystem& projectors,
+                                      st::LaserSystem& lasers, st::OpticsSystem& optics) {
     // Applies live — Apply/Reset at the bottom of the window only govern the Engine
     // tab's snapshot, so say so rather than let the buttons imply otherwise.
     ImGui::TextDisabled("Applies immediately (Apply/Reset only affect the Engine tab).");
@@ -621,11 +622,27 @@ void GraphicsSettings::drawContentTab(st::LensFlare& lensFlare, st::ProjectorSys
         ImGui::Spacing();
         projectors.GUI();
     }
+
+    if (ImGui::CollapsingHeader("Lasers", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Traced beams (assets/shaders/StLaserCS.hlsl). Like the projectors, the list
+        // itself is scene content - this only edits what is registered.
+        ImGui::TextDisabled("Framework lasers: traced beams, impact spots and persistence trails.");
+        ImGui::Spacing();
+        lasers.GUI();
+    }
+
+    if (ImGui::CollapsingHeader("Optics (mirrors / lenses)")) {
+        // Nothing here renders; these are what bend the beams above.
+        ImGui::TextDisabled("What laser beams reflect off and refract through. Draws nothing itself.");
+        ImGui::Spacing();
+        optics.GUI();
+    }
 }
 
 void GraphicsSettings::render(bool* isopen, wi::RenderPath3D& path, wi::Application& app,
                               st::LensFlare& lensFlare, st::DisplaySettings& display,
-                              st::ProjectorSystem& projectors) {
+                              st::ProjectorSystem& projectors, st::LaserSystem& lasers,
+                              st::OpticsSystem& optics) {
     if (!initialized_) {
         readFromEngine(path, app);
         initialized_ = true;
@@ -643,7 +660,7 @@ void GraphicsSettings::render(bool* isopen, wi::RenderPath3D& path, wi::Applicat
     if (ImGui::BeginTabBar("##gfx_tabbar")) {
         if (ImGui::BeginTabItem("Display")) { drawDisplayTab(display, app); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Engine"))  { drawEngineTab();  ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Content")) { drawContentTab(lensFlare, projectors); ImGui::EndTabItem(); }
+        if (ImGui::BeginTabItem("Content")) { drawContentTab(lensFlare, projectors, lasers, optics); ImGui::EndTabItem(); }
         ImGui::EndTabBar();
     }
     ImGui::EndChild();

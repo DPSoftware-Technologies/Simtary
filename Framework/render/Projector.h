@@ -1,6 +1,7 @@
 #pragma once
 #include "Simtary.h"
 #include "io/Nbt.h"
+#include "scene/Ray.h" // st::LocalAxes - the one axis table Forward is numbered against
 #include "StProjectorInterop.h"
 
 namespace st {
@@ -46,11 +47,18 @@ struct Projector {
 	//           is the OPPOSITE vector (it points from a lit surface back at the
 	//           light); the engine's own shadow/mask camera uses -Y, see SHCAM::init
 	//           in wiRenderer.cpp.
+	//
+	// X was appended rather than inserted where it would read better: scene metadata
+	// already stores these as plain integers, so renumbering 0-3 would silently
+	// re-aim every projector already placed. st::LocalAxes (Framework/scene/Ray.h) is
+	// the one table behind this, shared with the laser, the ray and the optics.
 	enum class Forward {
 		PlusZ,
 		MinusZ,
 		MinusY,
 		PlusY,
+		PlusX,
+		MinusX,
 	};
 
 	bool enabled = true;
@@ -124,6 +132,29 @@ struct Projector {
 	int shadowResolution = 1024;
 	float shadowBias = 0.002f; // in projector clip depth; raise if surfaces self-shadow
 
+	// ── reflections and lenses ───────────────────────────────────────────────────
+	// Let the image bounce off st::Mirror and bend through st::Lens, the same
+	// elements a laser uses (Framework/render/Optics.h).
+	//
+	// This is NOT a traced beam - a projector is a cone, not a ray. What happens
+	// instead is the standard planar-reflection trick: for each element the image can
+	// reach, a VIRTUAL projector is uploaded, standing where the mirror image of this
+	// one would be, and clipped so it only lights what actually passes through that
+	// element's aperture. A mirror reflects position and orientation exactly (the
+	// image comes out flipped, as it should); a lens moves the apex to where the thin
+	// lens images it, which zooms and shifts the picture the way a projector lens
+	// does.
+	//
+	// Off by default (0), because each element the image reaches costs another
+	// ST_PROJECTOR_MAX slot AND another shadow map. 1 is one bounce - a projector
+	// pointed at a mirror lighting the wall behind it. Bounces do NOT compound: a
+	// virtual projector does not itself reflect, so two facing mirrors give two
+	// images, not an infinite corridor of them.
+	int opticBounces = 0;
+
+	// Elements dimmer than this are not worth a slot or a shadow map.
+	float opticMinThroughput = 0.02f;
+
 	// ── surfaces ─────────────────────────────────────────────────────────────────
 	bool lightSurfaces = true;
 	bool lambert = true;   // fall off with the angle between surface and lens
@@ -189,7 +220,8 @@ public:
 	size_t Count() const { return projectors_.size(); }
 
 	// Refreshes followed transforms, rebuilds the matrices and uploads. Call once per
-	// frame, after the scene update so followed entities carry this frame's transform.
+	// frame, after the scene update so followed entities carry this frame's transform,
+	// and after st::OpticsSystem::Update when any projector has opticBounces set.
 	void Update(const wi::scene::Scene& scene, float dt);
 
 	// Records each shadow-casting projector's depth map into `cmd`. Must run after the

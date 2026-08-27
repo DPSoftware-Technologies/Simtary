@@ -14,7 +14,11 @@
 
 // Hard ceiling on projectors uploaded per frame. The pass loops over them per
 // pixel, so this is a cost limit, not a memory one.
-static const uint ST_PROJECTOR_MAX = 8;
+//
+// A projector reflected off a mirror is uploaded as a SECOND entry (a virtual
+// projector standing behind the glass), so a scene with mirrors spends these faster
+// than the number of projector components suggests.
+static const uint ST_PROJECTOR_MAX = 16;
 
 // Outline of the projected image, evaluated in the projector's own NDC where the
 // image spans [-1,1] on both axes (the aspect ratio lives in the matrix).
@@ -74,10 +78,32 @@ struct StProjector
 	float shadow_texel;        // 1 / shadow map resolution, for the PCF taps
 	float pad0;
 	float pad1;
+
+	// ── aperture clip ────────────────────────────────────────────────────────────
+	// A virtual projector - the reflection of a real one in a mirror, or its image
+	// through a lens - is a full cone from a point behind the glass, and without this
+	// it would light the whole room from there instead of only the patch the mirror
+	// actually redirects. Light is only delivered where the segment from this
+	// projector to the lit point passes THROUGH the element's aperture.
+	//
+	// clip_radius 0 means no clip: a real projector, lighting everything in its cone.
+	// clip_half_y < 0 means the aperture is circular with radius clip_radius;
+	// otherwise it is a rectangle, clip_radius by clip_half_y.
+	float3 clip_center;
+	float clip_radius;
+
+	float3 clip_normal;
+	float clip_half_y;
+
+	float3 clip_tangent;
+	float pad2;
+
+	float3 clip_bitangent;
+	float pad3;
 };
 
 #ifdef __cplusplus
-static_assert(sizeof(StProjector) == 208, "StProjector must stay 16-byte-row aligned for the shader");
+static_assert(sizeof(StProjector) == 272, "StProjector must stay 16-byte-row aligned for the shader");
 #endif // __cplusplus
 
 #endif // ST_SHADERINTEROP_PROJECTOR_H

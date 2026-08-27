@@ -324,7 +324,7 @@ function(simtary_add_app)
         ${SIMTARY_FRAMEWORK_DIR}    # stApp.h, stRun.h, io/, sysui/, input/, ...
         ${SIMTARY_ROOT}/Engine      # Simtary.h and the rest of the engine core
         ${SIMTARY_ROOT}/include     # vendored headers (faust ABI, stb_image)
-        ${SIMTARY_ROOT}/assets/shaders  # shader interop headers shared with C++ (StProjectorInterop.h)
+        ${SIMTARY_ROOT}/assets/shaders  # shader interop headers shared with C++ (StProjectorInterop.h, StLaserInterop.h)
         ${APP_SOURCE_DIR}           # the project's own scenes/ + components/
         ${_gendir}                  # generated version.h
         ${APP_EXTRA_INCLUDES}
@@ -390,11 +390,13 @@ function(simtary_add_app)
     simtary_compile_shader(TARGET ${APP_NAME} PROFILE vs_6_0 SOURCE ${SIMTARY_ROOT}/assets/shaders/StLensFlareVS.hlsl)
     simtary_compile_shader(TARGET ${APP_NAME} PROFILE ps_6_0 SOURCE ${SIMTARY_ROOT}/assets/shaders/StLensFlarePS.hlsl)
 
-    # ENGINE_ENV: unlike the shaders above, the projector pass runs inside the engine's
-    # frame - it reads the depth buffer, the camera constants and the bindless texture
-    # heap, so it includes globals.hlsli and needs the engine's compiler flags.
+    # ENGINE_ENV: unlike the shaders above, these run inside the engine's frame - they
+    # read the depth buffer, the camera constants and the bindless heaps, so they
+    # include globals.hlsli and need the engine's compiler flags.
     simtary_compile_shader(TARGET ${APP_NAME} PROFILE cs_6_0 ENGINE_ENV
         SOURCE ${SIMTARY_ROOT}/assets/shaders/StProjectorCS.hlsl)
+    simtary_compile_shader(TARGET ${APP_NAME} PROFILE cs_6_0 ENGINE_ENV
+        SOURCE ${SIMTARY_ROOT}/assets/shaders/StLaserCS.hlsl)
 
     # ── engine shader sources + shared compiled cache ─────────────────────────
     # The engine compiles its ~360 HLSL shaders on first launch and caches the DXIL

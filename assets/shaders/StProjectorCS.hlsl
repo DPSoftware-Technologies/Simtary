@@ -135,6 +135,39 @@ inline float3 projector_image(in StProjector projector, in float3 P, out float g
 	return image * projector.intensity;
 }
 
+// Does the light from this projector actually get to P through the element that made
+// it? A real projector has no clip and always answers yes. A virtual one - the mirror
+// image of a projector, or its image through a lens - is a cone from a point behind
+// the glass, and only the part of that cone passing through the aperture is real
+// light; the rest would be the image sprayed across the whole room from inside a wall.
+inline bool projector_aperture(in StProjector projector, in float3 P)
+{
+	if (projector.clip_radius <= 0)
+		return true; // no clip - a real projector
+
+	const float3 to_point = P - projector.position;
+	const float denominator = dot(to_point, projector.clip_normal);
+	if (abs(denominator) < 1e-6)
+		return false; // parallel to the aperture, so it never passes through it
+
+	// t is in units of the whole lens-to-point segment, so the aperture has to sit
+	// strictly between the two for the light to have crossed it.
+	const float t = dot(projector.clip_center - projector.position, projector.clip_normal) / denominator;
+	if (t <= 0 || t >= 1)
+		return false;
+
+	const float3 crossing = projector.position + to_point * t;
+	const float3 local = crossing - projector.clip_center;
+
+	const float u = dot(local, projector.clip_tangent);
+	const float v = dot(local, projector.clip_bitangent);
+
+	if (projector.clip_half_y < 0)
+		return (u * u + v * v) <= projector.clip_radius * projector.clip_radius;
+
+	return abs(u) <= projector.clip_radius && abs(v) <= projector.clip_half_y;
+}
+
 // Depth map rendered from the projector itself - a real shadow map, so it sees
 // blockers the camera cannot: geometry off screen, and geometry the camera views from
 // a completely different angle. The clip position is the SAME one the gate uses, so
@@ -332,7 +365,7 @@ inline float3 projector_beam(in StProjector projector, in float3 ray_origin, in 
 		const float3 image = projector_image(projector, X, gate, clip);
 
 		[branch]
-		if (gate > 0.001)
+		if (gate > 0.001 && projector_aperture(projector, X))
 		{
 			const float3 to_sample = X - projector.position;
 			const float dist = length(to_sample);
@@ -415,7 +448,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 				const float3 image = projector_image(projector, P, gate, clip);
 
 				[branch]
-				if (gate > 0.001)
+				if (gate > 0.001 && projector_aperture(projector, P))
 				{
 					float3 to_lens = projector.position - P;
 					const float dist = length(to_lens);
