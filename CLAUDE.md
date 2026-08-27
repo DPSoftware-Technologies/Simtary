@@ -24,7 +24,7 @@ Simtary/
 │                   every project's FetchContent
 ├── crashreporter/  SimtaryCrashReporter — one reporter GUI for all games
 ├── cmake/          SimtaryBootstrap, SimtaryApp, SimtaryPlatform, IncrementBuild
-├── tests/ tools/   nbt_test, make_player_descriptor
+├── tests/ tools/   nbt_test, asset_pack_test, stpack, make_player_descriptor
 └── CMakeLists.txt
 ```
 
@@ -44,6 +44,7 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `devui.cpp`, `devui/` | **DevUI** — developer tooling, not game UI: menu bar, backlog, graphics settings, hierarchy/properties, scene manager, About. Gated by `AppConfig::devUI`. |
 | `stLoading.cpp` | Default `RenderLoadingScreen` — the pipeline warm-up overlay plus whatever `LoadingState` carries. |
 | `io/` | `Nbt` (the `.stad`/`.stcd` format), `NbtStore`, `SettingsManager`, `SaveGame`, `PlayerPrefs`, `UserData` (LocalLow path resolver). |
+| `io/asset/` | **The asset package**: `.staod` index + `.stafp<N>` payload parts + `.stsd` maps. `AssetFormat.h` is the on-disk layout, `AssetPack` reads it, `AssetPackWriter` builds it, `SceneDescriptor` splits and rebuilds `.wiscene`, `StHash.h` is XXH64. `AssetSystem` is the only engine-aware file: it mounts packages and installs `wi::helper::SetAssetSourceOverride` so every engine read resolves through them. Reach it anywhere via `st::AssetSystem::Get()`, or `App::Assets()`. |
 | `input/InputSystem.*` | Centralized action/axis keymap, refreshed once per frame. |
 | `crash/CrashHandler.*` | sentry-native + Crashpad, offline only; launches `SimtaryCrashReporter`. |
 | `render/LensFlare.*` | Procedural screen-space flare (`assets/shaders/StLensFlare*`). |
@@ -58,7 +59,8 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `render/Framebuffer.*` | `st::gfx::Framebuffer` — an off-screen surface you draw into and hand to a material, a light mask or a projector. CPU mode wraps libgfx (`GFXcanvas`) and owns the staging texture, row pitch and flip; GPU mode is a render target you draw into with `wi::image`/`wi::font` between `Begin()`/`End()`. |
 | `display/DisplaySettings.*` | Player-facing video options: window mode, monitor, resolution, refresh rate, v-sync, frame cap, render scale. NOT DevUI — `st::App::Display().GUI(app)` drops into a game's own options menu, and DevUI renders the same panel in its Display tab. Sole owner of v-sync and the frame cap; `GraphicsSettings` deliberately no longer carries them. |
 | `audio/faust/` | `FaustManager` (OpenAL DSP host) + `FaustProcessor<T>`. Starts with no processors — games register their own AOT instruments. |
-| `anim/`, `eventBus.*`, `ZmqHandler.*`, `SubWinStatus.*` | Animation descriptors, main-thread event bus, ZMQ bridge, native (Win32/X11) loading window. |
+| `SubWinStatus.*` | The native (Win32/X11) loading window, on its own thread, because a blocking `Scene::Load()` means no ImGui frame can be drawn. Two text lines - a phase and a dimmed, middle-elided detail line - plus a progress bar. Every setter is thread-safe; the detail line is written from loading workers. |
+| `anim/`, `eventBus.*`, `ZmqHandler.*` | Animation descriptors, main-thread event bus, ZMQ bridge, native (Win32/X11) loading window. |
 
 ### Project hook surface (`st::App`)
 
@@ -69,8 +71,11 @@ UI: `RenderUI()` (game UI, always), `RenderDevUI()` + `OnDevUIMenu()` (dev only)
 Render: `OnRenderPathSetup(path)`, `OnRender()`, `OnPreCompose(cmd)`, `OnCompose(cmd)`.
 Input: `OnEvent(SDL_Event) -> bool` (true = consumed).
 Scenes: `OnSceneLoaded(name)`, `OnSceneUnloaded(name)`.
-Instance methods: `Audio()`, `RequestQuit()`, `IsDevUIVisible()/SetDevUIVisible()/ToggleDevUI()`,
-`Loading()`, `SetLoadingStatus(text, percent)`.
+Instance methods: `Audio()`, `Assets()`, `RequestQuit()`,
+`IsDevUIVisible()/SetDevUIVisible()/ToggleDevUI()`, `Loading()`,
+`SetLoadingStatus(text, percent)`.
+Also `HandleDroppedFile(path)` — `st::Run` calls it for `SDL_DROPFILE` after `OnEvent`
+declines, and the default hands it to the DevUI Asset Explorer.
 
 **DevUI vs game UI is the important distinction.** Anything in `devui/` is tooling and
 must stay behind `IsDevUIVisible()`. `AppConfig::devUI` is `Visible` (dev default),
@@ -108,7 +113,8 @@ counter; only a build of that project does.
 `cmake/SimtaryBootstrap.cmake` is the single include a game needs; it pulls this
 whole workspace in with `add_subdirectory(... EXCLUDE_FROM_ALL)` and exposes:
 
-- `simtary_add_app(NAME ... ORGANIZATION ... ICON ... [SOURCE_DIR] [ASSETS_DIR] [CONTENT_SUBDIR] [EXTRA_SOURCES|INCLUDES|LIBS] [NO_SHADER_WARM] [NO_CRASH_REPORTER])`
+- `simtary_add_app(NAME ... ORGANIZATION ... ICON ... [SOURCE_DIR] [ASSETS_DIR] [CONTENT_SUBDIR] [EXTRA_SOURCES|INCLUDES|LIBS] [NO_SHADER_WARM] [NO_CRASH_REPORTER] [PACK_ASSETS] [PACK_ONLY] [PACK_NAME] [PACK_PART_SIZE] [PACK_LEVEL])`
+- `simtary_pack_assets(TARGET ... CONTENT_DIR ... [NAME] [PART_SIZE] [LEVEL] [PACK_SUBDIR] [SCENE_SUBDIR])`
 - `simtary_compile_shader(TARGET ... SOURCE ... PROFILE ... [ENTRY] [OUTPUT_NAME])`
 - `simtary_faust_regen(NAME ... CLASS ... DSP ... OUTPUT ...)`
 - `Simtary::AppFlags` — the exceptions-off / RTTI-off contract as an INTERFACE target.
@@ -301,6 +307,124 @@ would read better because scene metadata already stores these as plain integers,
 renumbering 0-3 would silently re-aim every projector, laser and mirror already placed.
 `Projector::Forward` is defined against the same table rather than carrying a second
 copy of it.
+
+**The asset package is three formats, and the split between them is the whole point.**
+`.staod` is the INDEX, `.stafp<N>` are the PAYLOAD parts, `.stsd` is one MAP. They are
+separate files because they answer different questions at different times.
+
+- `.staod` is deliberately **not** NBT. NBT is a linear self-describing tree: finding
+  one asset means walking every tag before it and allocating a node for each, which is
+  fine for a 40-key options file and wrong for a 100,000-entry index consulted during a
+  load screen. The index is a flat, fixed-stride, memory-mapped table behind a
+  power-of-two open-addressed bucket array, so a lookup is `id & (bucketCount-1)`, a
+  linear probe, and one 80-byte struct read - no parse, no allocation. The mapped bytes
+  ARE the data structure.
+- `.stsd` keeps NBT for the metadata a person or a tool reads (name, source, the asset
+  ID list) and keeps the megabytes OUT of it: the entity payload is an out-of-band,
+  page-aligned blob, so opening a map to read its name does not parse a tag tree the
+  size of the map.
+- Asset IDs are XXH64 of the lower-cased path; the name heap stores the ORIGINAL case.
+  Both are needed: the engine asks materials for the exact string they saved (case
+  sensitive on Linux), while a lookup must not care whether someone typed
+  `Textures/Wall.DDS`. See `StHash.h` - `NormalizePath` vs `CanonicalPath`.
+
+**Converting a `.wiscene` is a header patch, not a re-encode, and that is why it is
+reversible.** From archive version 90 on, `wi::scene::Scene::Serialize` writes
+`jump_before`/`jump_after` right after its `reserved` word: absolute offsets bracketing
+the embedded resource block. So the split copies bytes `[0, jumpBefore)` verbatim,
+appends a `uint64_t 0` resource count, and rewrites `jumpAfter` - the entity bytes are
+never interpreted, so nothing can be lost in a component format this build does not
+understand. Merging reverses it. Both of Milistry's maps round-trip **byte-identically**
+(`asset_pack_test` asserts this, and `stpack unpack --rebuild-scenes` proves it on the
+real 37/39 MB files). Transcribing ~40 versioned component managers into NBT instead
+would have to be re-done on every engine merge and would make the conversion lossy;
+moving bytes is exact by construction.
+
+**Codec choice is per asset and is driven by the EXTENSION, not just the type.** A
+`.dds`/`.png`/`.ogg` is already entropy-coded: zstd buys 1-3%, costs a decompress on
+every read, and - the real cost - gives up the zero-copy mapped read that mip and audio
+streaming depend on. So those stay `Codec::None`. Raw-sample files that land on the same
+*types* (`.bmp`, `.tga`, `.hdr`, `.wav`) do compress, which is why
+`DefaultCodecFor(path, type, size)` exists alongside the type-only overload. Everything
+large and compressible gets `ZstdChunked`: fixed 256 KB frames plus an offset table, so
+a ranged read decodes only the frames it overlaps and stays seekable. Whole-frame
+`Zstd` is the one codec that is NOT streamable, and the writer clears
+`AssetFlag_Streamable` when it picks it.
+
+**A pack is mounted by installing ONE override, not by teaching the engine about it.**
+`wi::helper::SetAssetSourceOverride` already sits under every `FileRead`/`FileExists`
+the engine performs, so `st::AssetSystem::Install()` redirects the resource manager,
+streaming, video and scripts at once, and any path the packs do not hold falls through
+to the real filesystem - which is what keeps shader caches, save data and loose
+development assets working beside a packed game. Mount before `wi::initializer`;
+`st::Run` does it from `AppConfig::assetPacks`. Later mounts shadow earlier ones, which
+is how a patch pack works.
+
+**`FileExists` was hooked and `FileTimestamp` was not, and that combination was fatal.**
+`FileTimestamp` asked the (overridden) `FileExists`, was told yes for a packaged path,
+then called `std::filesystem::last_write_time` on a path with no file behind it. With
+`/EHsc-` the resulting `filesystem_error` is a `__fastfail`, so the process died with
+`STATUS_STACK_BUFFER_OVERRUN` and nothing in the log. `AssetSourceOverride` now carries
+an optional `file_stat` that answers both `FileSize` and `FileTimestamp`, and the
+filesystem fallback uses the `error_code` overload. `AssetSystem` reports timestamp **0**
+on purpose: a mounted package is immutable, and `wi::resourcemanager` reloads whenever
+the timestamp it sees is newer than the one it cached, so a value that never rises is
+exactly "this can never go stale".
+
+**Every part is mapped at `Open()`, not on first touch.** The read path is `const` and
+lock-free because `wi::helper`'s override is called from every loading job at once, and
+a lazy map needs a lock there. Mapping is address space, not memory: a 40 GB package
+costs 40 GB of a 128 TB address space and no RAM, with pages arriving from the page
+cache on touch.
+
+**The packer is a build step, so it links no engine.** `tools/stpack` builds from
+`Framework/io/asset/*` + `Framework/io/Nbt.cpp` + its own copy of zstd
+(`tools/stpack_zstd.cpp`, the same `extern "C" { #include zstd.c }` trick as
+`Engine/Utility/utility_common.cpp`). It is a normal target rather than a configure-time
+bootstrap like the `.stpd` reader, because it is needed while a game BUILDS, not while
+one configures - and it is defined outside `SIMTARY_BUILD_TESTS` because a game adds
+this workspace `EXCLUDE_FROM_ALL` and pulls the tool in through its pack target's
+`add_dependencies`.
+
+**Packing is incremental; asset copying is not.** `<APP>_Pack` is a real
+`add_custom_command` with `DEPENDS` on a `CONFIGURE_DEPENDS` glob of the content tree,
+unlike `<APP>_Assets`, which is deliberately always out of date. It has to be:
+re-running zstd over 76 MB of maps on every build, changed or not, is tens of seconds
+each time. `<APP>_Repack` forces it; `<APP>_AssetsResync` drops the stamp so the next
+ordinary build regenerates the package it just wiped.
+
+**A packed build must not also ship the `.wiscene`.** `copy_directory` has no filter, so
+`<APP>_Assets` copies the maps along with everything else; with `PACK_ASSETS` on, the
+copy step then deletes exactly those files from the output. Leaving them costs ~37 MB
+each of duplicated content AND leaves a second copy that can go stale and still be
+found. The removal lives on the copy target, not the pack target, because the pack
+target is incremental and skips itself when up to date - by which time the copy has
+already put the `.wiscene` back.
+
+**The loading window carries two lines because two different things report.**
+`SubWinStatus` has a `status` (the PHASE - "Loading materials", "Processing assets",
+pushed from the main thread by `st::App::SetLoadingStatus`) and a `detail` (WHAT is in
+flight - the asset, its size, and n-of-total, pushed from the LOADING WORKER THREADS by
+`st::AssetSystem`'s progress callback). One field cannot serve both: the fast producer
+fires several times per frame and would overwrite the slow one, so the phase would never
+be readable. Setting the status clears the detail, because a phase change retires
+whatever belonged to the previous phase. The detail line is elided in the MIDDLE
+(`SS_PATHELLIPSIS`, hand-rolled on X11) - it is a path, and dropping the tail leaves
+every texture in a folder looking identical.
+
+**Per-asset progress exists because there is a dead spot the engine cannot report.**
+`Scene::Serialize` reports per component manager, and then waits for every texture the
+scene referenced to finish loading. On a real map that wait IS the load, and nothing
+reports during it - the bar sits still. Every one of those loads is a read through
+`st::AssetSystem`, so that is the one place that knows which asset is in flight;
+`SetLoadProgressCallback` fires there. It runs on job-system workers while the main
+thread is blocked inside `Scene::Load()`, which rules out `loading_`, the `EventBus`
+(main-thread only by contract), ImGui and the scene - `SubWinStatus` is the only sink
+built for it, and while a scene loads it is the only thing that can paint anyway. The
+callback deliberately does NOT move the progress bar: the engine owns it for the whole
+load, and a second writer would make it jump backwards. `assetsExpected` comes from the
+`.stsd`'s own reference list minus whatever is missing, which is what makes the count a
+real "13 of 14" rather than a running total with no denominator.
 
 **Shader cache.** `Simtary/shaders/` is staged into every game's output before the
 incremental `offlineshadercompiler` pre-pass, so first launch is never cold. After a

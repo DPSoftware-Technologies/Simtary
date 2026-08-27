@@ -6,9 +6,11 @@
 #include "stRun.h"
 #include "crash/CrashHandler.h"
 #include "io/UserData.h"
+#include "io/asset/AssetSystem.h"
 #include "input/InputSystem.h"
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 #ifdef _WIN32
 #include <SDL_syswm.h>
@@ -55,6 +57,29 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     st::detail::SetActiveConfig(&config);
     st::userdata::Configure(config.organization, config.name);
 
+    // Asset packages, before ANYTHING reads content. wi::helper::FileRead is the single
+    // path every engine load goes through, and installing the override here means the
+    // splash, the shader warm-up and the first scene all resolve through the packs
+    // without one of them having been special-cased. A path no pack holds falls through
+    // to the filesystem, so mounting nothing changes nothing.
+    for (const std::string& packPath : config.assetPacks) {
+        std::string packError;
+        if (st::AssetSystem::Get().Mount(packPath, config.assetMountPoint, &packError,
+                                         config.assetPacksVerify))
+            continue;
+
+        printf("Asset package %s could not be mounted: %s\n", packPath.c_str(), packError.c_str());
+        if (config.assetPacksRequired) {
+            // A shipped build with a broken install should say so at the door rather
+            // than start up and present an empty world.
+            wi::helper::messageBox("The game content could not be loaded.\n\n" + packError +
+                                   "\n\nReinstalling or verifying the game files should fix this.",
+                                   config.name + " - content error");
+            return 1;
+        }
+    }
+    if (st::AssetSystem::Get().MountCount() > 0) st::AssetSystem::Get().Install();
+
     printf("Starting crash reporter.\n");
     st::crash::Init(argv[0], config.name.c_str());
 
@@ -81,7 +106,16 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
         // SOFTWARE renderer — Vulkan ain't active yet, use this!
         SDL_Renderer* splashRenderer = SDL_CreateRenderer(window.get(), -1, SDL_RENDERER_SOFTWARE);
         if (splashRenderer) {
+            // SDL reads the filesystem directly, so it does not see the asset source
+            // override the engine uses. A packed-only build would otherwise lose its
+            // splash, which is the first thing anyone notices.
             SDL_Surface* splashSurface = SDL_LoadBMP(config.splashImage.c_str()); // BMP = no extra lib needed
+            std::vector<uint8_t> splashBytes;
+            if (splashSurface == nullptr &&
+                st::AssetSystem::Get().Read(config.splashImage, splashBytes) && !splashBytes.empty()) {
+                if (SDL_RWops* rw = SDL_RWFromConstMem(splashBytes.data(), (int)splashBytes.size()))
+                    splashSurface = SDL_LoadBMP_RW(rw, 1);   // 1 = SDL closes the RWops
+            }
             SDL_Texture* splashTexture = splashSurface
                 ? SDL_CreateTextureFromSurface(splashRenderer, splashSurface)
                 : nullptr;
@@ -171,6 +205,21 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
                     break;
                 default:
                     break;
+            }
+
+            // Files dropped onto the window. Handled here rather than left to the generic
+            // hook below for two reasons: SDL allocates event.drop.file and the receiver
+            // owns it, so the free has to happen on every path; and the capture guard
+            // further down only filters pointer and key events, so a drop would sail past
+            // it either way. The project gets first refusal through OnEvent, then the
+            // DevUI Asset Explorer.
+            if (event.type == SDL_DROPFILE || event.type == SDL_DROPTEXT) {
+                if (event.drop.file != nullptr) {
+                    if (event.type == SDL_DROPFILE && !application.OnEvent(event))
+                        application.HandleDroppedFile(event.drop.file);
+                    SDL_free(event.drop.file);
+                }
+                continue;
             }
 
             // Developer-tooling toggle. Checked before the capture guard below, not just

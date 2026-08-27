@@ -21,6 +21,7 @@ void st::App::DevUIMenuBar() {
                 ImGui::MenuItem("Scene Manager", NULL, &showSceneManager);
                 ImGui::MenuItem("Hierarchy", NULL, &showHierarchy);
                 ImGui::MenuItem("Properties", NULL, &showProperties);
+        ImGui::MenuItem("Asset Explorer", NULL, &showAssetExplorer);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Render")) {
@@ -236,6 +237,7 @@ void st::App::DevUIRender() {
     if (showGraphicsSettings) graphicsSettings.render(&showGraphicsSettings, renderPath, *this, lensFlare, displaySettings_, projectors_, lasers_, optics_);
     if (showAbout) DevUIAbout(&showAbout);
     if (showSceneManager) DevUISceneManager();
+    if (showAssetExplorer) DevUIAssetExplorer();
     if (showHierarchy || showProperties) DevUIHierarchy();
     if (showFaustDSP) faustManager.DrawPanel("Faust DSP", &showFaustDSP);
 
@@ -251,4 +253,21 @@ void st::App::DevUIHierarchy() {
 
     if (showHierarchy) HierarchyWindow(scene, selectedEntity_, &showHierarchy);
     if (showProperties) PropertiesWindow(scene, selectedEntity_, &showProperties);
+}
+
+// ─── Asset Explorer ────────────────────────────────────────────────────────────
+// Browse the mounted .staod packages, inspect where an asset actually lives, drop
+// files in to build a new package. Developer tooling: it is only reachable while
+// DevUI is visible, and a shipped build with DevUIMode::Disabled never draws it.
+void st::App::DevUIAssetExplorer() {
+    assetExplorer_.Draw(&showAssetExplorer);
+}
+
+void st::App::HandleDroppedFile(const std::string& path) {
+    // Dropping onto a shipped build must do nothing: the explorer is DevUI, and the
+    // import tray writes packages. A project that wants player-facing drag-and-drop
+    // overrides OnEvent and consumes SDL_DROPFILE before this is reached.
+    if (!IsDevUIVisible()) return;
+    showAssetExplorer = true;
+    assetExplorer_.QueueDrop(path);
 }

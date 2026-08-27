@@ -30,6 +30,7 @@
 #include "devui/imgraphicsettings.h"
 #include "devui/imhierarchy.h"
 #include "devui/imeditor.h"
+#include "devui/imassets.h"
 #include "SubWinStatus.h"
 #include "render/LensFlare.h"
 #include "render/Projector.h"
@@ -37,6 +38,7 @@
 #include "render/Optics.h"
 #include "display/DisplaySettings.h"
 #include "io/SettingsManager.h"
+#include "io/asset/AssetSystem.h"
 #include "audio/faust/FaustManager.h"
 
 #include <SDL_scancode.h>
@@ -92,6 +94,31 @@ struct AppConfig {
     // Background ZMQ subscriber; messages are re-published on the main thread as
     // the "zmq.message" event. Empty = do not start the bridge.
     std::string zmqEndpoint = "tcp://127.0.0.1:5556";
+
+    // ── asset packages ─────────────────────────────────────────────────────────
+    // .staod indexes to mount before anything loads, in order — a later pack shadows
+    // an earlier one, which is how a patch pack works. Paths are relative to the
+    // working directory (the exe folder), so "assets/content.staod" is the one
+    // simtary_add_app(PACK_ASSETS) produces.
+    //
+    // Leave empty and the game reads loose files exactly as it always has: mounting is
+    // additive, and any path the packs do not hold falls through to the filesystem.
+    std::vector<std::string> assetPacks;
+
+    // Prefix stripped from a requested path before it is looked up in a pack. The
+    // build copies assets/contents/ into <exe>/assets/, so the running game asks for
+    // "assets/scenes/s1map.stsd" while the pack stores "scenes/s1map.stsd".
+    std::string assetMountPoint = "assets/";
+
+    // Treat a listed pack that will not open as fatal. Off during development, where a
+    // missing pack should just mean "run from loose files"; ON for a shipped build,
+    // where it means the install is broken and should say so instead of silently
+    // starting with no content.
+    bool assetPacksRequired = false;
+
+    // Hash every part on mount. A full sequential read of the whole package, so it is
+    // for an installer or a "verify game files" menu item, not for every launch.
+    bool assetPacksVerify = false;
 
     // Developer tooling. Ship a game with Hidden (or Disabled); Visible is the
     // development default.
@@ -177,6 +204,13 @@ public:
     // same renderer the game uses — see GraphicsSettings::MirrorTo.
     GraphicsSettings& Graphics() { return graphicsSettings; }
 
+    // ── assets ─────────────────────────────────────────────────────────────────
+    // Mounted asset packages. Mount more at runtime (DLC, a patch pack), look an asset
+    // up, or load a .stsd map:
+    //     Assets().LoadScene(mapScene, "assets/scenes/s1map.stsd");
+    // AppConfig::assetPacks is mounted for you before the engine starts.
+    st::AssetSystem& Assets() { return st::AssetSystem::Get(); }
+
     // ── loading ────────────────────────────────────────────────────────────────
     // What is loading right now. Driven by SceneManager transitions and by scenes
     // calling Scene::ReportProgress().
@@ -189,6 +223,12 @@ public:
     // Raw SDL event, forwarded by st::Run before the engine sees it. Returns true
     // if the app consumed it. Public because st::Run calls it from the main loop.
     virtual bool OnEvent(const SDL_Event& /*event*/) { return false; }
+
+    // A file or folder dropped onto the window. st::Run calls this only after
+    // OnEvent() has declined the drop, so a project that wants drops of its own keeps
+    // first refusal. The default hands it to the DevUI Asset Explorer's import tray,
+    // and ignores it when DevUI is not visible. Public for the same reason OnEvent is.
+    virtual void HandleDroppedFile(const std::string& path);
 
 protected:
     // ── project hooks ──────────────────────────────────────────────────────────
@@ -280,10 +320,20 @@ private:
     void DevUISceneManager();   // dockable window: list/select/load scenes + reload from scratch
     void DevUIAbout(bool *show);
     void DevUIHierarchy();      // Hierarchy (Explorer) + Properties (Inspector) windows
+    void DevUIAssetExplorer();  // dockable window: browse/import/extract mounted packs
+
+    // Per-asset load progress out of st::AssetSystem. Static because the callback is a
+    // plain function pointer, and called from loading worker threads — see the
+    // definition for what that means it may touch.
+    static void OnAssetLoadProgress(const st::AssetLoadProgress& progress, void* userdata);
 
     // Editor mode. Owns the second render path + free camera, so it has to outlive any
     // single frame; st::App::Exit() tears it down.
     EditorUI editor_;
+
+    // Asset Explorer (DevUI). Holds the import tray across frames, so a dropped file
+    // survives until the package is written.
+    AssetExplorer assetExplorer_;
 
 
 
@@ -295,6 +345,7 @@ private:
     bool showHierarchy = false;
     bool showProperties = false;
     bool showFaustDSP = false;
+    bool showAssetExplorer = false;
 
     bool STDDBoneLines = false;
     bool STDDCameras = false;
