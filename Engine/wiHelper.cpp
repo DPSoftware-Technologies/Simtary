@@ -1247,6 +1247,12 @@ namespace wi::helper
 		return ret;
 	}
 
+	// --- SIMTARY EXTENSION: read-only asset source override ---
+	// Declared up here rather than beside its accessors below because FileSize and
+	// FileTimestamp, which sit between the two, consult it.
+	static AssetSourceOverride g_asset_source;
+	// ----------------------------------------------------------
+
 	void DirectoryCreate(const std::string& path)
 	{
 		std::filesystem::create_directories(ToNativeString(path));
@@ -1254,6 +1260,15 @@ namespace wi::helper
 
 	size_t FileSize(const std::string& fileName)
 	{
+		// SIMTARY: same first refusal as FileRead. A packaged asset has no file to open,
+		// so without this it reports 0 and any caller sizing a buffer from it gets an
+		// empty one.
+		if (g_asset_source.file_stat != nullptr)
+		{
+			uint64_t size = 0, timestamp = 0;
+			if (g_asset_source.file_stat(fileName, &size, &timestamp, g_asset_source.userdata))
+				return (size_t)size;
+		}
 #ifdef _WIN32
 		std::ifstream file(ToNativeString(fileName), std::ios::binary | std::ios::ate);
 #else
@@ -1272,8 +1287,6 @@ namespace wi::helper
 	}
 
 	// --- SIMTARY EXTENSION: read-only asset source override ---
-	static AssetSourceOverride g_asset_source;
-
 	void SetAssetSourceOverride(const AssetSourceOverride& source)
 	{
 		g_asset_source = source;
@@ -1385,9 +1398,26 @@ namespace wi::helper
 
 	uint64_t FileTimestamp(const std::string& fileName)
 	{
-		if (!FileExists(fileName))
+		// SIMTARY: the asset source gets first refusal, and it MUST - FileExists is
+		// overridden, so for a packaged path this function used to be told "yes, that
+		// exists" and then call last_write_time on a path with no file behind it. That
+		// throws filesystem_error, and with /EHsc- a throw is a __fastfail: the process
+		// dies with STATUS_STACK_BUFFER_OVERRUN and nothing in the log.
+		if (g_asset_source.file_exists != nullptr &&
+			g_asset_source.file_exists(fileName, g_asset_source.userdata))
+		{
+			uint64_t size = 0, timestamp = 0;
+			if (g_asset_source.file_stat != nullptr)
+				g_asset_source.file_stat(fileName, &size, &timestamp, g_asset_source.userdata);
+			return timestamp;
+		}
+
+		// The error_code overload for the same reason: a file deleted between the
+		// FileExists check and this call is a race, not a reason to abort the process.
+		std::error_code ec;
+		auto tim = std::filesystem::last_write_time(ToNativeString(fileName), ec);
+		if (ec)
 			return 0;
-		auto tim = std::filesystem::last_write_time(ToNativeString(fileName));
 		return std::chrono::duration_cast<std::chrono::duration<uint64_t>>(tim.time_since_epoch()).count();
 	}
 

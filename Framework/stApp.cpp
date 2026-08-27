@@ -20,7 +20,10 @@ const st::AppConfig& st::App::Config() {
     return g_config ? *g_config : fallback;
 }
 
-st::App::App() : m_loadingScreen("Starting up", 300, 75) {}
+// 300x75 fitted one short line. The loading window now carries a phase, a percentage
+// and an asset path on its own row, and a path is long — at 300 wide every one of them
+// elided down to nothing useful.
+st::App::App() : m_loadingScreen("Starting up", 470, 124) {}
 
 void st::App::SetDevUIVisible(bool visible) {
     // DevUIMode::Disabled is a build decision, not a runtime one: a shipped game
@@ -42,12 +45,50 @@ void st::App::SetLoadingStatus(std::string status, int percent) {
     if (percent >= 0) m_loadingScreen.SetProgress(percent);
 }
 
+void st::App::OnAssetLoadProgress(const st::AssetLoadProgress& progress, void* userdata) {
+    st::App* self = static_cast<st::App*>(userdata);
+    if (self == nullptr) return;
+
+    // OFF THE MAIN THREAD, and several of these run at once. That rules out loading_
+    // (a std::string the main thread reads), the EventBus (documented main-thread
+    // only), ImGui, and the scene. SubWinStatus is the one sink built for exactly this:
+    // its own thread, its own window, thread-safe setters — and while a scene loads it
+    // is the only thing on screen that can paint anyway, because the main thread is
+    // blocked inside Scene::Load().
+    //
+    // The DETAIL line, not the status line: the status line is the engine's phase
+    // ("Loading materials"), which changes rarely, and writing the asset there would
+    // overwrite it several times per frame so the phase was never readable.
+    std::string detail;
+    if (progress.assetsExpected > 0) {
+        const uint32_t done = progress.assetsRead < progress.assetsExpected
+                            ? progress.assetsRead : progress.assetsExpected;
+        // Count first, so the one part of the line that proves motion sits at a fixed
+        // position and survives the path being elided.
+        detail = std::to_string(done) + "/" + std::to_string(progress.assetsExpected) + "  ";
+    }
+    detail += progress.currentAsset;
+    if (progress.currentSize > 0)
+        detail += "  (" + st::asset::FormatBytes(progress.currentSize) + ")";
+
+    self->m_loadingScreen.SetDetailText(detail);
+
+    // The bar is deliberately left alone. The engine owns it for the whole load and is
+    // mid-phase here; driving it from a second source would make it jump backwards.
+    // The n/total above is what shows this is progressing.
+}
+
 void st::App::Initialize() {
     devUIVisible_ = (Config().devUI == DevUIMode::Visible);
     loading_.active = true;   // startup counts as loading until the engine is up
 
     // Native loading window on its own thread (Win32/X11, no SDL). It keeps
     // animating while this (main) thread blocks below building the engine.
+    //
+    // Titled here rather than in the constructor: the project's AppConfig is installed
+    // by st::Run, which runs after the App object is built, so the name is not known
+    // until now. SetTitle is read once, at CreateWindow time on the window thread.
+    if (!Config().name.empty()) m_loadingScreen.SetTitle(Config().name);
     m_loadingScreen.Show();
 
     // Map-load progress: scenes Emit "loading.progress" from wi::scene::LoadModel's
@@ -59,6 +100,13 @@ void st::App::Initialize() {
         if (bar == std::string::npos) return;
         SetLoadingStatus(payload.substr(bar + 1), std::atoi(payload.substr(0, bar).c_str()));
     });
+
+    // Per-asset progress out of the mounted packages. This covers the stretch the
+    // callback above cannot: while the engine waits for a scene's textures to finish
+    // loading it reports nothing at all, and on a big map that wait IS the load. Those
+    // reads happen on job-system workers, so this callback lands off the main thread —
+    // see OnAssetLoadProgress for what that rules out.
+    st::AssetSystem::Get().SetLoadProgressCallback(&st::App::OnAssetLoadProgress, this);
 
     // Scene transitions reach the project as OnSceneLoaded / OnSceneUnloaded.
     sceneManager.SetCallbacks(

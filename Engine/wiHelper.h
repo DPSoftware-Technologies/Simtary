@@ -134,11 +134,21 @@ namespace wi::helper
 	// through file_free, so the callback can point straight at a memory-mapped asset
 	// instead of allocating. Install it before wi::initializer runs, and expect it to be
 	// called from many loading threads at once.
+	// file_stat answers FileSize and FileTimestamp for a path the source owns. It is
+	// optional but strongly recommended: without it those two fall back to the real
+	// filesystem for a path that has no file behind it. FileTimestamp in particular
+	// used to call std::filesystem::last_write_time on such a path right after
+	// file_exists said yes, and with exceptions disabled the resulting filesystem_error
+	// is a __fastfail, not a return value - the process dies with
+	// STATUS_STACK_BUFFER_OVERRUN and no message. Report a stable timestamp (0 is fine
+	// for an immutable package: it means "never newer", so the resource cache keeps its
+	// entry instead of reloading every frame).
 	struct AssetSourceOverride
 	{
 		bool (*file_read)(const std::string& fileName, const uint8_t** out_data, size_t* out_size, void* userdata) = nullptr;
 		void (*file_free)(const uint8_t* data, void* userdata) = nullptr;
 		bool (*file_exists)(const std::string& fileName, void* userdata) = nullptr;
+		bool (*file_stat)(const std::string& fileName, uint64_t* out_size, uint64_t* out_timestamp, void* userdata) = nullptr;
 		void* userdata = nullptr;
 	};
 

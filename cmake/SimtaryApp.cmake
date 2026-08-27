@@ -156,8 +156,9 @@ endif()
 
 # ── simtary_add_app() ─────────────────────────────────────────────────────────
 function(simtary_add_app)
-    set(_opts NO_SHADER_WARM NO_CRASH_REPORTER)
-    set(_one  NAME ORGANIZATION ICON SOURCE_DIR ASSETS_DIR CONTENT_SUBDIR)
+    set(_opts NO_SHADER_WARM NO_CRASH_REPORTER PACK_ASSETS PACK_ONLY)
+    set(_one  NAME ORGANIZATION ICON SOURCE_DIR ASSETS_DIR CONTENT_SUBDIR
+              PACK_NAME PACK_PART_SIZE PACK_LEVEL)
     set(_multi EXTRA_SOURCES EXTRA_INCLUDES EXTRA_LIBS)
     cmake_parse_arguments(APP "${_opts}" "${_one}" "${_multi}" ${ARGN})
 
@@ -490,10 +491,43 @@ function(simtary_add_app)
                 # make_directory first: on a clean tree the output folder does not
                 # exist yet when this runs (it runs BEFORE the link, not after).
                 COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:${APP_NAME}>/assets
-                COMMAND ${CMAKE_COMMAND} -E ${SIMTARY_COPY_DIR_CMD}
-                    ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}
-                    $<TARGET_FILE_DIR:${APP_NAME}>/assets
             )
+            # PACK_ONLY ships the .staod/.stafp set and nothing loose. The copy is
+            # skipped rather than made and deleted, because the package lands in the
+            # same folder and a delete would have to know which files it may touch.
+            if (NOT APP_PACK_ONLY)
+                list(APPEND _asset_copy_commands
+                    COMMAND ${CMAKE_COMMAND} -E ${SIMTARY_COPY_DIR_CMD}
+                        ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}
+                        $<TARGET_FILE_DIR:${APP_NAME}>/assets
+                )
+
+                # ...then take the .wiscene sources back out, but ONLY when they have
+                # been packed. Without PACK_ASSETS the .wiscene IS the shipped map and
+                # removing it would leave the game with nothing to load.
+                #
+                # copy_directory has no filter, so the tree copy above brings the maps
+                # along with everything else. Once the packer has converted them, a
+                # .wiscene in the output is ~37 MB of the SAME content the .stsd and the
+                # package already hold: it doubles the build size, and it is a second
+                # copy that can go stale and still be found first. The source of truth
+                # stays in assets/contents/; the output keeps only the converted form.
+                #
+                # This lives on ${APP}_Assets rather than on the pack step because the
+                # pack step is incremental - when it is up to date it does not run, and
+                # the copy above has just put the .wiscene back.
+                if (APP_PACK_ASSETS)
+                    file(GLOB_RECURSE _packed_sources CONFIGURE_DEPENDS
+                         ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}/*.wiscene)
+                    foreach (_src IN LISTS _packed_sources)
+                        file(RELATIVE_PATH _rel ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR} ${_src})
+                        list(APPEND _asset_copy_commands
+                            COMMAND ${CMAKE_COMMAND} -E rm -f
+                                $<TARGET_FILE_DIR:${APP_NAME}>/assets/${_rel}
+                        )
+                    endforeach()
+                endif()
+            endif()
         endif()
 
         add_custom_target(${APP_NAME}_Assets
@@ -510,14 +544,36 @@ function(simtary_add_app)
         # wipes the output copies first, so build it after deleting or renaming
         # content:  cmake --build <dir> --target ${APP_NAME}_AssetsResync
         if (APP_CONTENT_SUBDIR AND EXISTS ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR})
-            add_custom_target(${APP_NAME}_AssetsResync
+            set(_asset_resync_commands
                 COMMAND ${CMAKE_COMMAND} -E rm -rf $<TARGET_FILE_DIR:${APP_NAME}>/assets
                 COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/assets
                 COMMAND ${CMAKE_COMMAND} -E copy_directory
                     ${APP_ASSETS_DIR} ${CMAKE_CURRENT_BINARY_DIR}/assets
-                COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}
-                    $<TARGET_FILE_DIR:${APP_NAME}>/assets
+            )
+            if (NOT APP_PACK_ONLY)
+                list(APPEND _asset_resync_commands
+                    COMMAND ${CMAKE_COMMAND} -E copy_directory
+                        ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}
+                        $<TARGET_FILE_DIR:${APP_NAME}>/assets
+                )
+            endif()
+            if (APP_PACK_ASSETS OR APP_PACK_ONLY)
+                # The wipe above took the package with it, so the stamp has to go too or
+                # the next ordinary build thinks the pack is still current and never
+                # rebuilds it. Dropping the stamp is enough; ${APP}_Pack does the rest.
+                if (NOT APP_PACK_NAME)
+                    set(_resync_pack_name "content")
+                else()
+                    set(_resync_pack_name ${APP_PACK_NAME})
+                endif()
+                list(APPEND _asset_resync_commands
+                    COMMAND ${CMAKE_COMMAND} -E rm -f
+                        ${CMAKE_CURRENT_BINARY_DIR}/${APP_NAME}_${_resync_pack_name}.packstamp
+                )
+            endif()
+
+            add_custom_target(${APP_NAME}_AssetsResync
+                ${_asset_resync_commands}
                 COMMENT "Re-syncing ${APP_NAME} assets from scratch (drops removed files)"
                 VERBATIM
             )
@@ -525,7 +581,138 @@ function(simtary_add_app)
         endif()
     endif()
 
+    # ── asset package ─────────────────────────────────────────────────────────
+    if (APP_PACK_ASSETS OR APP_PACK_ONLY)
+        if (NOT APP_PACK_NAME)
+            set(APP_PACK_NAME "content")
+        endif()
+        if (NOT APP_PACK_PART_SIZE)
+            set(APP_PACK_PART_SIZE 50)
+        endif()
+        if (NOT APP_PACK_LEVEL)
+            set(APP_PACK_LEVEL 9)
+        endif()
+        simtary_pack_assets(
+            TARGET      ${APP_NAME}
+            CONTENT_DIR ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}
+            NAME        ${APP_PACK_NAME}
+            PART_SIZE   ${APP_PACK_PART_SIZE}
+            LEVEL       ${APP_PACK_LEVEL}
+        )
+    endif()
+
     set_target_properties(${APP_NAME} PROPERTIES FOLDER "${APP_NAME}")
+endfunction()
+
+# ── simtary_pack_assets() ─────────────────────────────────────────────────────
+# Build a .staod + .stafp<N> package from a content directory and drop it next to the
+# executable, converting every .wiscene it finds into a .stsd on the way.
+#
+#   simtary_pack_assets(TARGET Milistry CONTENT_DIR .../assets/contents
+#                       [NAME content] [PART_SIZE 50] [LEVEL 9]
+#                       [PACK_SUBDIR resources] [SCENE_SUBDIR scenes])
+#
+# Output layout under <exe>/assets/:
+#
+#   resources/content.staod      the index
+#   resources/content.stafp1..N  the payload parts
+#   scenes/<map>.stsd            one descriptor per converted .wiscene, LOOSE
+#
+# The maps stay out of the package on purpose. A .stsd is a few KB of NBT metadata in
+# front of a compressed entity blob, so leaving it visible costs nothing and makes a
+# map listable, diffable and hand-swappable without unpacking anything — while the
+# bulk, the textures and meshes every map shares, is the part that belongs in a
+# deduplicated package.
+#
+# Unlike <APP>_Assets, this is a real add_custom_command with real DEPENDS rather than
+# an always-out-of-date target. It has to be: repacking 76 MB of maps through zstd on
+# every build, whether or not a single asset changed, is tens of seconds per build. The
+# input list is globbed with CONFIGURE_DEPENDS, so adding or removing a content file
+# re-runs configure and the dependency set follows.
+#
+# The stamp file exists because the real outputs are N part files whose count is not
+# known until the packer has run, and CMake needs one name it can depend on.
+function(simtary_pack_assets)
+    set(_one TARGET CONTENT_DIR NAME PART_SIZE LEVEL PACK_SUBDIR SCENE_SUBDIR)
+    cmake_parse_arguments(PACK "" "${_one}" "" ${ARGN})
+
+    if (NOT PACK_TARGET)
+        message(FATAL_ERROR "simtary_pack_assets: TARGET is required")
+    endif()
+    if (NOT PACK_NAME)
+        set(PACK_NAME "content")
+    endif()
+    if (NOT PACK_PART_SIZE)
+        set(PACK_PART_SIZE 50)
+    endif()
+    if (NOT PACK_LEVEL)
+        set(PACK_LEVEL 9)
+    endif()
+    if (NOT DEFINED PACK_PACK_SUBDIR)
+        set(PACK_PACK_SUBDIR "resources")
+    endif()
+    if (NOT DEFINED PACK_SCENE_SUBDIR)
+        set(PACK_SCENE_SUBDIR "scenes")
+    endif()
+
+    if (NOT PACK_CONTENT_DIR OR NOT EXISTS ${PACK_CONTENT_DIR})
+        message(STATUS "simtary_pack_assets(${PACK_TARGET}): no content directory, skipping")
+        return()
+    endif()
+
+    file(GLOB_RECURSE _pack_inputs CONFIGURE_DEPENDS ${PACK_CONTENT_DIR}/*)
+    if (NOT _pack_inputs)
+        message(STATUS "simtary_pack_assets(${PACK_TARGET}): content directory is empty, skipping")
+        return()
+    endif()
+
+    set(_stamp     ${CMAKE_CURRENT_BINARY_DIR}/${PACK_TARGET}_${PACK_NAME}.packstamp)
+    set(_pack_dir  $<TARGET_FILE_DIR:${PACK_TARGET}>/assets/${PACK_PACK_SUBDIR})
+    set(_scene_dir $<TARGET_FILE_DIR:${PACK_TARGET}>/assets/${PACK_SCENE_SUBDIR})
+
+    add_custom_command(
+        OUTPUT ${_stamp}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${_pack_dir}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${_scene_dir}
+        COMMAND $<TARGET_FILE:stpack> pack ${PACK_CONTENT_DIR}
+                --out ${_pack_dir}
+                --scene-dir ${_scene_dir}
+                --name ${PACK_NAME}
+                --part-size ${PACK_PART_SIZE}
+                --level ${PACK_LEVEL}
+        COMMAND ${CMAKE_COMMAND} -E touch ${_stamp}
+        DEPENDS ${_pack_inputs} stpack
+        COMMENT "Packing ${PACK_TARGET} content -> ${PACK_PACK_SUBDIR}/${PACK_NAME}.staod + .stafp<N>, maps -> ${PACK_SCENE_SUBDIR}/*.stsd"
+        VERBATIM
+    )
+
+    add_custom_target(${PACK_TARGET}_Pack DEPENDS ${_stamp})
+    set_target_properties(${PACK_TARGET}_Pack PROPERTIES FOLDER "${PACK_TARGET}/Build")
+    add_dependencies(${PACK_TARGET} ${PACK_TARGET}_Pack)
+
+    # Forces a repack even when nothing changed, for when the packer options moved or a
+    # part file was deleted by hand.
+    add_custom_target(${PACK_TARGET}_Repack
+        # The parts are wiped first: the packer never writes fewer files than last time,
+        # so a build that drops content would otherwise leave an orphaned .stafpN next
+        # to the new index, and the reader would refuse the whole set for a UUID it does
+        # not recognise.
+        COMMAND ${CMAKE_COMMAND} -E rm -f ${_stamp}
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${_pack_dir}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${_pack_dir}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${_scene_dir}
+        COMMAND $<TARGET_FILE:stpack> pack ${PACK_CONTENT_DIR}
+                --out ${_pack_dir}
+                --scene-dir ${_scene_dir}
+                --name ${PACK_NAME}
+                --part-size ${PACK_PART_SIZE}
+                --level ${PACK_LEVEL}
+        COMMAND ${CMAKE_COMMAND} -E touch ${_stamp}
+        DEPENDS stpack
+        COMMENT "Re-packing ${PACK_TARGET} content from scratch"
+        VERBATIM
+    )
+    set_target_properties(${PACK_TARGET}_Repack PROPERTIES FOLDER "${PACK_TARGET}/Build")
 endfunction()
 
 # ── simtary_faust_regen() ─────────────────────────────────────────────────────

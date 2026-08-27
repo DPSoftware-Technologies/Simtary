@@ -410,6 +410,38 @@ endif()
 # ─── simtary_add_app() ─────────────────────────────────────────────────────────
 include(SimtaryApp)
 
+# ─── stpack: the asset packer ──────────────────────────────────────────────────
+# Converts .wiscene maps + loose content into .stsd / .staod / .stafp<N> at BUILD time
+# (simtary_pack_assets in cmake/SimtaryApp.cmake drives it), and inspects or reverses
+# the result by hand.
+#
+# Not inside SIMTARY_BUILD_TESTS: a game configures this workspace with
+# EXCLUDE_FROM_ALL, so nothing here is built unless something depends on it — and a
+# game's pack target does. Gating it on the test option would make the tool vanish for
+# exactly the projects that need it.
+#
+# It links Framework/io only, never the engine, so it builds in seconds and can run
+# before any engine target exists. zstd is compiled into it directly for the same
+# reason (tools/stpack_zstd.cpp).
+add_executable(stpack
+    tools/stpack.cpp
+    tools/stpack_zstd.cpp
+    Framework/io/Nbt.cpp
+    Framework/io/asset/AssetPack.cpp
+    Framework/io/asset/AssetPackWriter.cpp
+    Framework/io/asset/SceneDescriptor.cpp
+)
+target_include_directories(stpack PRIVATE Framework Engine)
+target_link_libraries(stpack PRIVATE Simtary::AppFlags)
+set_target_properties(stpack PROPERTIES FOLDER "Simtary/Tools")
+# zstd is third-party C: it must not inherit the /W3 the app flags carry, or every
+# build of it buries the real warnings under a few hundred of its own.
+if (MSVC)
+    set_source_files_properties(tools/stpack_zstd.cpp PROPERTIES COMPILE_OPTIONS "/w")
+else()
+    set_source_files_properties(tools/stpack_zstd.cpp PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
 # ─── Framework tests + tools ───────────────────────────────────────────────────
 # Small console executables exercising self-contained framework modules under the
 # same /EHsc- /GR- flags as a game. Run via the exe or `ctest`.
@@ -422,6 +454,21 @@ if (SIMTARY_BUILD_TESTS)
     target_link_libraries(nbt_test PRIVATE Simtary::AppFlags)
     set_target_properties(nbt_test PROPERTIES FOLDER "Simtary/Tests")
     add_test(NAME nbt_test COMMAND nbt_test)
+
+    # Round-trips the asset package formats in memory: pack -> read back -> verify, and
+    # .wiscene split -> merge -> byte-identical. No engine, no files beyond a temp dir.
+    add_executable(asset_pack_test
+        tests/asset_pack_test.cpp
+        tools/stpack_zstd.cpp
+        Framework/io/Nbt.cpp
+        Framework/io/asset/AssetPack.cpp
+        Framework/io/asset/AssetPackWriter.cpp
+        Framework/io/asset/SceneDescriptor.cpp
+    )
+    target_include_directories(asset_pack_test PRIVATE Framework Engine)
+    target_link_libraries(asset_pack_test PRIVATE Simtary::AppFlags)
+    set_target_properties(asset_pack_test PROPERTIES FOLDER "Simtary/Tests")
+    add_test(NAME asset_pack_test COMMAND asset_pack_test)
 
     # Generator for the sample player animation descriptor (writes an NBT file). Not
     # run automatically; build + run it from a project root to (re)create one.
