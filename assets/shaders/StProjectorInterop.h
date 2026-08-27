@@ -24,7 +24,7 @@ static const uint ST_PROJECTOR_SHAPE_ROUNDED = 2; // rectangle with rounded corn
 
 static const uint ST_PROJECTOR_FLAG_LIGHT_SURFACES = 1u << 0; // paint the image onto geometry
 static const uint ST_PROJECTOR_FLAG_BEAM = 1u << 1;           // volumetric shaft through the air
-static const uint ST_PROJECTOR_FLAG_OCCLUSION = 1u << 2;      // screen-space shadowing
+static const uint ST_PROJECTOR_FLAG_OCCLUSION = 1u << 2;      // screen-space shadowing (fallback)
 static const uint ST_PROJECTOR_FLAG_LAMBERT = 1u << 3;        // modulate by N.L
 
 struct StProjector
@@ -68,11 +68,16 @@ struct StProjector
 	float occlusion_strength;
 	uint occlusion_samples;
 	float occlusion_thickness; // how deep behind a surface a blocker still counts, metres
-	float pad;
+	uint shadow_index;         // bindless SRV of this projector's depth map, 0 = none
+
+	float shadow_bias;         // in projector clip depth, applied against acne
+	float shadow_texel;        // 1 / shadow map resolution, for the PCF taps
+	float pad0;
+	float pad1;
 };
 
 #ifdef __cplusplus
-static_assert(sizeof(StProjector) == 192, "StProjector must stay 16-byte-row aligned for the shader");
+static_assert(sizeof(StProjector) == 208, "StProjector must stay 16-byte-row aligned for the shader");
 #endif // __cplusplus
 
 #endif // ST_SHADERINTEROP_PROJECTOR_H

@@ -3,6 +3,7 @@
 #include "stApp.h"
 #include "imhierarchy.h"
 #include "imcomponents.h"
+#include "imgraphicsettings.h"
 #include "input/InputSystem.h"
 
 #include "wiScene.h"
@@ -346,7 +347,21 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 
 		if (ImGui::BeginMenu("Debug"))
 		{
-			ImGui::TextDisabled("editor viewport only");
+			ImGui::MenuItem("Match game renderer", nullptr, &matchGameRenderer_);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Render the editor and camera views through the game's own "
+					"graphics settings - AO, bloom, tonemap, exposure, colour grading, "
+					"colorspace - instead of bare RenderPath3D defaults.");
+			ImGui::BeginDisabled(!matchGameRenderer_);
+			ImGui::MenuItem("Stable exposure", nullptr, &stableExposure_);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Pin the exposure instead of mirroring auto-exposure. An "
+					"auto-exposure history is per-path, so a view that only renders while its "
+					"panel is visible drifts to its own brightness and stops matching.");
+			ImGui::EndDisabled();
+			ImGui::Separator();
+
+			ImGui::TextDisabled("debug draws - editor viewport only");
 			ImGui::Separator();
 			ImGui::MenuItem("Cameras", nullptr, &debug_.cameras);
 			if (ImGui::IsItemHovered())
@@ -936,6 +951,10 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 
 	wi::scene::Scene& scene = wi::scene::GetScene();
 
+	// Everything the render pass needs from the app, grabbed while we still have one.
+	gfxSettings_    = &app.Graphics();
+	gameColorSpace_ = gamePath.colorspace;
+
 	// Main-thread tail of a Save As dialog that finished on its own thread.
 	FlushPendingSave(scene);
 
@@ -1112,6 +1131,8 @@ void st::EditorUI::RenderEditorView(float dt)
 	editorCamera_.zFarP  = camFar_;
 	editorCamera_.UpdateCamera();
 
+	MatchGameRenderer(*editorPath_);
+
 	// Debug draws, editor viewport only. The scope restores the globals afterwards, and the
 	//	game path already rendered this frame, so the Game Viewport never sees any of it.
 	DebugFlagScope debugScope;
@@ -1132,6 +1153,20 @@ void st::EditorUI::RenderEditorView(float dt)
 	editorPath_->PreRender();
 	editorPath_->Render();
 	editorPath_->PostRender();
+}
+
+void st::EditorUI::MatchGameRenderer(wi::RenderPath3D& path) const
+{
+	if (!matchGameRenderer_)
+		return;
+
+	// The engine assigns colorspace to the ACTIVE path only (wiApplication.cpp), so an
+	//	editor-owned path keeps the SRGB default. On an HDR10 swapchain that alone sends the
+	//	tonemapper down a different branch and the picture comes out a different colour.
+	path.colorspace = gameColorSpace_;
+
+	if (gfxSettings_ != nullptr)
+		gfxSettings_->MirrorTo(path, stableExposure_);
 }
 
 // -------------------------------------------------------------- camera views ---
@@ -1404,6 +1439,8 @@ void st::EditorUI::RenderCameraViews(float dt)
 		//	not a pointer because RenderPath3D::ResizeBuffers writes camera->width/height -
 		//	pointing at the scene's own camera would change what the game renders with.
 		view.cam = *src;
+
+		MatchGameRenderer(*view.path);
 
 		view.path->init((uint32_t)view.width, (uint32_t)view.height, 96.0f);
 		view.path->PreUpdate();

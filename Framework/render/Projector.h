@@ -114,10 +114,22 @@ struct Projector {
 	float falloff = 1.0f;
 	float focusDistance = 8.0f;
 
+	// ── shadows ──────────────────────────────────────────────────────────────────
+	// A depth map rendered from the lens, once per frame. This is what stops the
+	// image from passing through a wall and landing on whatever is behind it. It sees
+	// blockers the camera cannot - off screen, or viewed from a completely different
+	// angle - which no screen-space trick can. Cost is one extra depth-only pass over
+	// the visible geometry per projector.
+	bool shadows = true;
+	int shadowResolution = 1024;
+	float shadowBias = 0.002f; // in projector clip depth; raise if surfaces self-shadow
+
 	// ── surfaces ─────────────────────────────────────────────────────────────────
 	bool lightSurfaces = true;
 	bool lambert = true;   // fall off with the angle between surface and lens
-	bool occlusion = true; // screen-space shadowing (see the caveat above)
+	// Screen-space shadowing. Only used when `shadows` is off - it is the weaker of
+	// the two: it can only test what the camera itself rendered.
+	bool occlusion = true;
 	float occlusionStrength = 1.0f;
 	int occlusionSamples = 12;
 	float occlusionThickness = 1.0f; // metres of assumed blocker depth
@@ -180,6 +192,11 @@ public:
 	// frame, after the scene update so followed entities carry this frame's transform.
 	void Update(const wi::scene::Scene& scene, float dt);
 
+	// Records each shadow-casting projector's depth map into `cmd`. Must run after the
+	// engine has uploaded this frame's render data and before the post process chain
+	// that samples the maps - st::ProjectorRenderPath places it for you.
+	void RenderShadows(wi::graphics::CommandList cmd) const;
+
 	void GUI();
 	void SaveTo(nbt::Tag& out) const;
 	void LoadFrom(const nbt::Tag& in);
@@ -207,10 +224,42 @@ private:
 	// the GPU is still reading last frame's.
 	wi::graphics::GPUBuffer buffers_[wi::graphics::GraphicsDevice::GetBufferCount()];
 
+	// Shadow slots run parallel to the uploaded projector array, not to projectors_:
+	// slot i belongs to whatever projector landed in shaderProjectors[i] this frame.
+	// wi::renderer::Visibility holds atomics and a spinlock, so it cannot live inside
+	// a wi::vector element - a fixed array is the simple way to keep it put.
+	struct ShadowSlot {
+		wi::graphics::Texture map;
+		wi::scene::CameraComponent camera;
+		bool active = false;
+	};
+	ShadowSlot shadowSlots_[ST_PROJECTOR_MAX];
+	wi::renderer::Visibility shadowVisibility_[ST_PROJECTOR_MAX];
+
 	wi::RenderPath3D* path_ = nullptr;
 	bool hooked_ = false;
 
 	int selected_ = 0; // GUI only
+};
+
+// The render path st::App runs. RenderPath3D with one addition: the projector depth
+// maps are recorded at the top of the post process chain.
+//
+// Why here and not from App::Render(): command lists submit in the order they are
+// begun, so a list opened before the path runs BEFORE the engine has uploaded this
+// frame's instance data - the depth map then draws last frame's (or a half-written)
+// transform set and the shadows flicker. Inside the chain the upload is long done,
+// and the maps are still recorded ahead of the custom post process that samples them.
+class ProjectorRenderPath : public wi::RenderPath3D {
+public:
+	ProjectorSystem* projectors = nullptr;
+
+	void RenderPostprocessChain(wi::graphics::CommandList cmd) const override {
+		if (projectors != nullptr) {
+			projectors->RenderShadows(cmd);
+		}
+		wi::RenderPath3D::RenderPostprocessChain(cmd);
+	}
 };
 
 } // namespace st

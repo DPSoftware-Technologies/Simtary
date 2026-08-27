@@ -52,7 +52,12 @@ private:
 	float distortion = 0.0f;
 	bool lightSurfaces = true;
 	bool lambert = true;
+	bool shadows = true;
+	int shadowResolution = 1024;
+	float shadowBias = 0.002f;
 	bool occlusion = true;
+	int occlusionSamples = 12;
+	float occlusionThickness = 1.0f;
 	bool beam = true;
 	float beamDensity = 0.02f;
 	float beamAnisotropy = 0.6f;
@@ -92,7 +97,12 @@ private:
 		projector->distortion = distortion;
 		projector->lightSurfaces = lightSurfaces;
 		projector->lambert = lambert;
+		projector->shadows = shadows;
+		projector->shadowResolution = shadowResolution;
+		projector->shadowBias = shadowBias;
 		projector->occlusion = occlusion;
+		projector->occlusionSamples = occlusionSamples;
+		projector->occlusionThickness = occlusionThickness;
 		projector->beam = beam;
 		projector->beamDensity = beamDensity;
 		projector->beamAnisotropy = beamAnisotropy;
@@ -129,7 +139,12 @@ public:
 		Bind(distortion, "distortion");
 		Bind(lightSurfaces, "lightSurfaces");
 		Bind(lambert, "lambert");
+		Bind(shadows, "shadows");
+		Bind(shadowResolution, "shadowResolution");
+		Bind(shadowBias, "shadowBias");
 		Bind(occlusion, "occlusion");
+		Bind(occlusionSamples, "occlusionSamples");
+		Bind(occlusionThickness, "occlusionThickness");
 		Bind(beam, "beam");
 		Bind(beamDensity, "beamDensity");
 		Bind(beamAnisotropy, "beamAnisotropy");
@@ -225,7 +240,16 @@ public:
 			dirty |= ImGui::SliderFloat("Beam density", &beamDensity, 0.0f, 0.5f);
 			dirty |= ImGui::SliderInt("Beam samples", &beamSamples, 2, 64);
 		}
-		dirty |= ImGui::Checkbox("Screen-space occlusion", &occlusion);
+		dirty |= ImGui::Checkbox("Shadow map", &shadows);
+		if (shadows) {
+			dirty |= ImGui::SliderInt("Shadow resolution", &shadowResolution, 128, 4096);
+			dirty |= ImGui::SliderFloat("Shadow bias", &shadowBias, 0.0f, 0.02f, "%.4f");
+		}
+		dirty |= ImGui::Checkbox("Screen-space occlusion (fallback)", &occlusion);
+		if (!shadows && occlusion) {
+			dirty |= ImGui::SliderInt("Occlusion samples", &occlusionSamples, 2, 32);
+			dirty |= ImGui::SliderFloat("Occlusion thickness", &occlusionThickness, 0.05f, 10.0f);
+		}
 
 		ImGui::TextDisabled("Image source: %s", imageSource.c_str());
 
