@@ -304,16 +304,28 @@ void ProjectorSystem::Update(const wi::scene::Scene& scene, float /*dt*/) {
 			up = XMVector3Normalize(XMVector3TransformNormal(up, XMMatrixRotationAxis(forward, projector.roll)));
 		}
 
-		const XMVECTOR eye = XMLoadFloat3(&projector.position);
-		const XMMATRIX view = XMMatrixLookToLH(eye, forward, up);
-		const XMMATRIX projection = XMMatrixPerspectiveFovLH(
-			projector.ResolveFovY(),
+		// The matrix is built through a CameraComponent rather than by hand, so the
+		// gate and the shadow map cannot drift apart: the same camera is what
+		// DrawScene() renders the depth map with. It also inherits the engine's
+		// reverse-Z convention (UpdateCamera passes zFarP as the near argument), which
+		// is what the shadow compare in the shader expects.
+		const uint32_t slot = count;
+		ShadowSlot& shadow = shadowSlots_[slot];
+		shadow.active = false;
+
+		wi::scene::CameraComponent& camera = shadow.camera;
+		XMStoreFloat3(&camera.Eye, XMLoadFloat3(&projector.position));
+		XMStoreFloat3(&camera.At, forward);
+		XMStoreFloat3(&camera.Up, up);
+		camera.CreatePerspective(
 			std::max(0.01f, projector.aspect),
+			1.0f,
 			std::max(0.001f, projector.nearClip),
-			std::max(projector.nearClip + 0.01f, projector.range));
+			std::max(projector.nearClip + 0.01f, projector.range),
+			projector.ResolveFovY());
 
 		XMFLOAT4X4 viewProjection;
-		XMStoreFloat4x4(&viewProjection, XMMatrixMultiply(view, projection));
+		XMStoreFloat4x4(&viewProjection, camera.GetViewProjection());
 
 		StProjector& out = shaderProjectors[count++];
 
@@ -361,6 +373,53 @@ void ProjectorSystem::Update(const wi::scene::Scene& scene, float /*dt*/) {
 		out.occlusion_strength = wi::math::Clamp(projector.occlusionStrength, 0.0f, 1.0f);
 		out.occlusion_samples = (uint32_t)std::clamp(projector.occlusionSamples, 1, 32);
 		out.occlusion_thickness = std::max(0.01f, projector.occlusionThickness);
+
+		// ── shadow map ───────────────────────────────────────────────────────────
+		out.shadow_index = 0;
+		if (projector.shadows) {
+			const uint32_t resolution = (uint32_t)std::clamp(projector.shadowResolution, 128, 4096);
+
+			if (!shadow.map.IsValid() || shadow.map.desc.width != resolution) {
+				TextureDesc desc;
+				desc.width = resolution;
+				desc.height = resolution;
+				desc.format = wi::renderer::format_depthbuffer_shadowmap;
+				desc.bind_flags = BindFlag::DEPTH_STENCIL | BindFlag::SHADER_RESOURCE;
+				desc.layout = ResourceState::SHADER_RESOURCE;
+				desc.clear.depth_stencil.depth = 0; // reverse-Z: far is 0
+				if (device->CreateTexture(&desc, nullptr, &shadow.map)) {
+					device->SetName(&shadow.map, "st::ProjectorSystem::shadowmap");
+				}
+			}
+
+			if (shadow.map.IsValid()) {
+				const int descriptor = device->GetDescriptorIndex(&shadow.map, SubresourceType::SRV);
+				if (descriptor >= 0) {
+					out.shadow_index = (uint32_t)descriptor;
+					out.shadow_bias = projector.shadowBias;
+					out.shadow_texel = 1.0f / (float)resolution;
+
+					// Cull now, on the CPU, while the scene is not being rendered.
+					// RenderShadows() then only records draw commands.
+					wi::renderer::Visibility& visibility = shadowVisibility_[slot];
+					visibility.layerMask = ~0u;
+					visibility.scene = &scene;
+					visibility.camera = &shadow.camera;
+					// Objects only: a depth map wants geometry, not the scene's lights,
+					// decals, probes or its shadow atlas packing.
+					visibility.flags = wi::renderer::Visibility::ALLOW_OBJECTS;
+					wi::renderer::UpdateVisibility(visibility);
+
+					shadow.active = !visibility.visibleObjects.empty();
+				}
+			}
+		}
+	}
+
+	// Slots past `count` belong to projectors that dropped out this frame - stop
+	// rendering depth maps for them.
+	for (uint32_t i = count; i < ST_PROJECTOR_MAX; ++i) {
+		shadowSlots_[i].active = false;
 	}
 
 	if (count == 0) {
@@ -384,6 +443,54 @@ void ProjectorSystem::Update(const wi::scene::Scene& scene, float /*dt*/) {
 		(float)count,
 		0,
 		0);
+}
+
+void ProjectorSystem::RenderShadows(CommandList cmd) const {
+	if (!enabled || !shader_.IsValid()) return;
+
+	GraphicsDevice* device = GetDevice();
+
+	for (uint32_t i = 0; i < ST_PROJECTOR_MAX; ++i) {
+		const ShadowSlot& shadow = shadowSlots_[i];
+		if (!shadow.active || !shadow.map.IsValid()) continue;
+
+		const wi::renderer::Visibility& visibility = shadowVisibility_[i];
+		if (visibility.visibleObjects.empty()) continue;
+
+		// One line, once: a depth map that draws nothing shadows nothing, and that is
+		// indistinguishable from "the feature is off" when you are staring at a beam.
+		static bool reported = false;
+		if (!reported) {
+			reported = true;
+			wi::backlog::post("[Projector] shadow map " + std::to_string(shadow.map.desc.width) + "px, " +
+				std::to_string(visibility.visibleObjects.size()) + " objects");
+		}
+
+		device->EventBegin("st::Projector shadow map", cmd);
+
+		wi::renderer::BindCameraCB(shadow.camera, shadow.camera, shadow.camera, cmd);
+
+		const RenderPassImage rp[] = {
+			RenderPassImage::DepthStencil(
+				&shadow.map,
+				RenderPassImage::LoadOp::CLEAR,
+				RenderPassImage::StoreOp::STORE,
+				ResourceState::SHADER_RESOURCE,
+				ResourceState::DEPTHSTENCIL,
+				ResourceState::SHADER_RESOURCE),
+		};
+		device->RenderPassBegin(rp, arraysize(rp), cmd);
+
+		Viewport viewport;
+		viewport.width = (float)shadow.map.desc.width;
+		viewport.height = (float)shadow.map.desc.height;
+		device->BindViewports(1, &viewport, cmd);
+
+		wi::renderer::DrawScene(visibility, wi::enums::RENDERPASS_SHADOW, cmd, wi::renderer::DRAWSCENE_OPAQUE);
+
+		device->RenderPassEnd(cmd);
+		device->EventEnd(cmd);
+	}
 }
 
 void ProjectorSystem::GUI() {

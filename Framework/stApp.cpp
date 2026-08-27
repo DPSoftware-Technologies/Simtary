@@ -106,6 +106,9 @@ void st::App::Initialize() {
     // has to be told which path after OnRenderPathSetup has had its say. It only
     // inserts itself while there is something to draw.
     projectors_.Bind(renderPath);
+    // The path records the projector depth maps at the top of its post process chain,
+    // where this frame's render data is already uploaded (see ProjectorRenderPath).
+    renderPath.projectors = &projectors_;
 
     // Push saved graphics options to the engine now, so the first frame reflects them.
     // Get() constructs the manager on first call and its constructor already reads

@@ -47,7 +47,7 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `input/InputSystem.*` | Centralized action/axis keymap, refreshed once per frame. |
 | `crash/CrashHandler.*` | sentry-native + Crashpad, offline only; launches `SimtaryCrashReporter`. |
 | `render/LensFlare.*` | Procedural screen-space flare (`assets/shaders/StLensFlare*`). |
-| `render/Projector.*` | `st::Projector` + `st::ProjectorSystem` — SQUARE (or rect/ellipse/rounded) image projection with projector optics: throw ratio, aspect, lens shift, keystone, barrel/pincushion, edge softness, vignette, plus a rectangular volumetric beam. Runs as a `RenderPath3D` custom post process (`assets/shaders/StProjectorCS.hlsl`). Reach it anywhere via `st::ProjectorSystem::Get()`. |
+| `render/Projector.*` | `st::Projector` + `st::ProjectorSystem` — SQUARE (or rect/ellipse/rounded) image projection with projector optics: throw ratio, aspect, lens shift, keystone, barrel/pincushion, edge softness, vignette, plus a rectangular volumetric beam. Runs as a `RenderPath3D` custom post process (`assets/shaders/StProjectorCS.hlsl`), plus one depth-only pass per shadow-casting projector (`RenderShadows()`, driven from `st::App::Render()` BEFORE the render path so the command list is recorded ahead of the pass that samples it). Reach it anywhere via `st::ProjectorSystem::Get()`. |
 | `render/ProjectorComponent.cpp` | The `"Projector"` NATIVE COMPONENT — attach `st::Projector` to a spot light from the editor (`NCI_0 = "Projector"`, optics as `NCA_0_*` args). Follows its own entity, takes the image off it (video / camera render / material base colour, pinned with `NCA_0_imageSource`), and zeroes that light by default since the light IS the circle. |
 | `render/Framebuffer.*` | `st::gfx::Framebuffer` — an off-screen surface you draw into and hand to a material, a light mask or a projector. CPU mode wraps libgfx (`GFXcanvas`) and owns the staging texture, row pitch and flip; GPU mode is a render target you draw into with `wi::image`/`wi::font` between `Begin()`/`End()`. |
 | `display/DisplaySettings.*` | Player-facing video options: window mode, monitor, resolution, refresh rate, v-sync, frame cap, render scale. NOT DevUI — `st::App::Display().GUI(app)` drops into a game's own options menu, and DevUI renders the same panel in its Display tab. Sole owner of v-sync and the frame cap; `GraphicsSettings` deliberately no longer carries them. |
@@ -196,6 +196,16 @@ lighting of transparent surfaces, no contribution to reflections or GI. Note als
 that a spot light projects along its entity's local **-Y** (see `SHCAM::init` in
 `wiRenderer.cpp`) while `LightComponent::direction` stores the opposite vector —
 `Projector::Forward::MinusY` is the setting that matches a spot light.
+
+**The projector renders its own shadow map, and it has to.** Without one the image
+passes through walls: it is a screen-space pass, so the only depth it can otherwise
+consult is the CAMERA's, which says nothing about what stands between the lens and a
+lit point. `ProjectorSystem::RenderShadows()` builds a `CameraComponent` from the
+projector frustum, runs `wi::renderer::UpdateVisibility` + `DrawScene(RENDERPASS_SHADOW)`
+into a D16 depth map, and the shader compares against it (reverse-Z, 2x2 PCF). The
+gate matrix comes from that same CameraComponent, so the two can never drift apart.
+`Projector::occlusion` is the old screen-space march, kept only as the fallback when
+`shadows` is off — it cannot see a blocker the camera does not render.
 
 **Shader cache.** `Simtary/shaders/` is staged into every game's output before the
 incremental `offlineshadercompiler` pre-pass, so first launch is never cold. After a

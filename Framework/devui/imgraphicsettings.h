@@ -37,6 +37,27 @@ public:
     // engine at startup. Also seeds applied_ so the UI opens in sync.
     void loadAndApply(const st::nbt::Tag& in, wi::RenderPath3D& path, wi::Application& app);
 
+    // Apply the settings CURRENTLY live in the engine to a DIFFERENT RenderPath3D, so the
+    //	editor's extra viewports (Framework/devui/imeditor.h) preview through the same
+    //	renderer the game uses instead of RenderPath3D's bare defaults - which is why they
+    //	otherwise come out differently exposed, differently tonemapped and differently lit.
+    //
+    //	Deliberately NOT mirrored:
+    //	  scene update      - every extra path must leave Scene::Update to the scene itself
+    //	  occlusion culling - its GPU query history is meaningless on a path that only
+    //	                      renders while its panel happens to be visible
+    //	  FSR / resolution scale - they change the internal resolution, which would break
+    //	                      the editor viewport's 1:1 picking and a camera view's authored
+    //	                      output resolution
+    //	  global renderer + Application state (shadow atlas size, frame pacing) - already
+    //	                      global, and not this path's to set
+    //
+    //	stableExposure forces eye adaption off and uses the fixed exposure instead. An
+    //	auto-exposure history is per-path, so a viewport that renders intermittently drifts
+    //	to its own brightness and stops matching the game - the usual "why is this view a
+    //	different colour" answer.
+    void MirrorTo(wi::RenderPath3D& path, bool stableExposure = true) const;
+
 private:
     struct EngineGfx {
         // ── Ambient Occlusion / GI ──────────────────────────────────────────

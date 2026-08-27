@@ -216,6 +216,79 @@ void GraphicsSettings::applyToEngine(wi::RenderPath3D& path, wi::Application& ap
     applied_ = pending_;
 }
 
+void GraphicsSettings::MirrorTo(wi::RenderPath3D& path, bool stableExposure) const {
+    const EngineGfx& g = applied_; // what is actually live, not what a pending edit wants
+
+    // AO / GI
+    path.setAO((wi::RenderPath3D::AO)g.ao);
+    path.setAORange(g.aoRange);
+    path.setAOSampleCount((uint32_t)g.aoSampleCount);
+    path.setAOPower(g.aoPower);
+    path.setSSREnabled(g.ssr);
+    path.setSSRQuality((wi::renderer::PostProcessQuality)g.ssrQuality);
+    path.setSSGIEnabled(g.ssgi);
+    path.setSSGIDepthRejection(g.ssgiDepthRejection);
+    path.setRaytracedReflectionsEnabled(g.rtReflections);
+    path.setRaytracedReflectionsRange(g.rtReflectionsRange);
+    path.setRaytracedReflectionsQuality((wi::renderer::PostProcessQuality)g.rtReflectionsQual);
+    path.setReflectionRoughnessCutoff(g.reflectionRoughCut);
+    path.setRaytracedDiffuseEnabled(g.rtDiffuse);
+    path.setRaytracedDiffuseRange(g.rtDiffuseRange);
+    path.setRaytracedDiffuseQuality((wi::renderer::PostProcessQuality)g.rtDiffuseQual);
+    path.setReflectionsEnabled(g.reflections);
+
+    // Shadows (per-path switches; the atlas size itself is global and stays where it is)
+    path.setShadowsEnabled(g.shadows);
+    path.setScreenSpaceShadowSampleCount((uint32_t)g.sssSampleCount);
+    path.setScreenSpaceShadowRange(g.sssRange);
+
+    // Post processing
+    path.setFXAAEnabled(g.fxaa);
+    path.setBloomEnabled(g.bloom);
+    path.setBloomThreshold(g.bloomThreshold);
+    path.setMotionBlurEnabled(g.motionBlur);
+    path.setMotionBlurStrength(g.motionBlurStrength);
+    path.setDepthOfFieldEnabled(g.dof);
+    path.setDepthOfFieldStrength(g.dofStrength);
+    path.setSharpenFilterEnabled(g.sharpen);
+    path.setSharpenFilterAmount(g.sharpenAmount);
+    path.setCRTFilterEnabled(g.crtFilter);
+    path.setLensFlareEnabled(g.lensFlare);
+    path.setLightShaftsEnabled(g.lightShafts);
+    path.setLightShaftsStrength(g.lightShaftsStr);
+    path.setLightShaftsFadeSpeed(g.lightShaftsFade);
+    path.setVolumeLightsEnabled(g.volumeLights);
+    path.setChromaticAberrationEnabled(g.chromaticAberr);
+    path.setChromaticAberrationAmount(g.chromaticAberrAmt);
+    path.setDitherEnabled(g.dither);
+    path.setOutlineEnabled(g.outline);
+    path.setOutlineThreshold(g.outlineThreshold);
+    path.setOutlineThickness(g.outlineThickness);
+    path.setOutlineColor(XMFLOAT4(g.outlineColor[0], g.outlineColor[1], g.outlineColor[2], g.outlineColor[3]));
+
+    // Exposure. Auto-exposure keeps a per-path history, so an intermittently rendered
+    // viewport converges somewhere else and stops matching the game; stableExposure pins it.
+    path.setEyeAdaptionEnabled(stableExposure ? false : g.eyeAdaption);
+    path.setEyeAdaptionKey(g.eyeAdaptionKey);
+    path.setEyeAdaptionRate(g.eyeAdaptionRate);
+
+    // Color / tonemapping — the half that decides whether two views agree on colour at all.
+    path.setTonemap((wi::renderer::Tonemap)g.tonemap);
+    path.setColorGradingEnabled(g.colorGrading);
+    path.setExposure(g.exposure);
+    path.setHDRCalibration(g.hdrCalibration);
+    path.setBrightness(g.brightness);
+    path.setContrast(g.contrast);
+    path.setSaturation(g.saturation);
+
+    path.setMeshBlendEnabled(g.meshBlend);
+    path.setVisibilityComputeShadingEnabled(g.visibilityCompute);
+
+    // MSAA is safe to set every frame: RenderPath3D::PreRender reallocates by itself when
+    // the sample count no longer matches its render targets.
+    path.setMSAASampleCount((uint32_t)g.msaa);
+}
+
 void GraphicsSettings::SaveTo(st::nbt::Tag& out) const {
     const EngineGfx& g = applied_; // persist what is actually live in the engine
 

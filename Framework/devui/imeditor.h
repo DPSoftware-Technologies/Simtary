@@ -47,6 +47,7 @@
 #include <string>
 
 namespace wi::scene { struct Scene; }
+class GraphicsSettings; // Framework/devui/imgraphicsettings.h, global namespace
 
 namespace st {
 
@@ -177,6 +178,22 @@ private:
     // path's render and put back afterwards — the Game Viewport keeps showing the shipping
     // picture while the editor viewport shows the scaffolding. The game path has already
     // rendered by the time RenderEditorView runs, which is what makes that possible.
+    // ── renderer preview ─────────────────────────────────────────────────────
+    // The editor's extra paths are bare RenderPath3D instances: engine defaults, none of
+    // the game's AO / bloom / tonemap / exposure / colour grading. That is why they came
+    // out looking nothing like the Game Viewport. When this is on, every editor path is
+    // brought in line with the live graphics settings each frame (GraphicsSettings::MirrorTo)
+    // and given the game path's colorspace, which is the other half of "wrong colour": the
+    // engine only assigns colorspace to the ACTIVE path, so on an HDR swapchain the extra
+    // paths were tonemapping for SRGB while the game tonemapped for HDR10.
+    bool matchGameRenderer_ = true;
+    bool stableExposure_    = true;  // see GraphicsSettings::MirrorTo
+    // Captured in Draw(); RenderEditorView/RenderCameraViews run without an App& to hand.
+    GraphicsSettings*        gfxSettings_    = nullptr;
+    wi::graphics::ColorSpace gameColorSpace_ = wi::graphics::ColorSpace::SRGB;
+    // Bring one editor-owned path in line with the game's renderer.
+    void MatchGameRenderer(wi::RenderPath3D& path) const;
+
     struct DebugDraw {
         bool cameras       = true;  // wireframe frustum per CameraComponent — on by default
         bool gameCamera    = true;  // the ACTIVE game camera, which is not a scene component

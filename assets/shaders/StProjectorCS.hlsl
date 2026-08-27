@@ -99,11 +99,11 @@ inline float henyey_greenstein(in float cos_theta, in float g)
 
 // The image itself: gate, texture, vignette, gamma. Returns 0 outside the gate or
 // behind the lens, and reports the gate so the caller can skip the rest.
-inline float3 projector_image(in StProjector projector, in float3 P, out float gate)
+inline float3 projector_image(in StProjector projector, in float3 P, out float gate, out float4 clip)
 {
 	gate = 0;
 
-	const float4 clip = projector_clip(projector, P);
+	clip = projector_clip(projector, P);
 	if (clip.w <= 1e-4)
 		return 0; // behind the lens
 
@@ -135,34 +135,130 @@ inline float3 projector_image(in StProjector projector, in float3 P, out float g
 	return image * projector.intensity;
 }
 
+// Depth map rendered from the projector itself - a real shadow map, so it sees
+// blockers the camera cannot: geometry off screen, and geometry the camera views from
+// a completely different angle. The clip position is the SAME one the gate uses, so
+// there is no second matrix to keep in sync.
+//
+// Reverse-Z, matching the engine: the near plane is 1, the far plane is 0, and a
+// larger stored value means closer to the lens.
+inline float projector_shadow(in StProjector projector, in float4 clip)
+{
+	if (projector.shadow_index == 0)
+		return 1.0;
+
+	const float3 ndc = clip.xyz / clip.w;
+	const float2 uv = clipspace_to_uv(ndc.xy);
+	if (!is_saturated(uv))
+		return 1.0; // outside the map is outside the gate too - nothing to shadow
+
+	Texture2D<float> shadow_map = bindless_textures_float[NonUniformResourceIndex(descriptor_index(projector.shadow_index))];
+
+	// 2x2 PCF. Cheap, and enough to stop the gate edge crawling along a pixel grid.
+	const float reference = ndc.z + projector.shadow_bias;
+	float lit = 0;
+	[unroll]
+	for (int y = 0; y < 2; ++y)
+	{
+		[unroll]
+		for (int x = 0; x < 2; ++x)
+		{
+			const float2 tap = uv + (float2(x, y) - 0.5) * projector.shadow_texel;
+			const float stored = shadow_map.SampleLevel(sampler_linear_clamp, tap, 0);
+			// reference greater than stored => this point is IN FRONT of the recorded
+			// blocker, so the light reaches it.
+			lit += reference >= stored ? 1.0 : 0.0;
+		}
+	}
+
+	return lit * 0.25;
+}
+
+// Linear-depth difference between a world point and whatever the camera already drew
+// at that point's screen position. Positive = the point is BEHIND that surface, so
+// light coming from further along the ray cannot reach it. Returns false when the
+// point cannot be tested at all (behind the camera, or off screen).
+inline bool projector_depth_delta(in float3 X, out float delta)
+{
+	delta = 0;
+
+	const float4 clip = mul(GetCamera().view_projection, float4(X, 1));
+	if (clip.w <= 1e-4)
+		return false;
+
+	const float2 uv = clipspace_to_uv(clip.xy / clip.w);
+	if (!is_saturated(uv))
+		return false;
+
+	const float scene_depth = texture_depth.SampleLevel(sampler_point_clamp, uv, 0);
+	delta = compute_lineardepth(clip.z / clip.w) - compute_lineardepth(scene_depth);
+	return true;
+}
+
 // Screen-space stand-in for a shadow map: walk from the lit point back towards the
 // lens and see whether anything already drawn sits in the way. It can only test what
 // is on screen, so a blocker outside the frame does not shadow - the usual trade.
+//
+// The march is coarse-then-refined rather than uniform. A uniform march has to LAND
+// inside the thin slab just behind a blocker for the thickness test to fire, so a
+// cinema screen 40 m from the lens with a dozen samples is missed most of the time -
+// which is exactly how the image ended up on the wall BEHIND the screen. Here the
+// coarse pass only has to notice the sign change (in front -> behind), and a short
+// bisection then walks onto the crossing itself, where the thickness test is
+// meaningful no matter how far apart the coarse samples were.
 inline float projector_occlusion(in StProjector projector, in float3 P, in float3 L, in float dist)
 {
-	const uint steps = max(1u, min(projector.occlusion_samples, 32u));
+	const uint steps = max(2u, min(projector.occlusion_samples, 32u));
 	const float step_size = dist / (steps + 1);
+
+	// P sits ON the lit surface, so its own delta is 0: it is the "in front" anchor
+	// the first bisection starts from.
+	const float bias = 0.02;
+	float previous_t = 0;
 
 	for (uint i = 1; i <= steps; ++i)
 	{
-		const float3 X = P + L * (step_size * i);
+		const float t = step_size * i;
 
-		const float4 clip = mul(GetCamera().view_projection, float4(X, 1));
-		if (clip.w <= 1e-4)
-			break;
+		float delta;
+		if (!projector_depth_delta(P + L * t, delta))
+			break; // walked off screen or behind the camera - nothing left to test
 
-		const float2 uv = clipspace_to_uv(clip.xy / clip.w);
-		if (!is_saturated(uv))
-			break; // walked off screen - nothing left to test against
+		if (delta > bias)
+		{
+			// Somewhere in (previous_t, t] the segment passed behind a surface. Find
+			// where, so the thickness test measures the blocker and not the distance
+			// between two coarse samples.
+			float front = previous_t;
+			float back = t;
 
-		const float scene_depth = texture_depth.SampleLevel(sampler_point_clamp, uv, 0);
-		const float delta = compute_lineardepth(clip.z / clip.w) - compute_lineardepth(scene_depth);
+			[unroll]
+			for (uint j = 0; j < 5; ++j)
+			{
+				const float mid = (front + back) * 0.5;
+				float mid_delta;
+				if (!projector_depth_delta(P + L * mid, mid_delta))
+					break;
+				if (mid_delta > bias)
+					back = mid;
+				else
+					front = mid;
+			}
 
-		// delta > 0: this step sits behind whatever was rendered there, so something
-		// blocks the beam. The upper bound stops a distant wall from shadowing the
-		// air in front of it (the depth buffer carries no thickness of its own).
-		if (delta > 0.02 && delta < projector.occlusion_thickness)
-			return 1.0 - saturate(projector.occlusion_strength);
+			float crossing_delta;
+			if (!projector_depth_delta(P + L * back, crossing_delta))
+				break;
+
+			// A real blocker leaves the sample just behind its surface, so the delta
+			// at the crossing is small. A silhouette - the segment sliding off the
+			// edge of something much nearer the camera - leaves a delta that stays
+			// huge however tightly the crossing is bracketed, and that is not a
+			// blocker between the lens and P at all.
+			if (crossing_delta < projector.occlusion_thickness)
+				return 1.0 - saturate(projector.occlusion_strength);
+		}
+
+		previous_t = t;
 	}
 
 	return 1.0;
@@ -232,7 +328,8 @@ inline float3 projector_beam(in StProjector projector, in float3 ray_origin, in 
 		const float3 X = ray_origin + ray_dir * t;
 
 		float gate;
-		const float3 image = projector_image(projector, X, gate);
+		float4 clip;
+		const float3 image = projector_image(projector, X, gate, clip);
 
 		[branch]
 		if (gate > 0.001)
@@ -242,6 +339,7 @@ inline float3 projector_beam(in StProjector projector, in float3 ray_origin, in 
 			const float3 forward = to_sample / max(1e-4, dist);
 
 			accumulation += image * gate
+				* projector_shadow(projector, clip)
 				* projector_attenuation(projector, dist)
 				* henyey_greenstein(dot(ray_dir, forward), clamp(projector.beam_anisotropy, -0.95, 0.95))
 				* projector.beam_density * step_size;
@@ -313,7 +411,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			if (is_surface && (projector.flags & ST_PROJECTOR_FLAG_LIGHT_SURFACES))
 			{
 				float gate;
-				const float3 image = projector_image(projector, P, gate);
+				float4 clip;
+				const float3 image = projector_image(projector, P, gate, clip);
 
 				[branch]
 				if (gate > 0.001)
@@ -329,10 +428,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
 						contribution *= saturate(dot(N, to_lens));
 					}
 
+					// The depth map is the real test: it knows what stands between the
+					// lens and this point, whether or not the camera can see it. The
+					// screen-space march only runs when no map was rendered.
 					[branch]
-					if (contribution > 0.001 && (projector.flags & ST_PROJECTOR_FLAG_OCCLUSION))
+					if (contribution > 0.001)
 					{
-						contribution *= projector_occlusion(projector, P, to_lens, dist);
+						if (projector.shadow_index > 0)
+						{
+							contribution *= projector_shadow(projector, clip);
+						}
+						else if (projector.flags & ST_PROJECTOR_FLAG_OCCLUSION)
+						{
+							contribution *= projector_occlusion(projector, P, to_lens, dist);
+						}
 					}
 
 					color += image * contribution;

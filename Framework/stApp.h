@@ -104,7 +104,7 @@ class App : public wi::Application {
 public:
     App();
 
-    wi::RenderPath3D renderPath;
+    st::ProjectorRenderPath renderPath;
     SceneManager     sceneManager;
     ZmqHandler       zmqHandler;
     st::LensFlare    lensFlare;
@@ -152,6 +152,12 @@ public:
     //     ImGui::Begin("Options"); Display().GUI(*this); ImGui::End();
     // Applied settings persist to options.stad and come back on the next launch.
     DisplaySettings& Display() { return displaySettings_; }
+
+    // ── graphics ───────────────────────────────────────────────────────────────
+    // The engine graphics options (AO, shadows, post processing, tonemapping,
+    // upscaling). Editor mode reads these to render its extra viewports through the
+    // same renderer the game uses — see GraphicsSettings::MirrorTo.
+    GraphicsSettings& Graphics() { return graphicsSettings; }
 
     // ── loading ────────────────────────────────────────────────────────────────
     // What is loading right now. Driven by SceneManager transitions and by scenes

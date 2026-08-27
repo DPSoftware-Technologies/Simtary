@@ -39,7 +39,7 @@ namespace wi::version
     // minor features, major updates, breaking compatibility changes
     const int major = 1;
     // minor bug fixes, alterations, refactors, updates
-    const int minor = 2;
+    const int minor = 3;
 
     // --- Identity ---
     const std::string codename = "Detroit";      // The engine codename
