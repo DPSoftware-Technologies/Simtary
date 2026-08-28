@@ -7,14 +7,14 @@
 //
 //   stpack pack   <contentDir> --out <dir> [--scene-dir <dir>] [--name content]
 //                 [--part-size 50] [--chunk 256] [--level 9] [--stored] [--aggressive]
-//   stpack unpack <index.staod> --out <dir> [--filter <substring>] [--rebuild-scenes]
-//   stpack scene  <map.stsd> --out <map.wiscene> [--pack <index.staod>]
-//   stpack info   <index.staod | map.stsd> [--assets]
-//   stpack verify <index.staod>
+//   stpack unpack <index.strd> --out <dir> [--filter <substring>] [--rebuild-scenes]
+//   stpack scene  <map.stsd> --out <map.wiscene> [--pack <index.strd>]
+//   stpack info   <index.strd | map.stsd> [--assets]
+//   stpack verify <index.strd>
 //
 // `pack` is the forward conversion: every .wiscene under contentDir is split into a
 // .stsd plus its resources, every other file is added as it is, and the result is one
-// .staod index next to N .stafp<N> parts. `scene` and `unpack --rebuild-scenes` are the
+// .strd index next to N .stafp<N> parts. `scene` and `unpack --rebuild-scenes` are the
 // reverse, and they exist because a format you cannot get back out of is a format
 // nobody should adopt.
 //
@@ -145,10 +145,10 @@ void PrintUsage () {
         "\n"
         "  stpack pack   <contentDir> --out <dir> [--scene-dir <dir>] [--name content]\n"
         "                [--part-size 50] [--chunk 256] [--level 9] [--stored] [--aggressive]\n"
-        "  stpack unpack <index.staod> --out <dir> [--filter <substring>] [--rebuild-scenes]\n"
-        "  stpack scene  <map.stsd>    --out <map.wiscene> [--pack <index.staod>]\n"
-        "  stpack info   <index.staod | map.stsd> [--assets]\n"
-        "  stpack verify <index.staod>\n"
+        "  stpack unpack <index.strd> --out <dir> [--filter <substring>] [--rebuild-scenes]\n"
+        "  stpack scene  <map.stsd>    --out <map.wiscene> [--pack <index.strd>]\n"
+        "  stpack info   <index.strd | map.stsd> [--assets]\n"
+        "  stpack verify <index.strd>\n"
         "\n"
         "  --part-size   megabytes per .stafp part (default 50, maximum 100)\n"
         "  --chunk       kilobytes per compression frame (default 256)\n"
@@ -297,7 +297,7 @@ int CommandUnpack (const Args& args) {
 
     uint32_t written = 0, rebuilt = 0;
     for (uint32_t i = 0; i < pack.AssetCount(); ++i) {
-        const StaodAsset* a = pack.AssetAt(i);
+        const StrdAsset* a = pack.AssetAt(i);
         const std::string name = pack.NameString(*a);
         if (!filter.empty() && name.find(filter) == std::string::npos) continue;
 
@@ -425,7 +425,7 @@ int CommandInfo (const Args& args) {
     Row rows[32] = {};
     Row total;
     for (uint32_t i = 0; i < pack.AssetCount(); ++i) {
-        const StaodAsset* a = pack.AssetAt(i);
+        const StrdAsset* a = pack.AssetAt(i);
         const uint32_t slot = a->type < 32 ? a->type : 0;
         rows[slot].count++;
         rows[slot].original += a->originalSize;
@@ -445,7 +445,7 @@ int CommandInfo (const Args& args) {
 
     if (args.Has("assets")) {
         for (uint32_t i = 0; i < pack.AssetCount(); ++i) {
-            const StaodAsset* a = pack.AssetAt(i);
+            const StrdAsset* a = pack.AssetAt(i);
             std::printf("  %016llx  part%-3u @%-12llu %10s %-13s %s\n",
                         static_cast<unsigned long long>(a->id),
                         pack.PartAt(a->partIndex).number,
@@ -477,7 +477,7 @@ int CommandVerify (const Args& args) {
 
     uint32_t bad = 0;
     for (uint32_t i = 0; i < pack.AssetCount(); ++i) {
-        const StaodAsset* a = pack.AssetAt(i);
+        const StrdAsset* a = pack.AssetAt(i);
         if (!pack.VerifyAsset(*a, &error)) {
             std::fprintf(stderr, "stpack: %s\n", error.c_str());
             ++bad;

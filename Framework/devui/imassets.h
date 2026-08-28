@@ -1,17 +1,37 @@
 #pragma once
-// Asset Explorer — the DevUI window for the mounted asset packages.
+// Resource Explorer — the DevUI window for the asset packages.
 //
-// Developer tooling, like everything else in devui/: it is drawn only while DevUI is
-// visible and must never become the game's own UI.
+// Developer tooling, like everything else in devui/: drawn only while DevUI is visible,
+// and never the game's own UI.
 //
-// What it is for:
-//   - see what is actually IN a shipped pack, and which .stafp part each asset landed
-//     in, at what offset, under which codec. A pack is otherwise opaque, and "why is
-//     this build 4 GB" is a question you cannot answer by looking at a directory.
-//   - drag files in from Explorer/Finder and turn them into a pack without leaving the
-//     game. A dropped .wiscene is converted the same way the build-time packer does it,
-//     so the map and its resources both land in the tray.
-//   - pull one asset back out to disk, which is the fast half of `stpack unpack`.
+// Two jobs, and the second is why this is more than a listing:
+//
+//   INSPECT   see what is actually IN a package — which .stafp part each asset landed
+//             in, at what offset, under which codec, what it hashes to, whether it is
+//             streamable. A package is otherwise opaque, and "why is this build 4 GB"
+//             is not a question a directory listing can answer.
+//
+//   MANAGE    open a package, add / remove / rename / recompress assets, and write it
+//             back. Without this the only way to change one texture is to edit
+//             assets/contents/ and rebuild the whole package from CMake, which is the
+//             wrong loop for "swap this and look at it".
+//
+// ── The working set ────────────────────────────────────────────────────────────
+//
+// Editing is not done against the mounted package — it is memory-mapped and, on
+// Windows, locked. Instead "Edit" loads a WORKING SET: one row per asset, each row
+// remembering only WHERE its bytes come from (still in the source package, a file on
+// disk, or a buffer this window built). Nothing is copied until Save.
+//
+// That indirection is what makes it cheap: opening a 40 GB package for editing costs a
+// few hundred KB of rows, and a row whose bytes never changed is copied straight out of
+// the old package into the new one.
+//
+// Save writes a complete new package into a staging folder FIRST, reading the untouched
+// rows out of the still-mounted original, and only then unmounts, swaps the files and
+// remounts. A crash or a disk-full at any point leaves the original package intact,
+// which matters because the alternative is a half-written package that the reader
+// correctly refuses and the developer has to rebuild from source.
 //
 // Drag-and-drop arrives as SDL_DROPFILE, routed from st::Run through
 // st::App::HandleDroppedFile. SDL owns the string it hands over; the caller frees it.
@@ -39,69 +59,117 @@ public:
     // Window wrapper. `p_open` is the caller's visibility flag.
     void Draw (bool* p_open);
 
-    // Queue a file dropped onto the window. Safe to call from the SDL event loop; the
-    // file is read and classified on the next Draw(), because reading a 200 MB texture
-    // inside the poll loop stalls the frame that is already in flight.
-    void QueueDrop (const std::string& path);
+    // Queue a file or folder to import. Safe to call from the SDL event loop and from
+    // wi::helper::FileDialog's worker thread; the path is only recorded here and the
+    // reading happens on the next GUI(), because pulling a 200 MB texture off disk
+    // inside the poll loop stalls the frame already in flight.
+    void QueueImport (const std::string& path);
 
-    bool HasPendingDrops () const;
+    // Queue a .strd to mount. Same threading contract as QueueImport: the file dialog
+    // that produces this path runs on its own thread, and mounting touches the
+    // AssetSystem, which the main thread reads.
+    void QueueMount (const std::string& path);
+
+    bool HasPendingImports () const;
 
 private:
-    // ── the import tray ────────────────────────────────────────────────────────
-    // Files dropped in but not yet written to a package. Held with their bytes so the
-    // source file can move or be deleted without breaking the pending build.
-    struct Import {
-        std::string          sourcePath;
-        std::string          logicalPath;   // editable before writing
-        std::vector<uint8_t> data;
-        asset::AssetType     type  = asset::AssetType::Unknown;
-        asset::Codec         codec = asset::Codec::None;
+    // ── one row of the working set ─────────────────────────────────────────────
+    struct Entry {
+        // Where the bytes live. Nothing is materialised until Save, except Memory
+        // entries, which are the ones this window produced itself (a .wiscene split
+        // into a .stsd has no file behind it).
+        enum class Origin : uint8_t { Package, File, Memory };
+
+        std::string          logicalPath;      // editable; the key the game looks up
+        asset::AssetType     type      = asset::AssetType::Unknown;
+        asset::Codec         codec     = asset::Codec::None;
         bool                 autoCodec = true;
-        bool                 include   = true;
-        std::string          note;          // "converted from .wiscene", an error, ...
+        uint32_t             flags     = 0;
+
+        Origin               origin    = Origin::Package;
+        uint64_t             sourceId  = 0;    // Origin::Package — id in the source pack
+        std::string          filePath;         // Origin::File
+        std::vector<uint8_t> bytes;            // Origin::Memory
+
+        uint64_t             size        = 0;  // uncompressed
+        uint64_t             storedSize  = 0;  // on disk; only meaningful for Package
+        uint64_t             contentHash = 0;  // known for Package, computed for the rest
+        uint32_t             partNumber  = 0;
+
+        bool                 removed = false;
+        bool                 added   = false;
+        bool                 renamed = false;
+        std::string          note;             // provenance, or why it failed
     };
 
-    void DrawMounts ();
-    void DrawBrowser ();
+    // ── panels ─────────────────────────────────────────────────────────────────
+    void DrawToolbar ();
+    void DrawPackages ();
+    void DrawAssetTable ();
     void DrawInspector ();
-    void DrawImportTray ();
+    void DrawFooter ();
 
-    void ProcessQueuedDrops ();
-    void AddImportFromFile (const std::string& path);
-    void AddImportFromWiscene (const std::string& path);
+    // ── working set ────────────────────────────────────────────────────────────
+    void BeginEdit (uint32_t mountIndex);
+    void BeginNew ();
+    void DiscardEdit ();
+    bool Editing () const { return editing_; }
+    bool Dirty () const;
 
-    bool WritePackage (const std::string& outDir, const std::string& baseName,
-                       bool mountAfter, std::string* error);
-    bool ExtractSelected (const std::string& outDir, std::string* error);
+    Entry*       FindEntry (uint64_t id);
+    const Entry* FindEntry (uint64_t id) const;
+    // Reads an entry's bytes from wherever they live. The one place that knows about
+    // all three origins.
+    bool ResolveBytes (const Entry& entry, std::vector<uint8_t>& out, std::string* error) const;
+
+    void ProcessQueuedImports ();
+    void AddFromFile (const std::string& path);
+    void AddFromWiscene (const std::string& path);
+    void AddEntry (Entry entry);
+
+    bool SaveWorkingSet (const std::string& outDir, const std::string& baseName,
+                         std::string* error);
+    bool ExtractEntries (const std::vector<uint64_t>& ids, const std::string& outDir,
+                         std::string* error);
 
     // Preview of the selected asset. Held as a wi::Resource so the texture stays alive
-    // while ImGui is drawing with a raw pointer to it.
+    // while ImGui is drawing with a raw pointer into it.
     void RefreshPreview ();
+    void SetStatus (const std::string& text, bool isError);
 
     // ── state ──────────────────────────────────────────────────────────────────
-    std::mutex               dropMutex_;
-    std::vector<std::string> queuedDrops_;
+    mutable std::mutex       importMutex_;
+    std::vector<std::string> queuedImports_;
+    std::vector<std::string> queuedMounts_;
 
-    std::vector<Import> imports_;
+    // The working set, and where it came from. `sourcePack_` stays mounted for the
+    // whole edit so untouched rows can be copied out of it at Save time.
+    bool                     editing_ = false;
+    std::vector<Entry>       entries_;
+    const asset::AssetPack*  sourcePack_ = nullptr;
+    std::string              sourceDir_;      // folder holding the package being edited
+    std::string              sourceBaseName_; // "content" for content.strd
 
-    char filter_[128] = {};
-    int  typeFilter_  = -1;      // -1 = all, else an AssetType value
-    int  mountFilter_ = -1;      // -1 = all mounts
+    // Filters and selection.
+    char                  filter_[128] = {};
+    int                   typeFilter_  = -1;   // -1 = all, else an AssetType value
+    int                   mountFilter_ = -1;   // -1 = all mounts (browse mode only)
+    bool                  showRemoved_ = true;
+    std::vector<uint64_t> selection_;
+    uint64_t              lastClicked_ = 0;
 
-    uint64_t    selectedId_   = 0;
-    uint32_t    selectedMount_ = 0;
-    std::string selectedName_;
-
+    // Preview.
     wi::Resource previewResource_;
-    std::string  previewName_;
+    uint64_t     previewId_ = 0;
     std::string  previewText_;
     bool         previewIsText_ = false;
 
-    char        packName_[64]   = "imported";
-    char        packOutDir_[512] = {};
-    int         packPartSizeMB_ = 50;
-    int         packLevel_      = 9;
-    bool        mountAfterWrite_ = true;
+    // Save options.
+    char packName_[64]    = "content";
+    char packOutDir_[512] = {};
+    int  packPartSizeMB_  = 50;
+    int  packLevel_       = 9;
+    bool mountAfterWrite_ = true;
 
     std::string status_;
     bool        statusIsError_ = false;

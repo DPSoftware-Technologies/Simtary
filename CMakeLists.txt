@@ -411,7 +411,7 @@ endif()
 include(SimtaryApp)
 
 # ─── stpack: the asset packer ──────────────────────────────────────────────────
-# Converts .wiscene maps + loose content into .stsd / .staod / .stafp<N> at BUILD time
+# Converts .wiscene maps + loose content into .stsd / .strd / .stafp<N> at BUILD time
 # (simtary_pack_assets in cmake/SimtaryApp.cmake drives it), and inspects or reverses
 # the result by hand.
 #

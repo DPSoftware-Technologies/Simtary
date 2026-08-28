@@ -96,9 +96,9 @@ struct AppConfig {
     std::string zmqEndpoint = "tcp://127.0.0.1:5556";
 
     // ── asset packages ─────────────────────────────────────────────────────────
-    // .staod indexes to mount before anything loads, in order — a later pack shadows
+    // .strd indexes to mount before anything loads, in order — a later pack shadows
     // an earlier one, which is how a patch pack works. Paths are relative to the
-    // working directory (the exe folder), so "assets/content.staod" is the one
+    // working directory (the exe folder), so "assets/content.strd" is the one
     // simtary_add_app(PACK_ASSETS) produces.
     //
     // Leave empty and the game reads loose files exactly as it always has: mounting is
@@ -211,6 +211,13 @@ public:
     // AppConfig::assetPacks is mounted for you before the engine starts.
     st::AssetSystem& Assets() { return st::AssetSystem::Get(); }
 
+    // ── resources ──────────────────────────────────────────────────────────────
+    // The Resource Explorer's state. It has no window of its own: Editor mode owns the
+    // window and calls Resources().GUI() into it. Public because EditorUI is a separate
+    // class that needs to reach it, and because a project may want to drive an import
+    // from its own tooling.
+    AssetExplorer& Resources() { return assetExplorer_; }
+
     // ── loading ────────────────────────────────────────────────────────────────
     // What is loading right now. Driven by SceneManager transitions and by scenes
     // calling Scene::ReportProgress().
@@ -320,7 +327,6 @@ private:
     void DevUISceneManager();   // dockable window: list/select/load scenes + reload from scratch
     void DevUIAbout(bool *show);
     void DevUIHierarchy();      // Hierarchy (Explorer) + Properties (Inspector) windows
-    void DevUIAssetExplorer();  // dockable window: browse/import/extract mounted packs
 
     // Per-asset load progress out of st::AssetSystem. Static because the callback is a
     // plain function pointer, and called from loading worker threads — see the
@@ -345,7 +351,6 @@ private:
     bool showHierarchy = false;
     bool showProperties = false;
     bool showFaustDSP = false;
-    bool showAssetExplorer = false;
 
     bool STDDBoneLines = false;
     bool STDDCameras = false;

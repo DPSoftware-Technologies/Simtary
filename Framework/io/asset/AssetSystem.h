@@ -15,7 +15,7 @@
 // what keeps shader caches, save data and loose development assets working next to a
 // packed game.
 //
-//   st::AssetSystem::Get().Mount("assets/content.staod");   // before wi::initializer
+//   st::AssetSystem::Get().Mount("assets/content.strd");   // before wi::initializer
 //   st::AssetSystem::Get().Install();
 //
 // Mip and audio streaming survive the move because the override honours the engine's
@@ -34,8 +34,8 @@
 //
 // ── Order ──────────────────────────────────────────────────────────────────────
 //
-// Later mounts win. That is what makes a patch pack work: ship content.staod once,
-// then mount patch1.staod over it and every asset it redefines shadows the original,
+// Later mounts win. That is what makes a patch pack work: ship content.strd once,
+// then mount patch1.strd over it and every asset it redefines shadows the original,
 // with no rebuild of the base.
 
 #include <atomic>
@@ -80,14 +80,14 @@ public:
 
     // ── mounting ───────────────────────────────────────────────────────────────
 
-    // Open a .staod (and its parts) and add it to the search order. Mount before
+    // Open a .strd (and its parts) and add it to the search order. Mount before
     // wi::initializer runs if the engine will read from it during start-up.
-    bool Mount (const std::string& staodPath,
+    bool Mount (const std::string& strdPath,
                 const std::string& mountPoint = "assets/",
                 std::string* error = nullptr,
                 bool verify = false);
 
-    void Unmount    (const std::string& staodPath);
+    void Unmount    (const std::string& strdPath);
     void UnmountAll ();
 
     uint32_t MountCount () const { return static_cast<uint32_t>(mounts_.size()); }
@@ -104,7 +104,7 @@ public:
     // ── direct access ──────────────────────────────────────────────────────────
 
     // Search every mount, last first. `outPack` receives the pack that answered.
-    const asset::StaodAsset* Find (const std::string& logicalPath,
+    const asset::StrdAsset* Find (const std::string& logicalPath,
                                    const asset::AssetPack** outPack = nullptr) const;
 
     bool Exists (const std::string& logicalPath) const;
@@ -202,10 +202,10 @@ private:
     static bool SourceStat   (const std::string& fileName, uint64_t* size, uint64_t* timestamp, void* ud);
 
     // Resolve the name the engine asked for against one mount's prefix.
-    const asset::StaodAsset* Resolve (const MountEntry& m, const std::string& fileName) const;
+    const asset::StrdAsset* Resolve (const MountEntry& m, const std::string& fileName) const;
 
     // Reports one served asset to the callback, if any. Called on loading threads.
-    void NoteAssetServed (const asset::AssetPack& pack, const asset::StaodAsset& asset);
+    void NoteAssetServed (const asset::AssetPack& pack, const asset::StrdAsset& asset);
 
     std::vector<MountEntry> mounts_;
     bool                    installed_ = false;

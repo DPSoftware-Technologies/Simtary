@@ -146,30 +146,30 @@ void AssetPack::UnmapFile (Mapping& m) {
 
 AssetPack::~AssetPack () { Close(); }
 
-bool AssetPack::Open (const std::string& staodPath, std::string* error, bool verifyParts) {
+bool AssetPack::Open (const std::string& strdPath, std::string* error, bool verifyParts) {
     Close();
 
-    if (!MapFile(staodPath, indexMap_, error)) return false;
-    path_ = staodPath;
+    if (!MapFile(strdPath, indexMap_, error)) return false;
+    path_ = strdPath;
 
     const uint8_t* base = static_cast<const uint8_t*>(indexMap_.data);
     const uint64_t size = indexMap_.size;
 
-    if (size < sizeof(StaodHeader)) {
-        SetError(error, staodPath + ": too small to be a .staod");
+    if (size < sizeof(StrdHeader)) {
+        SetError(error, strdPath + ": too small to be a .strd");
         Close();
         return false;
     }
 
-    const StaodHeader* h = reinterpret_cast<const StaodHeader*>(base);
-    if (!MagicMatches(h->magic, kStaodMagic)) {
-        SetError(error, staodPath + ": not a .staod (bad magic)");
+    const StrdHeader* h = reinterpret_cast<const StrdHeader*>(base);
+    if (!MagicMatches(h->magic, kStrdMagic)) {
+        SetError(error, strdPath + ": not a .strd (bad magic)");
         Close();
         return false;
     }
-    if (h->version != kStaodVersion) {
-        SetError(error, staodPath + ": .staod version " + std::to_string(h->version) +
-                        ", this build reads version " + std::to_string(kStaodVersion));
+    if (h->version != kStrdVersion) {
+        SetError(error, strdPath + ": .strd version " + std::to_string(h->version) +
+                        ", this build reads version " + std::to_string(kStrdVersion));
         Close();
         return false;
     }
@@ -181,40 +181,40 @@ bool AssetPack::Open (const std::string& staodPath, std::string* error, bool ver
         return off <= size && bytes <= size - off;
     };
     if (!fits(h->bucketTableOffset, uint64_t(h->bucketCount) * sizeof(uint32_t)) ||
-        !fits(h->assetTableOffset,  uint64_t(h->assetCount)  * sizeof(StaodAsset)) ||
-        !fits(h->partTableOffset,   uint64_t(h->partCount)   * sizeof(StaodPart)) ||
+        !fits(h->assetTableOffset,  uint64_t(h->assetCount)  * sizeof(StrdAsset)) ||
+        !fits(h->partTableOffset,   uint64_t(h->partCount)   * sizeof(StrdPart)) ||
         !fits(h->nameHeapOffset,    h->nameHeapSize)) {
-        SetError(error, staodPath + ": .staod tables run past the end of the file");
+        SetError(error, strdPath + ": .strd tables run past the end of the file");
         Close();
         return false;
     }
     if (h->bucketCount == 0 || (h->bucketCount & (h->bucketCount - 1)) != 0) {
-        SetError(error, staodPath + ": .staod bucket count is not a power of two");
+        SetError(error, strdPath + ": .strd bucket count is not a power of two");
         Close();
         return false;
     }
 
-    const uint64_t tailHash = Hash64(base + sizeof(StaodHeader),
-                                     static_cast<size_t>(size - sizeof(StaodHeader)));
+    const uint64_t tailHash = Hash64(base + sizeof(StrdHeader),
+                                     static_cast<size_t>(size - sizeof(StrdHeader)));
     if (tailHash != h->indexHash) {
-        SetError(error, staodPath + ": .staod index hash mismatch (the index is corrupt)");
+        SetError(error, strdPath + ": .strd index hash mismatch (the index is corrupt)");
         Close();
         return false;
     }
 
     header_  = h;
     buckets_ = reinterpret_cast<const uint32_t*>  (base + h->bucketTableOffset);
-    assets_  = reinterpret_cast<const StaodAsset*>(base + h->assetTableOffset);
-    parts_   = reinterpret_cast<const StaodPart*> (base + h->partTableOffset);
+    assets_  = reinterpret_cast<const StrdAsset*>(base + h->assetTableOffset);
+    parts_   = reinterpret_cast<const StrdPart*> (base + h->partTableOffset);
     names_   = reinterpret_cast<const char*>      (base + h->nameHeapOffset);
 
     // Map every part now, so the read path never locks. See the header comment.
-    const std::string dir = DirectoryOf(staodPath);
+    const std::string dir = DirectoryOf(strdPath);
     partMaps_.resize(h->partCount);
     for (uint32_t i = 0; i < h->partCount; ++i) {
-        const StaodPart& p = parts_[i];
+        const StrdPart& p = parts_[i];
         if (p.nameOffset + p.nameLength > header_->nameHeapSize) {
-            SetError(error, staodPath + ": part " + std::to_string(i) + " has a bad name reference");
+            SetError(error, strdPath + ": part " + std::to_string(i) + " has a bad name reference");
             Close();
             return false;
         }
@@ -222,7 +222,7 @@ bool AssetPack::Open (const std::string& staodPath, std::string* error, bool ver
 
         if (!MapFile(partPath, partMaps_[i], error)) {
             SetError(error, "missing pack part " + partPath +
-                            " (the .staod expects it next to itself)");
+                            " (the .strd expects it next to itself)");
             Close();
             return false;
         }
@@ -246,7 +246,7 @@ bool AssetPack::Open (const std::string& staodPath, std::string* error, bool ver
             return false;
         }
         if (ph->packUuidLo != h->packUuidLo || ph->packUuidHi != h->packUuidHi) {
-            SetError(error, partPath + ": belongs to a different pack build than the .staod"
+            SetError(error, partPath + ": belongs to a different pack build than the .strd"
                             " — rebuild or reinstall so the set matches");
             Close();
             return false;
@@ -281,7 +281,7 @@ void AssetPack::Close () {
 
 // ── lookup ─────────────────────────────────────────────────────────────────────
 
-const StaodAsset* AssetPack::Find (uint64_t id) const {
+const StrdAsset* AssetPack::Find (uint64_t id) const {
     if (header_ == nullptr || header_->assetCount == 0) return nullptr;
 
     const uint32_t mask = header_->bucketCount - 1;
@@ -299,26 +299,26 @@ const StaodAsset* AssetPack::Find (uint64_t id) const {
     return nullptr;
 }
 
-const StaodAsset* AssetPack::Find (const std::string& logicalPath) const {
+const StrdAsset* AssetPack::Find (const std::string& logicalPath) const {
     return Find(AssetIdFromPath(logicalPath));
 }
 
-const char* AssetPack::NameData (const StaodAsset& a) const {
+const char* AssetPack::NameData (const StrdAsset& a) const {
     if (names_ == nullptr) return "";
     return names_ + a.nameOffset;
 }
 
-std::string AssetPack::NameString (const StaodAsset& a) const {
+std::string AssetPack::NameString (const StrdAsset& a) const {
     if (names_ == nullptr) return std::string();
     return std::string(names_ + a.nameOffset, a.nameLength);
 }
 
-const StaodAsset* AssetPack::AssetAt (uint32_t i) const {
+const StrdAsset* AssetPack::AssetAt (uint32_t i) const {
     if (header_ == nullptr || i >= header_->assetCount) return nullptr;
     return &assets_[i];
 }
 
-AssetInfo AssetPack::InfoOf (const StaodAsset& a) const {
+AssetInfo AssetPack::InfoOf (const StrdAsset& a) const {
     AssetInfo info;
     info.id          = a.id;
     info.name        = NameString(a);
@@ -329,23 +329,23 @@ AssetInfo AssetPack::InfoOf (const StaodAsset& a) const {
     info.contentHash = a.contentHash;
     info.partIndex   = a.partIndex;
     info.flags       = a.flags;
-    if (const StaodPart* p = PartRecord(a.partIndex)) info.partNumber = p->index;
+    if (const StrdPart* p = PartRecord(a.partIndex)) info.partNumber = p->index;
     return info;
 }
 
 AssetInfo AssetPack::InfoAt (uint32_t i) const {
-    if (const StaodAsset* a = AssetAt(i)) return InfoOf(*a);
+    if (const StrdAsset* a = AssetAt(i)) return InfoOf(*a);
     return AssetInfo{};
 }
 
-const StaodPart* AssetPack::PartRecord (uint32_t partIndex) const {
+const StrdPart* AssetPack::PartRecord (uint32_t partIndex) const {
     if (header_ == nullptr || partIndex >= header_->partCount) return nullptr;
     return &parts_[partIndex];
 }
 
 PartInfo AssetPack::PartAt (uint32_t i) const {
     PartInfo info;
-    const StaodPart* p = PartRecord(i);
+    const StrdPart* p = PartRecord(i);
     if (p == nullptr) return info;
     info.number     = p->index;
     info.fileName   = std::string(names_ + p->nameOffset, p->nameLength);
@@ -366,7 +366,7 @@ const uint8_t* AssetPack::PartBytes (uint32_t partIndex, uint64_t& sizeOut) cons
 
 // ── reading ────────────────────────────────────────────────────────────────────
 
-const uint8_t* AssetPack::MappedData (const StaodAsset& a) const {
+const uint8_t* AssetPack::MappedData (const StrdAsset& a) const {
     if (static_cast<Codec>(a.codec) != Codec::None) return nullptr;
     uint64_t partSize = 0;
     const uint8_t* part = PartBytes(a.partIndex, partSize);
@@ -384,11 +384,11 @@ bool AssetPack::OwnsMappedPointer (const void* p) const {
     return false;
 }
 
-bool AssetPack::Read (const StaodAsset& a, std::vector<uint8_t>& out, std::string* error) const {
+bool AssetPack::Read (const StrdAsset& a, std::vector<uint8_t>& out, std::string* error) const {
     return ReadRange(a, 0, a.originalSize, out, error);
 }
 
-bool AssetPack::ReadRange (const StaodAsset& a, uint64_t offset, uint64_t size,
+bool AssetPack::ReadRange (const StrdAsset& a, uint64_t offset, uint64_t size,
                            std::vector<uint8_t>& out, std::string* error) const {
     out.clear();
 
@@ -414,7 +414,7 @@ bool AssetPack::ReadRange (const StaodAsset& a, uint64_t offset, uint64_t size,
     return Decode(a, part + a.offset, offset, size, out, error);
 }
 
-bool AssetPack::Decode (const StaodAsset& a, const uint8_t* src,
+bool AssetPack::Decode (const StrdAsset& a, const uint8_t* src,
                         uint64_t wantOffset, uint64_t wantSize,
                         std::vector<uint8_t>& out, std::string* error) const {
     switch (static_cast<Codec>(a.codec)) {
@@ -519,7 +519,7 @@ bool AssetPack::Decode (const StaodAsset& a, const uint8_t* src,
 
 // ── integrity ──────────────────────────────────────────────────────────────────
 
-bool AssetPack::VerifyAsset (const StaodAsset& a, std::string* error) const {
+bool AssetPack::VerifyAsset (const StrdAsset& a, std::string* error) const {
     std::vector<uint8_t> bytes;
     if (!Read(a, bytes, error)) return false;
     const uint64_t got = Hash64(bytes.data(), bytes.size());
@@ -531,7 +531,7 @@ bool AssetPack::VerifyAsset (const StaodAsset& a, std::string* error) const {
 }
 
 bool AssetPack::VerifyPart (uint32_t partIndex, std::string* error) const {
-    const StaodPart* p = PartRecord(partIndex);
+    const StrdPart* p = PartRecord(partIndex);
     if (p == nullptr) {
         SetError(error, "no such part");
         return false;

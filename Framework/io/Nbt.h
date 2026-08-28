@@ -7,7 +7,10 @@
 //
 //   .stad   game options       <userdata>/options.stad          (st::SettingsManager)
 //   .stcd   save games         <userdata>/saves/<slot>.stcd      (st::savegame)
-//   .staod  asset descriptors  assets/animation_descriptor/*.staod (shipped, read-only)
+//   .staod  animation descriptors  assets/animation_descriptor/*.staod (shipped, read-only)
+//
+// Note .staod is NOT the asset package index — that is .strd (see io/asset/), which is
+// a flat binary table, not NBT. The two briefly shared this extension; they no longer do.
 //
 // The project builds with exceptions and RTTI disabled (/EHsc- /GR-), so this API uses
 // NO exceptions and NO RTTI: parsing reports failure via a bool return + optional error

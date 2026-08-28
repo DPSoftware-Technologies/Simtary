@@ -1,5 +1,5 @@
 #pragma once
-// On-disk layout of the Simtary asset package: .staod + .stafp<N> + .stsd.
+// On-disk layout of the Simtary asset package: .strd + .stafp<N> + .stsd.
 //
 // This header is the SINGLE definition of those three formats. The build-time packer
 // (tools/stpack) and the runtime reader (AssetPack) both include it and nothing else
@@ -7,7 +7,7 @@
 //
 // ── Why three files and not one ────────────────────────────────────────────────
 //
-//   .staod        "asset object descriptor" — the INDEX. Which asset lives in which
+//   .strd        "resource descriptor" — the INDEX. Which asset lives in which
 //                 part, at what offset, how big, how compressed, what it hashes to.
 //                 Small (about 80 bytes per asset), read once, kept mapped.
 //   .stafp<N>     "asset fragment part N" — the PAYLOAD. Raw asset bytes back to
@@ -19,12 +19,17 @@
 //                 or a tool wants to read, plus the engine's entity payload as an
 //                 out-of-band blob (see below).
 //
+// The index is .strd and not .staod because .staod was already taken: it is the
+// animation descriptor Framework/io/Nbt.h writes (assets/animation_descriptor/*.staod).
+// Two unrelated formats behind one extension is a trap — one is NBT, one is a flat
+// binary table — so the newer of the two moved.
+//
 // ── Why the index is NOT NBT ───────────────────────────────────────────────────
 //
 // NBT is a linear, self-describing tree: finding one asset means walking every tag
 // before it and allocating a Tag node for each. That is fine for a 40-key options
 // file and wrong for a 100,000-entry index that has to answer "where is asset X"
-// during a load screen. So .staod is a flat, fixed-stride, memory-mappable table
+// during a load screen. So .strd is a flat, fixed-stride, memory-mappable table
 // with a power-of-two open-addressed hash bucket array in front of it:
 //
 //      id -> bucket = id & (bucketCount-1) -> linear probe -> assetTable[i]
@@ -45,7 +50,7 @@
 //
 // Every header carries a version. A reader refuses a version it does not know rather
 // than guessing. Fields are append-only into the reserved tail; nothing is ever
-// renumbered, because a shipped .staod on a player's disk outlives the source tree.
+// renumbered, because a shipped .strd on a player's disk outlives the source tree.
 
 #include <cstdint>
 #include <cstddef>
@@ -54,11 +59,11 @@ namespace st::asset {
 
 // ── magic values ───────────────────────────────────────────────────────────────
 // 8 bytes so the struct stays 8-aligned and so `file` / a hex editor shows it plainly.
-inline constexpr char kStaodMagic[8] = { 'S','T','A','O','D','\0','\0','\0' };
+inline constexpr char kStrdMagic[8] = { 'S','T','R','D','\0','\0','\0','\0' };
 inline constexpr char kStafpMagic[8] = { 'S','T','A','F','P','\0','\0','\0' };
 inline constexpr char kStsdMagic [8] = { 'S','T','S','D','\0','\0','\0','\0' };
 
-inline constexpr uint32_t kStaodVersion = 1;
+inline constexpr uint32_t kStrdVersion = 1;
 inline constexpr uint32_t kStafpVersion = 1;
 inline constexpr uint32_t kStsdVersion  = 1;
 
@@ -132,19 +137,19 @@ enum PartFlags : uint32_t {
     PartFlag_Oversized = 1u << 0, // holds one asset larger than the size cap
 };
 
-// Per-pack flags (in the .staod header).
+// Per-pack flags (in the .strd header).
 enum PackFlags : uint32_t {
     PackFlag_None       = 0,
     PackFlag_Verified   = 1u << 0, // hashes were computed at build time and are trustworthy
 };
 
-// ── .staod ─────────────────────────────────────────────────────────────────────
+// ── .strd ─────────────────────────────────────────────────────────────────────
 //
 // Layout:
-//   [StaodHeader        ] 128 B at offset 0
+//   [StrdHeader        ] 128 B at offset 0
 //   [bucket table       ] uint32_t[bucketCount], kEmptyBucket = 0xFFFFFFFF
-//   [asset table        ] StaodAsset[assetCount], sorted ascending by id
-//   [part table         ] StaodPart[partCount]
+//   [asset table        ] StrdAsset[assetCount], sorted ascending by id
+//   [part table         ] StrdPart[partCount]
 //   [name heap          ] UTF-8 logical paths, NUL-terminated, referenced by offset
 //
 // Everything after the header is covered by `indexHash`, so one XXH64 over the tail
@@ -152,9 +157,9 @@ enum PackFlags : uint32_t {
 
 inline constexpr uint32_t kEmptyBucket = 0xFFFFFFFFu;
 
-struct StaodHeader {                 // 128 bytes
-    char     magic[8];               // kStaodMagic
-    uint32_t version;                // kStaodVersion
+struct StrdHeader {                 // 128 bytes
+    char     magic[8];               // kStrdMagic
+    uint32_t version;                // kStrdVersion
     uint32_t flags;                  // PackFlags
 
     // Identifies this pack SET. Every .stafp<N> written alongside carries the same
@@ -175,12 +180,12 @@ struct StaodHeader {                 // 128 bytes
 
     uint64_t totalPayloadSize;       // sum of every part's payload, for progress bars
     uint64_t buildTimestamp;         // seconds since epoch, informational
-    uint64_t indexHash;              // XXH64 of [sizeof(StaodHeader), end of file)
+    uint64_t indexHash;              // XXH64 of [sizeof(StrdHeader), end of file)
     uint64_t reserved[3];
 };
-static_assert(sizeof(StaodHeader) == 128, "StaodHeader is an on-disk layout");
+static_assert(sizeof(StrdHeader) == 128, "StrdHeader is an on-disk layout");
 
-struct StaodPart {                   // 64 bytes
+struct StrdPart {                   // 64 bytes
     uint32_t index;                  // the N in .stafp<N>; 1-based
     uint32_t flags;                  // PartFlags
     uint64_t fileSize;               // exact byte size of the part file
@@ -195,9 +200,9 @@ struct StaodPart {                   // 64 bytes
     uint32_t assetCount;             // how many assets live in this part
     uint64_t reserved[3];
 };
-static_assert(sizeof(StaodPart) == 64, "StaodPart is an on-disk layout");
+static_assert(sizeof(StrdPart) == 64, "StrdPart is an on-disk layout");
 
-struct StaodAsset {                  // 80 bytes
+struct StrdAsset {                  // 80 bytes
     uint64_t id;                     // XXH64 of the canonical logical path
     uint64_t offset;                 // byte offset of the payload within its part file
     uint64_t storedSize;             // bytes on disk (post-compression)
@@ -212,7 +217,7 @@ struct StaodAsset {                  // 80 bytes
     uint32_t chunkSize;              // Codec::ZstdChunked only; 0 otherwise
     uint32_t reserved[3];
 };
-static_assert(sizeof(StaodAsset) == 80, "StaodAsset is an on-disk layout");
+static_assert(sizeof(StrdAsset) == 80, "StrdAsset is an on-disk layout");
 
 // ── .stafp<N> ──────────────────────────────────────────────────────────────────
 //
@@ -222,7 +227,7 @@ static_assert(sizeof(StaodAsset) == 80, "StaodAsset is an on-disk layout");
 //   [asset bytes ] each starting at a kPartAlignment boundary
 //
 // Deliberately no per-asset header in the part. Everything needed to read an asset is
-// already in the mapped .staod, so a cold read is exactly one seek and one read of
+// already in the mapped .strd, so a cold read is exactly one seek and one read of
 // exactly the right length. A per-asset header would cost a second read, or a larger
 // one, for information the reader already has.
 
@@ -230,7 +235,7 @@ struct StafpHeader {                 // 64 bytes
     char     magic[8];               // kStafpMagic
     uint32_t version;                // kStafpVersion
     uint32_t partIndex;              // the N in the file name; 1-based
-    uint64_t packUuidLo;             // must match the .staod
+    uint64_t packUuidLo;             // must match the .strd
     uint64_t packUuidHi;
     uint64_t payloadOffset;          // first asset byte; == kPartAlignment
     uint64_t payloadSize;

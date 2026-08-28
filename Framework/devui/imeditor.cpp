@@ -35,6 +35,10 @@ constexpr const char* kEditorViewport = "Editor Viewport";
 constexpr const char* kGameViewport   = "Game Viewport";
 constexpr const char* kHierarchy      = "Hierarchy##editor";
 constexpr const char* kProperties     = "Properties##editor";
+// The "##editor" suffix keeps this a DIFFERENT ImGui window from the floating DevUI
+// copy, so docking one does not move or close the other. Both drive the same
+// AssetExplorer object through App::Resources().
+constexpr const char* kResources      = "Resource Explorer##editor";
 constexpr const char* kDockHost       = "##SimtaryEditorDockHost";
 
 constexpr float kPitchLimit = 1.55f; // ~89 degrees; stops the freecam flipping over the pole
@@ -240,8 +244,13 @@ void st::EditorUI::BuildDefaultLayout(ImGuiID dockspaceID, ImVec2 size)
 	ImGuiID right = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right, 0.26f, nullptr, &centre);
 	ImGuiID rightBottom = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.60f, nullptr, &right);
 
+	// A bottom strip across the centre, the shape every engine gives a content browser:
+	// wide, short, and under the thing it feeds.
+	ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.30f, nullptr, &centre);
+
 	ImGui::DockBuilderDockWindow(kHierarchy, right);
 	ImGui::DockBuilderDockWindow(kProperties, rightBottom);
+	ImGui::DockBuilderDockWindow(kResources, bottom);
 	// Both viewports land in the centre node, so they come up as tabs and either can be
 	// pulled out into a split by hand.
 	ImGui::DockBuilderDockWindow(kGameViewport, centre);
@@ -937,6 +946,9 @@ void st::EditorUI::MenuItems()
 		ImGui::SetTooltip("Dockable editor: viewports, hierarchy, properties, gizmo");
 
 	ImGui::BeginDisabled(!enabled_);
+	ImGui::MenuItem("Resource Explorer (editor)", nullptr, &showResources_);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Docked asset package browser / editor");
 	if (ImGui::MenuItem("Reset Editor Layout"))
 		resetLayout_ = true;
 	ImGui::EndDisabled();
@@ -1020,6 +1032,15 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	{
 		if (ImGui::Begin(kProperties, &showProperties_))
 			PropertiesGUI(scene, selected, &history_);
+		ImGui::End();
+	}
+
+	if (showResources_)
+	{
+		// The window is the editor's; the contents are the App's single AssetExplorer,
+		// so an edit started in the floating DevUI window is still here.
+		if (ImGui::Begin(kResources, &showResources_))
+			app.Resources().GUI();
 		ImGui::End();
 	}
 

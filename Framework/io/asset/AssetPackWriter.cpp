@@ -434,10 +434,10 @@ bool AssetPackWriter::WriteIndex (std::string* error) {
         buckets[slot] = i;
     }
 
-    std::vector<StaodAsset> assetTable(assets_.size());
+    std::vector<StrdAsset> assetTable(assets_.size());
     for (size_t i = 0; i < assets_.size(); ++i) {
         const PendingAsset& s = assets_[i];
-        StaodAsset& d = assetTable[i];
+        StrdAsset& d = assetTable[i];
         d.id           = s.id;
         d.offset       = s.offset;
         d.storedSize   = s.storedSize;
@@ -453,11 +453,11 @@ bool AssetPackWriter::WriteIndex (std::string* error) {
         d.reserved[0] = d.reserved[1] = d.reserved[2] = 0;
     }
 
-    std::vector<StaodPart> partTable(parts_.size());
+    std::vector<StrdPart> partTable(parts_.size());
     uint64_t totalPayload = 0;
     for (size_t i = 0; i < parts_.size(); ++i) {
         const PendingPart& s = parts_[i];
-        StaodPart& d = partTable[i];
+        StrdPart& d = partTable[i];
         d.index      = s.number;
         d.flags      = s.flags;
         d.fileSize   = s.fileSize;
@@ -469,9 +469,9 @@ bool AssetPackWriter::WriteIndex (std::string* error) {
         totalPayload += s.fileSize > kPartAlignment ? s.fileSize - kPartAlignment : 0;
     }
 
-    StaodHeader head{};
-    std::memcpy(head.magic, kStaodMagic, sizeof(head.magic));
-    head.version     = kStaodVersion;
+    StrdHeader head{};
+    std::memcpy(head.magic, kStrdMagic, sizeof(head.magic));
+    head.version     = kStrdVersion;
     head.flags       = PackFlag_Verified;
     head.packUuidLo  = options_.uuidLo;
     head.packUuidHi  = options_.uuidHi;
@@ -480,10 +480,10 @@ bool AssetPackWriter::WriteIndex (std::string* error) {
     head.bucketCount = bucketCount;
     head.nameHeapSize = static_cast<uint32_t>(nameHeap.size());
 
-    uint64_t cursor = sizeof(StaodHeader);
+    uint64_t cursor = sizeof(StrdHeader);
     head.bucketTableOffset = cursor; cursor += uint64_t(bucketCount) * sizeof(uint32_t);
-    head.assetTableOffset  = cursor; cursor += assetTable.size() * sizeof(StaodAsset);
-    head.partTableOffset   = cursor; cursor += partTable.size()  * sizeof(StaodPart);
+    head.assetTableOffset  = cursor; cursor += assetTable.size() * sizeof(StrdAsset);
+    head.partTableOffset   = cursor; cursor += partTable.size()  * sizeof(StrdPart);
     head.nameHeapOffset    = cursor; cursor += nameHeap.size();
 
     head.totalPayloadSize = totalPayload;
@@ -497,18 +497,18 @@ bool AssetPackWriter::WriteIndex (std::string* error) {
     };
     blit(0,                      &head,             sizeof(head));
     blit(head.bucketTableOffset, buckets.data(),    buckets.size()    * sizeof(uint32_t));
-    blit(head.assetTableOffset,  assetTable.data(), assetTable.size() * sizeof(StaodAsset));
-    blit(head.partTableOffset,   partTable.data(),  partTable.size()  * sizeof(StaodPart));
+    blit(head.assetTableOffset,  assetTable.data(), assetTable.size() * sizeof(StrdAsset));
+    blit(head.partTableOffset,   partTable.data(),  partTable.size()  * sizeof(StrdPart));
     blit(head.nameHeapOffset,    nameHeap.data(),   nameHeap.size());
 
     // Hash everything past the header, then stamp it in. Reading it back is the first
     // thing AssetPack::Open() does, so a truncated or edited index is refused before
     // any offset inside it is trusted.
-    const uint64_t tailHash = Hash64(file.data() + sizeof(StaodHeader),
-                                     file.size() - sizeof(StaodHeader));
-    std::memcpy(file.data() + offsetof(StaodHeader, indexHash), &tailHash, sizeof(tailHash));
+    const uint64_t tailHash = Hash64(file.data() + sizeof(StrdHeader),
+                                     file.size() - sizeof(StrdHeader));
+    std::memcpy(file.data() + offsetof(StrdHeader, indexHash), &tailHash, sizeof(tailHash));
 
-    const std::string path = outDir_ + "/" + baseName_ + ".staod";
+    const std::string path = outDir_ + "/" + baseName_ + ".strd";
     if (!WriteWholeFile(path, file.data(), file.size(), error)) return false;
     writtenFiles_.push_back(path);
 
