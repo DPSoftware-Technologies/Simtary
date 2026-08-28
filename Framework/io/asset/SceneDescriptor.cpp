@@ -741,7 +741,7 @@ bool RebuildWiscene (const SceneDescriptor& scene, const AssetPack* pack,
 
     for (const SceneAssetRef& ref : scene.assets) {
         if (pack == nullptr) continue;
-        const StaodAsset* a = pack->Find(ref.id);
+        const StrdAsset* a = pack->Find(ref.id);
         if (a == nullptr) {
             SetError(error, "asset \"" + ref.path + "\" is not in the pack — rebuilding this"
                             " scene needs the pack it was converted with");

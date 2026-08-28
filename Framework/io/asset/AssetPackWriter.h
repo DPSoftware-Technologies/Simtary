@@ -1,5 +1,5 @@
 #pragma once
-// AssetPackWriter — build side of a .staod index and its .stafp<N> parts.
+// AssetPackWriter — build side of a .strd index and its .stafp<N> parts.
 //
 // Used by tools/stpack during the build. Nothing at runtime writes a pack: a shipped
 // game reads packs and writes save data, and keeping the writer out of the runtime is
@@ -63,7 +63,7 @@ struct PackStats {
     uint32_t partCount    = 0;
     uint64_t originalBytes = 0;   // sum of asset sizes before compression
     uint64_t storedBytes   = 0;   // sum of asset sizes on disk
-    uint64_t indexBytes    = 0;   // size of the .staod
+    uint64_t indexBytes    = 0;   // size of the .strd
 };
 
 class AssetPackWriter {
@@ -75,7 +75,7 @@ public:
     AssetPackWriter& operator=(const AssetPackWriter&) = delete;
 
     // `outDir` is created if it does not exist. Output lands as
-    // <outDir>/<baseName>.staod plus <outDir>/<baseName>.stafp1, .stafp2, ...
+    // <outDir>/<baseName>.strd plus <outDir>/<baseName>.stafp1, .stafp2, ...
     bool Begin (const std::string& outDir, const std::string& baseName,
                 const PackOptions& options, std::string* error = nullptr);
 

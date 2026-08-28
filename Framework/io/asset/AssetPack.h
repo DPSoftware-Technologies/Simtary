@@ -1,5 +1,5 @@
 #pragma once
-// AssetPack — read side of a .staod index plus its .stafp<N> parts.
+// AssetPack — read side of a .strd index plus its .stafp<N> parts.
 //
 // Open() memory-maps the index and every part, then answers lookups straight out of
 // the mapped bytes. Nothing is parsed and nothing is allocated per lookup: the file
@@ -7,8 +7,8 @@
 // probe and one 80-byte struct read.
 //
 //   st::asset::AssetPack pack;
-//   if (pack.Open("assets/content.staod", &err)) {
-//       if (const StaodAsset* a = pack.Find("textures/wall_basecolor.dds")) {
+//   if (pack.Open("assets/content.strd", &err)) {
+//       if (const StrdAsset* a = pack.Find("textures/wall_basecolor.dds")) {
 //           std::vector<uint8_t> bytes;
 //           pack.Read(*a, bytes);
 //       }
@@ -34,7 +34,7 @@
 namespace st::asset {
 
 // A decoded, owning snapshot of one entry — for UI lists and tools that want a plain
-// value. The read path uses the raw StaodAsset instead and copies nothing.
+// value. The read path uses the raw StrdAsset instead and copies nothing.
 struct AssetInfo {
     uint64_t    id           = 0;
     std::string name;
@@ -68,7 +68,7 @@ public:
     AssetPack(AssetPack&&)                 = delete;
     AssetPack& operator=(AssetPack&&)      = delete;
 
-    // Map <staodPath> and every part named in it. Parts are resolved next to the
+    // Map <strdPath> and every part named in it. Parts are resolved next to the
     // index file. Fails if the index is malformed, if a part is missing, or if a
     // part's UUID or size disagrees with what the index recorded — a stale part is
     // caught here rather than as corrupt geometry three loads later.
@@ -76,7 +76,7 @@ public:
     // `verifyParts` additionally hashes every part end to end, which is a full
     // sequential read of the whole pack. Right for an installer or a "verify files"
     // menu item; wrong for startup.
-    bool Open (const std::string& staodPath, std::string* error = nullptr, bool verifyParts = false);
+    bool Open (const std::string& strdPath, std::string* error = nullptr, bool verifyParts = false);
     void Close ();
     bool IsOpen () const { return header_ != nullptr; }
 
@@ -87,21 +87,21 @@ public:
     // ── lookup ─────────────────────────────────────────────────────────────────
     // Both return nullptr when absent. The pointer is into the mapped index and stays
     // valid until Close().
-    const StaodAsset* Find (uint64_t id) const;
-    const StaodAsset* Find (const std::string& logicalPath) const;
+    const StrdAsset* Find (uint64_t id) const;
+    const StrdAsset* Find (const std::string& logicalPath) const;
 
     bool Contains (const std::string& logicalPath) const { return Find(logicalPath) != nullptr; }
 
     // The asset's logical path, straight out of the mapped name heap. The string_view
     // form copies nothing; it is valid until Close().
-    const char* NameData   (const StaodAsset& a) const;
-    std::string NameString (const StaodAsset& a) const;
+    const char* NameData   (const StrdAsset& a) const;
+    std::string NameString (const StrdAsset& a) const;
 
     // ── enumeration (for the DevUI explorer and tools) ──────────────────────────
     uint32_t          AssetCount () const { return header_ ? header_->assetCount : 0; }
-    const StaodAsset* AssetAt    (uint32_t i) const;   // sorted ascending by id
+    const StrdAsset* AssetAt    (uint32_t i) const;   // sorted ascending by id
     AssetInfo         InfoAt     (uint32_t i) const;
-    AssetInfo         InfoOf     (const StaodAsset& a) const;
+    AssetInfo         InfoOf     (const StrdAsset& a) const;
 
     uint32_t          PartCount () const { return header_ ? header_->partCount : 0; }
     PartInfo          PartAt    (uint32_t i) const;
@@ -112,13 +112,13 @@ public:
     // ── reading ────────────────────────────────────────────────────────────────
 
     // Whole asset, decompressed. `out` is resized to the original size.
-    bool Read (const StaodAsset& a, std::vector<uint8_t>& out, std::string* error = nullptr) const;
+    bool Read (const StrdAsset& a, std::vector<uint8_t>& out, std::string* error = nullptr) const;
 
     // A byte range of the DECOMPRESSED asset. This is the call that makes streaming
     // work: the engine asks for "the tail of this .dds starting at mip 4" and, for a
     // stored or chunk-compressed asset, only those bytes are touched. Reading past
     // the end clamps; reading entirely past it yields an empty buffer and true.
-    bool ReadRange (const StaodAsset& a, uint64_t offset, uint64_t size,
+    bool ReadRange (const StrdAsset& a, uint64_t offset, uint64_t size,
                     std::vector<uint8_t>& out, std::string* error = nullptr) const;
 
     // Zero-copy pointer to the asset's bytes inside the mapped part. Returns nullptr
@@ -126,7 +126,7 @@ public:
     // somewhere and this call promises not to allocate. The whole reason the packer
     // leaves already-compressed formats (dds/png/ogg/mp4) at Codec::None by default
     // is to keep this path available for them.
-    const uint8_t* MappedData (const StaodAsset& a) const;
+    const uint8_t* MappedData (const StrdAsset& a) const;
 
     // True when `p` points inside one of this pack's mapped part files. The runtime
     // asset source uses it to tell a zero-copy pointer it handed the engine from a
@@ -137,7 +137,7 @@ public:
     // ── integrity ──────────────────────────────────────────────────────────────
 
     // Re-hash one asset's bytes and compare against the index. Cheap per asset.
-    bool VerifyAsset (const StaodAsset& a, std::string* error = nullptr) const;
+    bool VerifyAsset (const StrdAsset& a, std::string* error = nullptr) const;
     // Re-hash a whole part file, header included. One sequential read of that part.
     bool VerifyPart  (uint32_t partIndex, std::string* error = nullptr) const;
     // Every part, then the index itself. `progress` may be null; it is called with
@@ -157,13 +157,13 @@ private:
     static bool MapFile   (const std::string& path, Mapping& out, std::string* error);
     static void UnmapFile (Mapping& m);
 
-    const StaodPart*  PartRecord (uint32_t partIndex) const;
+    const StrdPart*  PartRecord (uint32_t partIndex) const;
     const uint8_t*    PartBytes  (uint32_t partIndex, uint64_t& sizeOut) const;
 
     // Decompress `storedSize` bytes at `src` into `out`, honouring the asset's codec.
     // `wantOffset`/`wantSize` are in ORIGINAL bytes; for ZstdChunked only the frames
     // that overlap the window are decoded.
-    bool Decode (const StaodAsset& a, const uint8_t* src,
+    bool Decode (const StrdAsset& a, const uint8_t* src,
                  uint64_t wantOffset, uint64_t wantSize,
                  std::vector<uint8_t>& out, std::string* error) const;
 
@@ -172,10 +172,10 @@ private:
     std::vector<Mapping> partMaps_;
 
     // All pointers into indexMap_.data — nothing here owns anything.
-    const StaodHeader* header_  = nullptr;
+    const StrdHeader* header_  = nullptr;
     const uint32_t*    buckets_ = nullptr;
-    const StaodAsset*  assets_  = nullptr;
-    const StaodPart*   parts_   = nullptr;
+    const StrdAsset*  assets_  = nullptr;
+    const StrdPart*   parts_   = nullptr;
     const char*        names_   = nullptr;
 };
 

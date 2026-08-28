@@ -1,4 +1,4 @@
-// Round-trip tests for the asset package formats: XXH64, .staod/.stafp packing,
+// Round-trip tests for the asset package formats: XXH64, .strd/.stafp packing,
 // .wiscene split/merge and .stsd serialisation.
 //
 // Returns the number of failed checks (0 = success), so it works as a CTest test too.
@@ -102,7 +102,7 @@ std::vector<uint8_t> MakeFakeWiscene (const std::vector<uint8_t>& ecsPayload,
 
 void TestHash () {
     // The published XXH64 vector for an empty input with seed 0. If this moves, the
-    // implementation is not XXH64 any more and every shipped .staod is unreadable.
+    // implementation is not XXH64 any more and every shipped .strd is unreadable.
     CHECK(Hash64("", 0) == 0xEF46DB3751D8E999ull, "XXH64 empty-input vector");
 
     // The streaming form has to agree with the one-shot form at every chunk boundary —
@@ -206,12 +206,12 @@ void TestPackRoundTrip (const fs::path& dir) {
     }
 
     AssetPack pack;
-    CHECK(pack.Open((dir / "test.staod").string(), &error, /*verifyParts*/ true),
+    CHECK(pack.Open((dir / "test.strd").string(), &error, /*verifyParts*/ true),
           error.empty() ? "pack.Open" : error.c_str());
     CHECK(pack.AssetCount() == entries.size(), "index holds every asset");
 
     for (const Entry& e : entries) {
-        const StaodAsset* a = pack.Find(e.name);
+        const StrdAsset* a = pack.Find(e.name);
         CHECK(a != nullptr, "lookup by path");
         if (a == nullptr) continue;
 
@@ -254,12 +254,12 @@ void TestPackRoundTrip (const fs::path& dir) {
 
     // An already-compressed asset must stay stored, or the zero-copy streaming path is
     // gone — that is the property the whole codec-choice table exists to protect.
-    if (const StaodAsset* dds = pack.Find("textures/wall.dds")) {
+    if (const StrdAsset* dds = pack.Find("textures/wall.dds")) {
         CHECK(static_cast<Codec>(dds->codec) == Codec::None, "incompressible asset stays stored");
         CHECK(pack.MappedData(*dds) != nullptr, "stored asset is readable zero-copy");
         CHECK(pack.OwnsMappedPointer(pack.MappedData(*dds)), "mapped pointer is recognised as ours");
     }
-    if (const StaodAsset* mesh = pack.Find("meshes/crate.bin")) {
+    if (const StrdAsset* mesh = pack.Find("meshes/crate.bin")) {
         CHECK(static_cast<Codec>(mesh->codec) == Codec::ZstdChunked, "compressible asset is chunked");
         CHECK(mesh->storedSize < mesh->originalSize, "compression actually saved something");
         CHECK((mesh->flags & AssetFlag_Streamable) != 0, "chunked asset stays streamable");
@@ -285,7 +285,7 @@ void TestPackRoundTrip (const fs::path& dir) {
             }
 
             AssetPack damaged;
-            CHECK(damaged.Open((dir / "test.staod").string(), &error, /*verifyParts*/ true) == false,
+            CHECK(damaged.Open((dir / "test.strd").string(), &error, /*verifyParts*/ true) == false,
                   "a damaged part is refused when verification is on");
         }
     }
@@ -345,7 +345,7 @@ void TestSceneDescriptor (const fs::path& dir) {
 
     // And back to a .wiscene, which is the property that makes the format safe to adopt.
     AssetPack pack;
-    CHECK(pack.Open((dir / "scene" / "map.staod").string(), &error),
+    CHECK(pack.Open((dir / "scene" / "map.strd").string(), &error),
           error.empty() ? "scene pack.Open" : error.c_str());
 
     std::vector<uint8_t> rebuilt;

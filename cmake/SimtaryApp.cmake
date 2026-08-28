@@ -492,7 +492,7 @@ function(simtary_add_app)
                 # exist yet when this runs (it runs BEFORE the link, not after).
                 COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:${APP_NAME}>/assets
             )
-            # PACK_ONLY ships the .staod/.stafp set and nothing loose. The copy is
+            # PACK_ONLY ships the .strd/.stafp set and nothing loose. The copy is
             # skipped rather than made and deleted, because the package lands in the
             # same folder and a delete would have to know which files it may touch.
             if (NOT APP_PACK_ONLY)
@@ -605,7 +605,7 @@ function(simtary_add_app)
 endfunction()
 
 # ── simtary_pack_assets() ─────────────────────────────────────────────────────
-# Build a .staod + .stafp<N> package from a content directory and drop it next to the
+# Build a .strd + .stafp<N> package from a content directory and drop it next to the
 # executable, converting every .wiscene it finds into a .stsd on the way.
 #
 #   simtary_pack_assets(TARGET Milistry CONTENT_DIR .../assets/contents
@@ -614,7 +614,7 @@ endfunction()
 #
 # Output layout under <exe>/assets/:
 #
-#   resources/content.staod      the index
+#   resources/content.strd      the index
 #   resources/content.stafp1..N  the payload parts
 #   scenes/<map>.stsd            one descriptor per converted .wiscene, LOOSE
 #
@@ -682,7 +682,7 @@ function(simtary_pack_assets)
                 --level ${PACK_LEVEL}
         COMMAND ${CMAKE_COMMAND} -E touch ${_stamp}
         DEPENDS ${_pack_inputs} stpack
-        COMMENT "Packing ${PACK_TARGET} content -> ${PACK_PACK_SUBDIR}/${PACK_NAME}.staod + .stafp<N>, maps -> ${PACK_SCENE_SUBDIR}/*.stsd"
+        COMMENT "Packing ${PACK_TARGET} content -> ${PACK_PACK_SUBDIR}/${PACK_NAME}.strd + .stafp<N>, maps -> ${PACK_SCENE_SUBDIR}/*.stsd"
         VERBATIM
     )
 

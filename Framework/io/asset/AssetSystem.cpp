@@ -58,16 +58,16 @@ AssetSystem::~AssetSystem () {
 
 // ── mounting ───────────────────────────────────────────────────────────────────
 
-bool AssetSystem::Mount (const std::string& staodPath, const std::string& mountPoint,
+bool AssetSystem::Mount (const std::string& strdPath, const std::string& mountPoint,
                          std::string* error, bool verify) {
     auto pack = std::make_unique<asset::AssetPack>();
-    if (!pack->Open(staodPath, error, verify)) return false;
+    if (!pack->Open(strdPath, error, verify)) return false;
 
     MountEntry m;
     m.mountPoint = NormaliseMountPoint(mountPoint);
     m.pack       = std::move(pack);
 
-    wi::backlog::post("AssetSystem: mounted " + staodPath + " (" +
+    wi::backlog::post("AssetSystem: mounted " + strdPath + " (" +
                       std::to_string(m.pack->AssetCount()) + " assets, " +
                       std::to_string(m.pack->PartCount()) + " parts, " +
                       asset::FormatBytes(m.pack->TotalPayloadSize()) + ")");
@@ -76,9 +76,9 @@ bool AssetSystem::Mount (const std::string& staodPath, const std::string& mountP
     return true;
 }
 
-void AssetSystem::Unmount (const std::string& staodPath) {
+void AssetSystem::Unmount (const std::string& strdPath) {
     for (size_t i = mounts_.size(); i-- > 0; ) {
-        if (mounts_[i].pack && mounts_[i].pack->Path() == staodPath)
+        if (mounts_[i].pack && mounts_[i].pack->Path() == strdPath)
             mounts_.erase(mounts_.begin() + static_cast<ptrdiff_t>(i));
     }
 }
@@ -107,14 +107,14 @@ void AssetSystem::Uninstall () {
     installed_ = false;
 }
 
-const asset::StaodAsset* AssetSystem::Resolve (const MountEntry& m, const std::string& fileName) const {
+const asset::StrdAsset* AssetSystem::Resolve (const MountEntry& m, const std::string& fileName) const {
     if (m.pack == nullptr) return nullptr;
 
     const std::string canonical = asset::CanonicalPath(fileName);
 
     // Try the path as given first. Resources lifted out of a .wiscene keep the exact
     // relative names the engine stored ("textures/wall.dds"), so they hit here.
-    if (const asset::StaodAsset* a = m.pack->Find(canonical)) return a;
+    if (const asset::StrdAsset* a = m.pack->Find(canonical)) return a;
 
     // Then with the mount point stripped: the running game asks for
     // "assets/scenes/s1map.stsd" because the build copies contents/ into <exe>/assets/,
@@ -126,11 +126,11 @@ const asset::StaodAsset* AssetSystem::Resolve (const MountEntry& m, const std::s
     return nullptr;
 }
 
-const asset::StaodAsset* AssetSystem::Find (const std::string& logicalPath,
+const asset::StrdAsset* AssetSystem::Find (const std::string& logicalPath,
                                             const asset::AssetPack** outPack) const {
     // Last mount first, so a patch pack shadows the base pack.
     for (size_t i = mounts_.size(); i-- > 0; ) {
-        if (const asset::StaodAsset* a = Resolve(mounts_[i], logicalPath)) {
+        if (const asset::StrdAsset* a = Resolve(mounts_[i], logicalPath)) {
             if (outPack) *outPack = mounts_[i].pack.get();
             return a;
         }
@@ -146,7 +146,7 @@ bool AssetSystem::Exists (const std::string& logicalPath) const {
 bool AssetSystem::Read (const std::string& logicalPath, std::vector<uint8_t>& out,
                         std::string* error) const {
     const asset::AssetPack* pack = nullptr;
-    const asset::StaodAsset* a = Find(logicalPath, &pack);
+    const asset::StrdAsset* a = Find(logicalPath, &pack);
     if (a == nullptr) {
         if (error) *error = logicalPath + " is not in any mounted pack";
         return false;
@@ -159,7 +159,7 @@ bool AssetSystem::SourceRead (const std::string& fileName, const uint8_t** data,
     if (self == nullptr) return false;
 
     const asset::AssetPack* pack = nullptr;
-    const asset::StaodAsset* a = self->Find(fileName, &pack);
+    const asset::StrdAsset* a = self->Find(fileName, &pack);
     if (a == nullptr) return false;   // decline; the engine falls back to the filesystem
 
     self->NoteAssetServed(*pack, *a);
@@ -210,7 +210,7 @@ bool AssetSystem::SourceExists (const std::string& fileName, void* ud) {
 bool AssetSystem::SourceStat (const std::string& fileName, uint64_t* size, uint64_t* timestamp, void* ud) {
     AssetSystem* self = static_cast<AssetSystem*>(ud);
     if (self == nullptr) return false;
-    const asset::StaodAsset* a = self->Find(fileName);
+    const asset::StrdAsset* a = self->Find(fileName);
     if (a == nullptr) return false;
 
     if (size) *size = a->originalSize;
@@ -258,7 +258,7 @@ AssetLoadProgress AssetSystem::LoadProgress () const {
     return out;
 }
 
-void AssetSystem::NoteAssetServed (const asset::AssetPack& pack, const asset::StaodAsset& asset) {
+void AssetSystem::NoteAssetServed (const asset::AssetPack& pack, const asset::StrdAsset& asset) {
     // Runs on whichever loading worker served the read. Everything below is either
     // atomic or under progressMutex_.
     const uint32_t read = assetsRead_.fetch_add(1, std::memory_order_relaxed) + 1;

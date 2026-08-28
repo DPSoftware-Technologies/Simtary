@@ -61,6 +61,10 @@ public:
     void SetEnabled(bool on);
     void Toggle() { SetEnabled(!enabled_); }
 
+    // Raise the docked Resource Explorer. Called when a file is dropped on the window,
+    // so the drop lands somewhere visible instead of into a hidden panel.
+    void ShowResources() { showResources_ = true; }
+
     // Everything ImGui. Called from st::App::DevUIRender() while editor mode is on, after
     // the DevUI main menu bar so the dock host lands under it.
     void Draw(App& app, wi::RenderPath3D& gamePath, wi::ecs::Entity& selected);
@@ -156,6 +160,7 @@ private:
     bool showGameViewport_   = true;
     bool showHierarchy_      = true;
     bool showProperties_     = true;
+    bool showResources_      = true;
 
     bool layoutBuilt_ = false;   // dock layout authored (or restored from imgui.ini)
     bool resetLayout_ = false;   // "Reset Layout" was clicked; rebuild next frame

@@ -42,9 +42,10 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `SceneManager.*` | Named scene registry with deferred transitions + load/unload callbacks. |
 | `ImguiHelper.cpp` | The hand-rolled ImGui backend and the per-frame UI ordering. |
 | `devui.cpp`, `devui/` | **DevUI** — developer tooling, not game UI: menu bar, backlog, graphics settings, hierarchy/properties, scene manager, About. Gated by `AppConfig::devUI`. |
+| `devui/imassets.*` | **Resource Explorer** — browse a mounted package (which part, what offset, which codec, what hash), and edit one: add / remove / rename / recompress assets and write it back. Lives ONLY in Editor mode, docked along the bottom. Reached through `App::Resources()`. |
 | `stLoading.cpp` | Default `RenderLoadingScreen` — the pipeline warm-up overlay plus whatever `LoadingState` carries. |
 | `io/` | `Nbt` (the `.stad`/`.stcd` format), `NbtStore`, `SettingsManager`, `SaveGame`, `PlayerPrefs`, `UserData` (LocalLow path resolver). |
-| `io/asset/` | **The asset package**: `.staod` index + `.stafp<N>` payload parts + `.stsd` maps. `AssetFormat.h` is the on-disk layout, `AssetPack` reads it, `AssetPackWriter` builds it, `SceneDescriptor` splits and rebuilds `.wiscene`, `StHash.h` is XXH64. `AssetSystem` is the only engine-aware file: it mounts packages and installs `wi::helper::SetAssetSourceOverride` so every engine read resolves through them. Reach it anywhere via `st::AssetSystem::Get()`, or `App::Assets()`. |
+| `io/asset/` | **The asset package**: `.strd` index + `.stafp<N>` payload parts + `.stsd` maps. `AssetFormat.h` is the on-disk layout, `AssetPack` reads it, `AssetPackWriter` builds it, `SceneDescriptor` splits and rebuilds `.wiscene`, `StHash.h` is XXH64. `AssetSystem` is the only engine-aware file: it mounts packages and installs `wi::helper::SetAssetSourceOverride` so every engine read resolves through them. Reach it anywhere via `st::AssetSystem::Get()`, or `App::Assets()`. |
 | `input/InputSystem.*` | Centralized action/axis keymap, refreshed once per frame. |
 | `crash/CrashHandler.*` | sentry-native + Crashpad, offline only; launches `SimtaryCrashReporter`. |
 | `render/LensFlare.*` | Procedural screen-space flare (`assets/shaders/StLensFlare*`). |
@@ -309,10 +310,10 @@ renumbering 0-3 would silently re-aim every projector, laser and mirror already 
 copy of it.
 
 **The asset package is three formats, and the split between them is the whole point.**
-`.staod` is the INDEX, `.stafp<N>` are the PAYLOAD parts, `.stsd` is one MAP. They are
+`.strd` is the INDEX, `.stafp<N>` are the PAYLOAD parts, `.stsd` is one MAP. They are
 separate files because they answer different questions at different times.
 
-- `.staod` is deliberately **not** NBT. NBT is a linear self-describing tree: finding
+- `.strd` is deliberately **not** NBT. NBT is a linear self-describing tree: finding
   one asset means walking every tag before it and allocating a node for each, which is
   fine for a 40-key options file and wrong for a 100,000-entry index consulted during a
   load screen. The index is a flat, fixed-stride, memory-mapped table behind a
@@ -425,6 +426,33 @@ callback deliberately does NOT move the progress bar: the engine owns it for the
 load, and a second writer would make it jump backwards. `assetsExpected` comes from the
 `.stsd`'s own reference list minus whatever is missing, which is what makes the count a
 real "13 of 14" rather than a running total with no denominator.
+
+**The Resource Explorer edits a WORKING SET, not the package.** A mounted package is
+memory-mapped and, on Windows, locked — it cannot be written in place. "Edit" therefore
+builds one row per asset that remembers only WHERE its bytes are (still in the source
+package, a file on disk, or a buffer the window built), and copies nothing until Save.
+Opening a 40 GB package to rename one texture costs a few hundred KB of rows, and every
+untouched row is copied straight from the old package into the new one.
+
+Save writes the complete new package into a staging folder FIRST — reading the untouched
+rows out of the still-mounted original, which is why the unmount cannot happen any
+earlier — and only then unmounts, deletes the old files, swaps the staged ones in and
+remounts. A crash or a full disk at any point leaves the original intact. Old parts are
+deleted by PATTERN rather than by count: the new package may have fewer parts than the
+old one, and an orphaned `.stafpN` beside a new index is a mismatched UUID that makes the
+reader refuse the whole set.
+
+**The Resource Explorer is Editor-mode only, and that is a safety property.** Everything
+it can do writes files. A plain DevUI session and a shipped build both ignore dropped
+files entirely (`st::App::HandleDroppedFile` returns unless `IsEditorMode()`), so
+dragging something onto a running game can never quietly start rewriting content. The
+panel is a docked editor window rather than a floating DevUI one for the same reason
+Hierarchy/Properties have `##editor` copies: docking one must not disturb the other.
+
+**A new editor panel does not appear in an existing layout.** `BuildDefaultLayout` runs
+once and is then restored from `imgui.ini`, so a window added later comes up floating for
+anyone with a saved layout. `Simtary > Editor > Reset Editor Layout` is the fix, and is
+why that menu item exists.
 
 **Shader cache.** `Simtary/shaders/` is staged into every game's output before the
 incremental `offlineshadercompiler` pre-pass, so first launch is never cold. After a
