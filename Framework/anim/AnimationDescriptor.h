@@ -3,6 +3,14 @@
 // engine which animation clips a character uses, how they loop, and the state-machine transitions
 // between them. One descriptor file per character/thing lives under assets/animation_descriptor/.
 //
+// It is a PACKAGED asset, not a loose file. `.staod` goes into the .strd/.stafp package with
+// everything else under assets/contents/ (AssetType::Animation), and LoadAnimationDescriptor
+// reads it through wi::helper::FileRead — the same seam st::AssetSystem overrides for textures
+// and scenes — so the path "assets/animation_descriptor/player.staod" resolves out of a mounted
+// package. Nothing in the caller changes: a package that does not hold the path falls through to
+// the real filesystem, so a loose descriptor dropped in during development still wins nothing
+// and loses nothing.
+//
 // File layout (NBT compound), matching what NBTExplorer shows:
 //   anitype             : short   — descriptor kind. 1 = player animation.
 //   player_model_target : string  — name of the model node under the rig (e.g. "soldier.fbx")

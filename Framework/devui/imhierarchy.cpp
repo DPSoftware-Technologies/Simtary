@@ -1,5 +1,6 @@
 #include "imhierarchy.h"
 #include "imcomponents.h"
+#include "imcomponentinspectors.h"
 #include "imeditorhistory.h"
 
 #include "stNativeComponent.h"
@@ -20,14 +21,11 @@ using wi::ecs::Entity;
 using wi::ecs::INVALID_ENTITY;
 using namespace wi::scene;
 
-// ------------------------------------------------------------------ helpers ---
+// EntityLabel / EditString / ComponentHeader live in imcomponentinspectors.cpp, because both
+//	files draw components and one copy of each is enough.
+using namespace st::devui;
 
-static std::string EntityLabel(Scene& scene, Entity e)
-{
-	if (const NameComponent* n = scene.names.GetComponent(e); n && !n->name.empty())
-		return n->name;
-	return "Entity " + std::to_string((unsigned)e);
-}
+// ------------------------------------------------------------------ helpers ---
 
 // Strip the "wi::scene::Scene::" namespace prefix off a ComponentLibrary key so the
 //	inspector shows "transforms" rather than the fully-qualified registration name.
@@ -51,26 +49,83 @@ static Entity CurrentDragEntity()
 	return *(const Entity*)p->Data;
 }
 
-// Shared row behaviour for both hierarchy views: publish the drag payload, and select ONLY on a
-//	real click.
+// Is `ancestor` somewhere up the parent chain of `e` (or the same entity)? Walks HierarchyComponent
+//	links with a hop cap, so a corrupt scene with a parent cycle cannot spin here.
+static bool IsAncestorOf(Scene& scene, Entity ancestor, Entity e)
+{
+	if (ancestor == INVALID_ENTITY || e == INVALID_ENTITY) return false;
+	for (int hops = 0; hops < 4096 && e != INVALID_ENTITY; ++hops)
+	{
+		if (e == ancestor) return true;
+		const HierarchyComponent* h = scene.hierarchy.GetComponent(e);
+		if (h == nullptr) return false;
+		e = h->parentID;
+	}
+	return false;
+}
+
+// Can `child` legally become a child of `parent`? Anything else would build a cycle the
+//	transform update would then walk forever.
+static bool CanReparent(Scene& scene, Entity child, Entity parent)
+{
+	if (child == INVALID_ENTITY || parent == INVALID_ENTITY || child == parent) return false;
+	if (!scene.transforms.Contains(parent)) return false;  // Component_Attach needs one
+	return !IsAncestorOf(scene, child, parent);            // no dropping a parent into itself
+}
+
+// Shared row behaviour for both hierarchy views: publish the drag payload, take a drop, and
+//	select ONLY on a real click.
 //
 //	A click here means press and release on the same row without dragging past ImGui's drag
 //	threshold. Selecting on press (IsItemClicked) meant that starting a drag also re-selected the
 //	row, which swapped the Properties panel -- and with it the EntityField you were dragging onto
 //	-- out from under the cursor mid-drag. Deferring to release separates "I want this entity" from
 //	"I want to carry this entity somewhere".
-static void HierarchyRowInteract(Scene& scene, Entity e, Entity& selected)
+//
+//	The DROP side is the re-parent: dragging a row onto another row runs Component_Attach, which
+//	bakes the child's current world transform into its new local one, so the object does not jump
+//	when it changes parent. `history` is optional; with one, a re-parent is a single undo step.
+static void HierarchyRowInteract(Scene& scene, Entity e, Entity& selected,
+	st::EditorHistory* history)
 {
 	// Snapshot before BeginDragDropSource, which overwrites the last-item state.
 	const bool hovered      = ImGui::IsItemHovered();
 	const bool toggledOpen  = ImGui::IsItemToggledOpen();   // click landed on the expand arrow
 
-	// Drag source: lets you drag this entity onto an EntityField (Unity-style object reference).
+	// Drag source: lets you drag this entity onto an EntityField (Unity-style object reference)
+	//	or onto another row to re-parent it.
 	if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID))
 	{
 		ImGui::SetDragDropPayload(SIMTARY_ENTITY_PAYLOAD, &e, sizeof(Entity));
 		ImGui::Text("%s", EntityLabel(scene, e).c_str());
+		ImGui::TextDisabled("drop on a row to re-parent, or on an entity field");
 		ImGui::EndDragDropSource();
+	}
+
+	// Drop target: only opened when the drop would actually be legal, so an illegal target
+	//	(itself, or one of its own descendants) simply does not highlight — which reads as
+	//	"not here" without needing a separate rejection cue.
+	const Entity dragged = CurrentDragEntity();
+	if (dragged != INVALID_ENTITY && CanReparent(scene, dragged, e) &&
+		ImGui::BeginDragDropTarget())
+	{
+		if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(SIMTARY_ENTITY_PAYLOAD))
+		{
+			if (p->DataSize == (int)sizeof(Entity))
+			{
+				const Entity child = *(const Entity*)p->Data;
+				if (CanReparent(scene, child, e))
+				{
+					// Only the child changes: Component_Attach rewrites its HierarchyComponent
+					//	and rebases its transform, and touches nothing on the new parent.
+					if (history) history->BeginEntity(scene, child, "Re-parent");
+					scene.Component_Attach(child, e);
+					if (history) history->Commit(scene);
+					selected = child;
+				}
+			}
+		}
+		ImGui::EndDragDropTarget();
 	}
 
 	if (hovered && !toggledOpen
@@ -193,7 +248,7 @@ static void DrawNode(Scene& scene, Entity e,
 	if (isDragged)
 		ImGui::PopStyleColor();
 
-	HierarchyRowInteract(scene, e, selected);
+	HierarchyRowInteract(scene, e, selected, history);
 
 	if (history != nullptr)
 		EntityContextMenu(scene, e, selected, *history);
@@ -286,7 +341,7 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 			if (isDragged)
 				ImGui::PopStyleColor();
 
-			HierarchyRowInteract(scene, e, selected);
+			HierarchyRowInteract(scene, e, selected, history);
 			if (history != nullptr)
 				EntityContextMenu(scene, e, selected, *history);
 		}
@@ -318,6 +373,39 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 			DrawNode(scene, e, children, selected, visited, history);
 	}
 
+	// The other half of re-parenting: a strip under the tree that detaches whatever is dropped
+	//	on it. Without it there is no way back OUT of a parent by dragging — the rows can only
+	//	ever make something a child of something else.
+	//
+	//	It is only drawn while a row is actually being carried, so the panel does not carry a
+	//	permanent empty band at the bottom.
+	if (CurrentDragEntity() != INVALID_ENTITY)
+	{
+		ImGui::Separator();
+		ImGui::Selectable("drop here to un-parent (make it a root)", false,
+			ImGuiSelectableFlags_Disabled);
+		if (ImGui::BeginDragDropTarget())
+		{
+			if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(SIMTARY_ENTITY_PAYLOAD))
+			{
+				if (p->DataSize == (int)sizeof(Entity))
+				{
+					const Entity child = *(const Entity*)p->Data;
+					if (child != INVALID_ENTITY && scene.hierarchy.Contains(child))
+					{
+						// Component_Detach keeps the world transform, same as Attach does, so
+						//	the object stays where it is and only its parent changes.
+						if (history) history->BeginEntity(scene, child, "Un-parent");
+						scene.Component_Detach(child);
+						if (history) history->Commit(scene);
+						selected = child;
+					}
+				}
+			}
+			ImGui::EndDragDropTarget();
+		}
+	}
+
 	ImGui::EndChild();
 }
 
@@ -331,37 +419,6 @@ void HierarchyWindow(Scene& scene, Entity& selected, bool* p_open)
 
 // --------------------------------------------------------------- properties ---
 
-// Inline std::string text edit through a fixed scratch buffer.
-static bool EditString(const char* label, std::string& s)
-{
-	char buf[256];
-	std::snprintf(buf, sizeof(buf), "%s", s.c_str());
-	if (ImGui::InputText(label, buf, sizeof(buf)))
-	{
-		s = buf;
-		return true;
-	}
-	return false;
-}
-
-// One component's collapsing header plus the right-aligned "x" that detaches it.
-//	Returns true when the caller should draw the component's body — i.e. the header is open
-//	AND the component still exists. The "x" calls ComponentManager::Remove immediately, so
-//	any pointer the caller is holding is dangling the moment this returns false.
-static bool ComponentHeader(Scene& scene, Entity e, const char* libraryKey,
-	const char* label, bool defaultOpen, st::EditorHistory* history)
-{
-	ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_AllowOverlap;
-	if (defaultOpen) flags |= ImGuiTreeNodeFlags_DefaultOpen;
-
-	const bool open = ImGui::CollapsingHeader(label, flags);
-
-	bool removed = false;
-	if (const EngineComponentType* type = FindEngineComponentByKey(libraryKey))
-		removed = RemoveEngineComponentButton(scene, e, *type, history);
-
-	return open && !removed;
-}
 
 static void DrawTransform(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -472,99 +529,6 @@ static void DrawTransform(Scene& scene, Entity e, st::EditorHistory* history)
 		t->SetDirty();
 }
 
-static void DrawLight(Scene& scene, Entity e, st::EditorHistory* history)
-{
-	LightComponent* l = scene.lights.GetComponent(e);
-	if (!l) return;
-	if (!ComponentHeader(scene, e, "wi::scene::Scene::lights", "Light", true, history)) return;
-
-	const char* types[] = { "Directional", "Point", "Spot", "Rectangle" };
-	int ty = (int)l->type;
-	if (ImGui::Combo("Type", &ty, types, IM_ARRAYSIZE(types)))
-		l->type = (LightComponent::LightType)ty;
-
-	ImGui::ColorEdit3("Color", &l->color.x);
-	ImGui::DragFloat("Intensity", &l->intensity, 0.5f, 0.0f, 100000.0f);
-	ImGui::DragFloat("Range", &l->range, 0.1f, 0.0f, 100000.0f);
-	ImGui::DragFloat("Radius", &l->radius, 0.001f, 0.0f, 1000.0f);
-
-	if (l->type == LightComponent::SPOT)
-	{
-		ImGui::DragFloat("Outer cone", &l->outerConeAngle, 0.01f, 0.0f, XM_PIDIV2);
-		ImGui::DragFloat("Inner cone", &l->innerConeAngle, 0.01f, 0.0f, XM_PIDIV2);
-	}
-
-	bool cast = l->IsCastingShadow();
-	if (ImGui::Checkbox("Cast shadow", &cast)) l->SetCastShadow(cast);
-	bool vol = l->IsVolumetricsEnabled();
-	if (ImGui::Checkbox("Volumetrics", &vol)) l->SetVolumetricsEnabled(vol);
-}
-
-static void DrawCamera(Scene& scene, Entity e, st::EditorHistory* history)
-{
-	CameraComponent* c = scene.cameras.GetComponent(e);
-	if (!c) return;
-	if (!ComponentHeader(scene, e, "wi::scene::Scene::cameras", "Camera", false, history)) return;
-
-	ImGui::DragFloat("FOV (rad)", &c->fov, 0.01f, 0.01f, XM_PI - 0.01f);
-	ImGui::DragFloat("Near", &c->zNearP, 0.01f, 0.001f, 100000.0f);
-	ImGui::DragFloat("Far", &c->zFarP, 1.0f, 0.01f, 1000000.0f);
-	ImGui::DragFloat("Focal length", &c->focal_length, 0.01f);
-	ImGui::DragFloat("Aperture size", &c->aperture_size, 0.01f, 0.0f, 100.0f);
-}
-
-static void DrawObject(Scene& scene, Entity e, st::EditorHistory* history)
-{
-	ObjectComponent* o = scene.objects.GetComponent(e);
-	if (!o) return;
-	if (!ComponentHeader(scene, e, "wi::scene::Scene::objects", "Object", true, history)) return;
-
-	ImGui::ColorEdit4("Color", &o->color.x);
-	ImGui::ColorEdit4("Emissive", &o->emissiveColor.x);
-	ImGui::DragFloat("LOD bias", &o->lod_bias, 0.01f);
-	ImGui::DragFloat("Draw distance", &o->draw_distance, 1.0f, 0.0f, 1000000.0f);
-
-	bool renderable = (o->_flags & ObjectComponent::RENDERABLE) != 0;
-	if (ImGui::Checkbox("Renderable", &renderable)) o->SetRenderable(renderable);
-	bool cast = o->IsCastingShadow();
-	if (ImGui::Checkbox("Cast shadow", &cast)) o->SetCastShadow(cast);
-
-	if (o->meshID != INVALID_ENTITY)
-		ImGui::TextDisabled("mesh: %s", EntityLabel(scene, o->meshID).c_str());
-}
-
-static void DrawMaterial(Scene& scene, Entity e, st::EditorHistory* history)
-{
-	MaterialComponent* m = scene.materials.GetComponent(e);
-	if (!m) return;
-	if (!ComponentHeader(scene, e, "wi::scene::Scene::materials", "Material", true, history)) return;
-
-	bool dirty = false;
-	dirty |= ImGui::ColorEdit4("Base color", &m->baseColor.x);
-	dirty |= ImGui::ColorEdit3("Emissive", &m->emissiveColor.x);
-	dirty |= ImGui::DragFloat("Emissive strength", &m->emissiveColor.w, 0.01f, 0.0f, 1000.0f);
-	dirty |= ImGui::DragFloat("Roughness", &m->roughness, 0.005f, 0.0f, 1.0f);
-	dirty |= ImGui::DragFloat("Metalness", &m->metalness, 0.005f, 0.0f, 1.0f);
-	dirty |= ImGui::DragFloat("Reflectance", &m->reflectance, 0.005f, 0.0f, 1.0f);
-
-	bool doubleSided = m->IsDoubleSided();
-	if (ImGui::Checkbox("Double sided", &doubleSided)) { m->SetDoubleSided(doubleSided); dirty = true; }
-
-	if (dirty)
-		m->SetDirty();
-}
-
-static void DrawLayer(Scene& scene, Entity e, st::EditorHistory* history)
-{
-	LayerComponent* layer = scene.layers.GetComponent(e);
-	if (!layer) return;
-	if (!ComponentHeader(scene, e, "wi::scene::Scene::layers", "Layer", false, history)) return;
-
-	int mask = (int)layer->layerMask;
-	if (ImGui::InputScalar("Layer mask", ImGuiDataType_S32, &mask, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal))
-		layer->layerMask = (uint32_t)mask;
-}
-
 static void DrawName(Scene& scene, Entity e, st::EditorHistory* history)
 {
 	NameComponent* n = scene.names.GetComponent(e);
@@ -579,57 +543,6 @@ static void DrawName(Scene& scene, Entity e, st::EditorHistory* history)
 
 	if (const EngineComponentType* type = FindEngineComponentByKey("wi::scene::Scene::names"))
 		RemoveEngineComponentButton(scene, e, *type, history);
-}
-
-static void DrawMetadata(Scene& scene, Entity e, st::EditorHistory* history)
-{
-	MetadataComponent* md = scene.metadatas.GetComponent(e);
-	if (!md) return;
-	if (!ComponentHeader(scene, e, "wi::scene::Scene::metadatas", "Metadata", false, history)) return;
-
-	ImGui::TextDisabled("Native-component attachments (NCI_/NCA_/NCE_) live here.");
-
-	ImGui::PushID("md_bool");
-	for (size_t i = 0; i < md->bool_values.names.size(); ++i)
-	{
-		ImGui::PushID((int)i);
-		bool v = md->bool_values.values[i];
-		if (ImGui::Checkbox(md->bool_values.names[i].c_str(), &v))
-			md->bool_values.values[i] = v;
-		ImGui::PopID();
-	}
-	ImGui::PopID();
-
-	ImGui::PushID("md_int");
-	for (size_t i = 0; i < md->int_values.names.size(); ++i)
-	{
-		ImGui::PushID((int)i);
-		int v = md->int_values.values[i];
-		if (ImGui::InputInt(md->int_values.names[i].c_str(), &v))
-			md->int_values.values[i] = v;
-		ImGui::PopID();
-	}
-	ImGui::PopID();
-
-	ImGui::PushID("md_float");
-	for (size_t i = 0; i < md->float_values.names.size(); ++i)
-	{
-		ImGui::PushID((int)i);
-		float v = md->float_values.values[i];
-		if (ImGui::DragFloat(md->float_values.names[i].c_str(), &v, 0.01f))
-			md->float_values.values[i] = v;
-		ImGui::PopID();
-	}
-	ImGui::PopID();
-
-	ImGui::PushID("md_string");
-	for (size_t i = 0; i < md->string_values.names.size(); ++i)
-	{
-		ImGui::PushID((int)i);
-		EditString(md->string_values.names[i].c_str(), md->string_values.values[i]);
-		ImGui::PopID();
-	}
-	ImGui::PopID();
 }
 
 static void DrawNativeComponents(Scene& scene, Entity e, st::EditorHistory* history)
@@ -707,38 +620,27 @@ void PropertiesGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 	if (ImGui::SmallButton("Deselect")) { selected = INVALID_ENTITY; return; }
 	ImGui::Separator();
 
-	// Rich, realtime editors for the common engine components.
+	// Name and Transform are laid out by hand: the name field shares its row with the detach
+	//	button, and the transform carries the euler cache and the drift check below it.
 	DrawName(scene, selected, history);
 	DrawTransform(scene, selected, history);
-	DrawObject(scene, selected, history);
-	DrawMaterial(scene, selected, history);
-	DrawLight(scene, selected, history);
-	DrawCamera(scene, selected, history);
-	DrawLayer(scene, selected, history);
-	DrawMetadata(scene, selected, history);
+
+	// Every other engine component, with every option it has (imcomponentinspectors.cpp).
+	EngineComponentInspectors(scene, selected, history);
 
 	// Native components.
 	DrawNativeComponents(scene, selected, history);
 
-	// Completeness: list every OTHER engine component present that has no inline editor,
-	//	so the inspector always reflects the full component set on the entity.
-	static const std::unordered_set<std::string> handled = {
-		"wi::scene::Scene::names",
-		"wi::scene::Scene::transforms",
-		"wi::scene::Scene::objects",
-		"wi::scene::Scene::materials",
-		"wi::scene::Scene::lights",
-		"wi::scene::Scene::cameras",
-		"wi::scene::Scene::layers",
-		"wi::scene::Scene::metadatas",
-	};
-
+	// Completeness: list any engine component present that this build has no editor for. All
+	//	38 of the Scene managers are covered, so anything showing up here is a component type
+	//	that was added to the engine and not to the inspector table — which is worth seeing
+	//	rather than silently dropping.
 	std::vector<std::string> others;
 	for (auto& kv : scene.componentLibrary.entries)
 	{
 		const auto* mgr = kv.second.component_manager.get();
 		if (!mgr || !mgr->Contains(selected)) continue;
-		if (handled.count(kv.first)) continue;
+		if (HasEngineComponentInspector(kv.first)) continue;
 		others.push_back(kv.first); // full library key: the detach table is keyed by it
 	}
 	std::sort(others.begin(), others.end());
@@ -756,7 +658,8 @@ void PropertiesGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 				if (type && RemoveEngineComponentButton(scene, selected, *type, history))
 					break;
 			}
-			ImGui::TextDisabled("(present on entity; no inline editor)");
+			ImGui::TextDisabled("(present on entity; no inline editor — add one to "
+				"imcomponentinspectors.cpp)");
 		}
 	}
 

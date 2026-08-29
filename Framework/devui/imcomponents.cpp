@@ -216,12 +216,9 @@ bool AddComponentButton(Scene& scene, Entity entity, st::EditorHistory* history)
 
 // ------------------------------------------------------------------ new object ---
 
-namespace {
-
-// Give a freshly created entity a home: place it at the spawn point and, if asked, attach
-//	it under a parent. Component_Attach bakes the world transform into the child's local one,
-//	so the object stays exactly where it was put.
-void PlaceNewEntity(Scene& scene, Entity e, const XMFLOAT3& position, Entity parent)
+// Give a freshly created or imported entity a home. Component_Attach bakes the world
+//	transform into the child's local one, so the object stays exactly where it was put.
+void PlaceEntityAt(Scene& scene, Entity e, const XMFLOAT3& position, Entity parent)
 {
 	if (TransformComponent* t = scene.transforms.GetComponent(e))
 	{
@@ -237,6 +234,8 @@ void PlaceNewEntity(Scene& scene, Entity e, const XMFLOAT3& position, Entity par
 	if (parent != INVALID_ENTITY && parent != e && scene.transforms.Contains(parent))
 		scene.Component_Attach(e, parent);
 }
+
+namespace {
 
 // Unique-ish display name, so ten cubes are not all called "Cube".
 std::string UniqueName(Scene& scene, const char* base)
@@ -352,7 +351,7 @@ Entity CreateObjectMenuItems(Scene& scene, const XMFLOAT3& spawnPosition, Entity
 	if (created == INVALID_ENTITY)
 		return INVALID_ENTITY;
 
-	PlaceNewEntity(scene, created, spawnPosition, parent);
+	PlaceEntityAt(scene, created, spawnPosition, parent);
 	if (history != nullptr)
 		history->RecordCreated(scene, created, label);
 	wi::backlog::post(std::string("Editor: ") + label + " (entity " + std::to_string(created) + ")");

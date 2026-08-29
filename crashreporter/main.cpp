@@ -76,7 +76,7 @@ int main(int argc, char* argv[]) {
     const std::string dir = (argc > 1) ? argv[1] : ".";
     std::string summary = ReadSummary(dir);
     if (summary.empty()) {
-        summary = "Milistry crashed, but no crash summary was found.";
+        summary = "Simtary crashed, but no crash summary was found.";
     }
 
     std::string message =

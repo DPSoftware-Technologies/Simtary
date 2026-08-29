@@ -59,6 +59,16 @@ bool RemoveEngineComponentButton(wi::scene::Scene& scene, wi::ecs::Entity entity
 
 // ------------------------------------------------------------------ new object ---
 
+// Put a freshly created or freshly imported entity at `position` (origin-relative float
+//	space, the same space the editor's spawn point is in) and, if asked, attach it under
+//	`parent`.
+//
+//	Writes the 64-bit ABSOLUTE position as well as the local one. That is the field
+//	TransformComponent::Serialize round-trips, so an entity placed only in local space comes
+//	back at the world origin after a save/load — or after an undo/redo.
+void PlaceEntityAt(wi::scene::Scene& scene, wi::ecs::Entity e, const XMFLOAT3& position,
+	wi::ecs::Entity parent = wi::ecs::INVALID_ENTITY);
+
 // The "Create" menu: emits menu items for every kind of object the editor can spawn
 //	(empty, cube/sphere/plane, the three light types, camera, probe, decal, force field,
 //	emitter, hair, sound, weather) into the CURRENT menu or popup.

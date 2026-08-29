@@ -1,12 +1,14 @@
 #include "imeditor.h"
 
 #include "io/asset/AssetSystem.h"
+#include "io/model/ModelImporter.h"
 #include "io/asset/SceneDescriptor.h"
 #include "io/asset/AssetPackWriter.h"
 
 #include "stApp.h"
 #include "imhierarchy.h"
 #include "imcomponents.h"
+#include "imassets.h"
 #include "imgraphicsettings.h"
 #include "input/InputSystem.h"
 
@@ -22,6 +24,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
 
 using wi::ecs::Entity;
 using wi::ecs::INVALID_ENTITY;
@@ -39,6 +42,7 @@ constexpr const char* kEditorViewport = "Editor Viewport";
 constexpr const char* kGameViewport   = "Game Viewport";
 constexpr const char* kHierarchy      = "Hierarchy##editor";
 constexpr const char* kProperties     = "Properties##editor";
+constexpr const char* kImportOptions  = "Import Options##editor";
 // The "##editor" suffix keeps this a DIFFERENT ImGui window from the floating DevUI
 // copy, so docking one does not move or close the other. Both drive the same
 // AssetExplorer object through App::Resources().
@@ -453,7 +457,20 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("One self-contained wi::Archive, for the standalone Wicked editor");
 			ImGui::Separator();
+			if (ImGui::MenuItem("Import model...", nullptr, false, !importDialogOpen_))
+				RequestImportModel();
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("%s\n\nMerge one into THIS scene, in front of the editor "
+					"camera. Dropping one on the window does the same.",
+					ImportFilterDescription().c_str());
+			ImGui::MenuItem("Ask for import options", nullptr, &importAskEveryTime_);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("The panel that offers grouping, placement, animations, "
+					"skins and scale before an import runs.");
+			ImGui::Separator();
 			ImGui::TextDisabled("%s", hasPath ? scenePath_.c_str() : "(never saved)");
+			if (!lastImportMessage_.empty())
+				ImGui::TextDisabled("%s", lastImportMessage_.c_str());
 			ImGui::EndMenu();
 		}
 
@@ -464,6 +481,10 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 			const Entity created = CreateObjectMenuItems(scene, SpawnPoint(), INVALID_ENTITY, &history_);
 			if (created != INVALID_ENTITY)
 				pendingSelection_ = created;
+			ImGui::Separator();
+			// Same spawn point, from a file instead of from the primitive list.
+			if (ImGui::MenuItem("Import model...", nullptr, false, !importDialogOpen_))
+				RequestImportModel();
 			ImGui::EndMenu();
 		}
 
@@ -809,6 +830,28 @@ void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3
 		ImGui::SetCursorScreenPos(imagePos);
 		ImGui::Image((ImTextureID)(uintptr_t)tex, imageSize);
 		imageDrawn = true;
+
+		// Drop a MODEL out of the Resource Explorer onto the viewport and it is merged into
+		//	the scene at the spawn point, the same place the Create menu puts a new object.
+		//	Anything that is not a model declines here, so dragging a texture over the image
+		//	shows no drop cue and falls through to whatever else wants it.
+		if (ImGui::BeginDragDropTarget())
+		{
+			if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(st::SIMTARY_ASSET_PAYLOAD))
+			{
+				if (p->DataSize == (int)sizeof(st::AssetPayload))
+				{
+					const st::AssetPayload* a = (const st::AssetPayload*)p->Data;
+					if (a->IsModel())
+						QueueImportModel(a->path);   // loaded next frame, on the main thread
+					else
+						wi::backlog::post(std::string("Editor: ") + a->path +
+							" is not a model; drop it on an asset field in Properties instead.",
+							wi::backlog::LogLevel::Warning);
+				}
+			}
+			ImGui::EndDragDropTarget();
+		}
 	}
 	else
 	{
@@ -1249,6 +1292,333 @@ bool st::EditorUI::SaveSceneDescriptor(wi::scene::Scene& scene, const std::strin
 	return true;
 }
 
+// ─── import into the scene ─────────────────────────────────────────────────────
+// Distinct from the Resource Explorer's import, which adds a file to the asset PACKAGE.
+// This one merges a model into the live scene and puts it where the editor camera is
+// looking, which is the other thing "import" reasonably means in an editor.
+
+bool st::EditorUI::IsSceneImportPath(const std::string& path)
+{
+	const std::string ext = wi::helper::toLower(wi::helper::GetExtensionFromFileName(path));
+	// The engine's own two formats, plus whatever the model importers were built with. The
+	//	second half is asked rather than listed, so adding a backend does not mean editing
+	//	this test, the file dialog and the drop handler as well.
+	if (ext == "wiscene" || ext == "stsd") return true;
+	return st::model::CanImport(path);
+}
+
+void st::EditorUI::QueueImportModel(const std::string& path)
+{
+	if (path.empty())
+		return;
+	std::lock_guard<std::mutex> lock(pendingImportMutex_);
+	pendingImportPaths_.push_back(path);
+}
+
+void st::EditorUI::RequestImportModel()
+{
+	if (importDialogOpen_)
+		return;
+	importDialogOpen_ = true;
+
+	wi::helper::FileDialogParams params;
+	params.type = wi::helper::FileDialogParams::OPEN;
+	params.description = ImportFilterDescription();
+	params.extensions.push_back("stsd");
+	params.extensions.push_back("wiscene");
+	size_t modelExtCount = 0;
+	const char* const* modelExts = st::model::SupportedExtensions(modelExtCount);
+	for (size_t i = 0; i < modelExtCount; ++i)
+		params.extensions.push_back(modelExts[i]);
+
+	// Runs on the dialog's own thread: park the path, let Draw() do the load.
+	wi::helper::FileDialog(params,
+		[this](std::string fileName) {
+			QueueImportModel(fileName);
+			importDialogOpen_ = false;
+		},
+		[this]() {
+			importDialogOpen_ = false;
+		});
+}
+
+void st::EditorUI::FlushPendingImport(wi::scene::Scene& scene)
+{
+	// One at a time while the options panel is up: it is asking about a specific file, and
+	//	loading the rest behind it would answer for them.
+	if (!importOptionsPath_.empty())
+		return;
+
+	std::string path;
+	{
+		std::lock_guard<std::mutex> lock(pendingImportMutex_);
+		if (pendingImportPaths_.empty())
+			return;
+		path = pendingImportPaths_.front();
+		pendingImportPaths_.erase(pendingImportPaths_.begin());
+	}
+
+	if (importAskEveryTime_)
+	{
+		// Hand it to the panel; the import happens when the user presses Import there.
+		importOptionsPath_      = path;
+		importOptionsRequested_ = true;
+		return;
+	}
+
+	const Entity root = ImportModelAtSpawn(scene, path);
+	if (root != INVALID_ENTITY)
+		pendingSelection_ = root;
+}
+
+wi::ecs::Entity st::EditorUI::ImportModelAtSpawn(wi::scene::Scene& scene, const std::string& path)
+{
+	// A load creates the root PLUS every mesh, material, armature and animation entity behind
+	//	it, and most of those are not in the hierarchy under the root. Undo has to own all of
+	//	them or it would delete the root and leave the contents behind, so the set is worked
+	//	out by diffing the scene's entity list around the load. That is one pass over the
+	//	component managers on either side, which is nothing next to the load itself.
+	auto gather = [](wi::scene::Scene& s, std::unordered_set<Entity>& out) {
+		for (auto& kv : s.componentLibrary.entries)
+		{
+			const auto* mgr = kv.second.component_manager.get();
+			if (!mgr) continue;
+			for (Entity e : mgr->GetEntityArray())
+				out.insert(e);
+		}
+	};
+
+	std::unordered_set<Entity> before;
+	gather(scene, before);
+
+	const std::string ext = wi::helper::toLower(wi::helper::GetExtensionFromFileName(path));
+
+	Entity root = INVALID_ENTITY;
+	std::string error;
+	std::string detail;
+
+	// Loaded at the ORIGIN and moved afterwards rather than loaded through a translation
+	//	matrix: PlaceEntityAt is the one place that also writes the 64-bit absolute position,
+	//	and a model placed only in local space returns to the world origin on the next save.
+	//
+	//	Three loaders, by extension. .stsd is the native descriptor, .wiscene is a wi::Archive
+	//	the engine reads directly, and everything else is an interchange format that
+	//	Framework/io/model converts into components.
+	if (ext == "stsd")
+	{
+		root = st::AssetSystem::Get().LoadScene(scene, path, XMMatrixIdentity(), true, nullptr, &error);
+	}
+	else if (ext == "wiscene")
+	{
+		root = wi::scene::LoadModel(scene, path, XMMatrixIdentity(), true);
+		if (root == INVALID_ENTITY)
+			error = "could not load " + path;
+	}
+	else
+	{
+		const st::model::ImportResult imported = st::model::Import(scene, path, importOptions_);
+		root  = imported.root;
+		error = imported.error;
+		if (imported.ok())
+		{
+			char summary[192];
+			std::snprintf(summary, sizeof(summary),
+				"  (%u meshes, %u materials, %u textures, %u bones, %u animations)",
+				imported.meshes, imported.materials, imported.textures,
+				imported.bones, imported.animations);
+			detail = summary;
+		}
+	}
+
+	if (root == INVALID_ENTITY)
+	{
+		lastImportMessage_ = "IMPORT FAILED: " + (error.empty() ? path : error);
+		wi::backlog::post("Editor: " + lastImportMessage_, wi::backlog::LogLevel::Warning);
+		return INVALID_ENTITY;
+	}
+
+	// In front of the free camera, same spot the Create menu uses — or at the world origin
+	//	when the model was authored around one.
+	PlaceEntityAt(scene, root, importPlaceAtCamera_ ? SpawnPoint() : XMFLOAT3(0, 0, 0),
+		INVALID_ENTITY);
+
+	// Name the root after the file, so the Hierarchy shows something better than "Entity 41".
+	const std::string stem = wi::helper::GetFileNameFromPath(path);
+	if (!stem.empty())
+	{
+		if (wi::scene::NameComponent* n = scene.names.GetComponent(root))
+			n->name = stem;
+		else
+			scene.names.Create(root).name = stem;
+	}
+
+	wi::vector<Entity> created;
+	std::unordered_set<Entity> after;
+	gather(scene, after);
+	for (Entity e : after)
+		if (before.count(e) == 0)
+			created.push_back(e);
+
+	// Put the whole import under the one root, not just the parts that happen to carry a
+	//	transform. A load creates mesh, material and animation-data entities that have no
+	//	TransformComponent and therefore no parent, and the Hierarchy renders anything without
+	//	a parent as a top-level row — which is how importing one character adds two hundred
+	//	loose rows to the tree. Component_Attach only rebases a transform when BOTH sides have
+	//	one, so attaching a material is exactly the metadata edit it looks like.
+	if (importGroupUnderRoot_)
+	{
+		for (Entity e : created)
+		{
+			if (e == root) continue;
+			if (scene.hierarchy.Contains(e)) continue;   // the model's own nodes already are
+			scene.Component_Attach(e, root, true);
+		}
+	}
+	// The root first, so an undo that walks the list tears the hierarchy down from the top.
+	for (size_t i = 1; i < created.size(); ++i)
+	{
+		if (created[i] == root) { std::swap(created[0], created[i]); break; }
+	}
+	history_.RecordCreatedMany(scene, created, "Import Model");
+
+	lastImportMessage_ = "imported " + stem + "  (" + std::to_string(created.size()) +
+		" entities)" + detail;
+	wi::backlog::post("Editor: " + lastImportMessage_ +
+		(importPlaceAtCamera_ ? " in front of the camera" : " at the world origin"));
+	return root;
+}
+
+std::string st::EditorUI::ImportFilterDescription()
+{
+	// The Win32 dialog shows this string VERBATIM as the filter label — it does not derive
+	//	one from the extension list, so a bare "Model or scene" tells the user nothing about
+	//	what will actually open. Spell the extensions into the label, and build the list from
+	//	the loaders rather than hard-coding it, so it cannot drift from what is compiled in.
+	std::string description = "Model or scene (*.stsd;*.wiscene";
+	size_t modelExtCount = 0;
+	const char* const* modelExts = st::model::SupportedExtensions(modelExtCount);
+	for (size_t i = 0; i < modelExtCount; ++i)
+	{
+		description += ";*.";
+		description += modelExts[i];
+	}
+	description += ")";
+	return description;
+}
+
+void st::EditorUI::DrawImportOptions(wi::scene::Scene& scene)
+{
+	// OpenPopup has to be called from inside the frame, not from the flush that decided a
+	//	panel was needed, so the request is raised there and acted on here.
+	if (importOptionsRequested_)
+	{
+		ImGui::OpenPopup(kImportOptions);
+		importOptionsRequested_ = false;
+	}
+
+	// Centred over the viewport: this is a decision the user has to make before anything
+	//	happens, and a modal parked in a corner reads as a panel that can be ignored.
+	const ImGuiViewport* vp = ImGui::GetMainViewport();
+	ImGui::SetNextWindowPos(ImVec2(vp->GetCenter().x, vp->GetCenter().y), ImGuiCond_Appearing,
+		ImVec2(0.5f, 0.5f));
+	ImGui::SetNextWindowSize(ImVec2(430, 0), ImGuiCond_Appearing);
+
+	if (!ImGui::BeginPopupModal(kImportOptions, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		return;
+
+	const std::string file = wi::helper::GetFileNameFromPath(importOptionsPath_);
+	const std::string ext  = wi::helper::toLower(
+		wi::helper::GetExtensionFromFileName(importOptionsPath_));
+	ImGui::TextUnformatted(file.c_str());
+	ImGui::TextDisabled("%s", importOptionsPath_.c_str());
+	ImGui::Separator();
+
+	// The two options that decide where things END UP, first, because they are the two a
+	//	user changes per import rather than once.
+	ImGui::Checkbox("Import into a Hierarchy group", &importGroupUnderRoot_);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip(
+			"Everything the import creates goes under ONE node named after the file.\n\n"
+			"Without this only the model's own nodes are parented: its meshes, materials\n"
+			"and animation curves carry no transform, so they land at the top of the\n"
+			"Hierarchy as hundreds of loose rows. Grouping also makes the whole import one\n"
+			"thing to select, move, hide or delete.");
+
+	ImGui::Checkbox("Place in front of the camera", &importPlaceAtCamera_);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Off puts it at the world origin, which is what you want when the\n"
+			"model was authored around its own origin and you are placing it by hand.");
+
+	const bool isModel = st::model::CanImport(importOptionsPath_);
+	ImGui::Separator();
+
+	if (!isModel)
+	{
+		ImGui::TextDisabled("%s is loaded by the engine directly; the options below apply\n"
+			"to imported model formats only.", ext.c_str());
+	}
+
+	ImGui::BeginDisabled(!isModel);
+	ImGui::Checkbox("Animations", &importOptions_.importAnimations);
+	ImGui::SameLine();
+	ImGui::Checkbox("Skins", &importOptions_.importSkins);
+	ImGui::SameLine();
+	ImGui::Checkbox("Lights", &importOptions_.importLights);
+	ImGui::SameLine();
+	ImGui::Checkbox("Cameras", &importOptions_.importCameras);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Lights and cameras are off by default: a prop rarely wants the\n"
+			"exporter's lighting rig, and finding them again afterwards is a chore.");
+
+	ImGui::Checkbox("Generate missing normals", &importOptions_.generateMissingNormals);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("A mesh with no normals renders black. OBJ ships without them often.");
+
+	ImGui::SetNextItemWidth(120);
+	ImGui::DragFloat("Scale", &importOptions_.scale, 0.01f, 0.0001f, 1000.0f, "%.4f");
+	ImGui::SameLine();
+	// Presets rather than arithmetic: the two cases that come up are a model authored in
+	//	centimetres and one authored in inches, and neither is worth typing out.
+	if (ImGui::SmallButton("1")) importOptions_.scale = 1.0f;
+	ImGui::SameLine();
+	if (ImGui::SmallButton("0.01 (cm)")) importOptions_.scale = 0.01f;
+	ImGui::SameLine();
+	if (ImGui::SmallButton("0.0254 (in)")) importOptions_.scale = 0.0254f;
+	ImGui::EndDisabled();
+
+	ImGui::Separator();
+	ImGui::Checkbox("Ask every time", &importAskEveryTime_);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Off imports straight away with these settings. Turn it back on from\n"
+			"Scene > Import options...");
+
+	ImGui::Separator();
+	if (ImGui::Button("Import", ImVec2(120, 0)))
+	{
+		const std::string path = importOptionsPath_;
+		importOptionsPath_.clear();
+		ImGui::CloseCurrentPopup();
+		const Entity root = ImportModelAtSpawn(scene, path);
+		if (root != INVALID_ENTITY)
+			pendingSelection_ = root;
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	{
+		// Drop the rest of the queue too: cancelling one file out of a multi-file drop and
+		//	then being asked about the next four is not what Cancel means.
+		{
+			std::lock_guard<std::mutex> lock(pendingImportMutex_);
+			pendingImportPaths_.clear();
+		}
+		importOptionsPath_.clear();
+		lastImportMessage_ = "import cancelled";
+		ImGui::CloseCurrentPopup();
+	}
+
+	ImGui::EndPopup();
+}
+
 void st::EditorUI::RequestSaveAs(const char* defaultExt)
 {
 	if (saveDialogOpen_)
@@ -1356,6 +1726,11 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 
 	pendingSelection_ = INVALID_ENTITY;
 
+	// Main-thread tail of an import: a file dialog, or a model dropped on the window. The
+	//	options panel is drawn at the very end of the frame, after the dock host, so it sits
+	//	over the editor rather than under it.
+	FlushPendingImport(scene);
+
 	// Ctrl+S / Ctrl+Shift+S / Ctrl+Z / Ctrl+Y anywhere in the editor.
 	const ImGuiIO& io = ImGui::GetIO();
 	// gameViewFocused_ still holds last frame's value here (it is cleared further down), which
@@ -1418,6 +1793,11 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 			app.Resources().GUI();
 		ImGui::End();
 	}
+
+	// The import options panel, drawn last so the modal sits over the whole editor. It also
+	//	has to come after the panels: pressing Import inside it builds entities, and doing that
+	//	while the Hierarchy was mid-iteration would be editing the list it is walking.
+	DrawImportOptions(scene);
 
 	// A gizmo drag is one undo step, closed when ImGuizmo lets the mouse go.
 	if (gizmoDragging_ && !ImGuizmo::IsUsingAny())

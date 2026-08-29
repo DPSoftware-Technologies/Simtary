@@ -10,7 +10,7 @@
 #include <system_error>
 #include <vector>
 
-using namespace mi::nbt;
+using namespace st::nbt;
 
 static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { std::printf("FAIL: %s\n", msg); ++failures; } } while (0)

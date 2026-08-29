@@ -878,9 +878,19 @@ void AssetExplorer::DrawAssetTable () {
         if (row.removed) ImGui::PopStyleColor();
 
         if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
-            const uint64_t id = row.id;
-            ImGui::SetDragDropPayload(SIMTARY_ASSET_PAYLOAD, &id, sizeof(id));
+            // Path and type travel WITH the id: the drop sites (a material texture slot, the
+            // editor viewport) live outside this window and must not have to reach back into
+            // its working set to find out what was dragged.
+            AssetPayload payload;
+            payload.id   = row.id;
+            payload.type = row.type;
+            std::snprintf(payload.path, sizeof(payload.path), "%s", row.path.c_str());
+            ImGui::SetDragDropPayload(SIMTARY_ASSET_PAYLOAD, &payload, sizeof(payload));
             ImGui::TextUnformatted(row.path.c_str());
+            if (payload.IsModel())
+                ImGui::TextDisabled("drop on the viewport to place it in the scene");
+            else
+                ImGui::TextDisabled("drop on an asset field in Properties");
             ImGui::EndDragDropSource();
         }
         ImGui::PopID();

@@ -7,7 +7,10 @@
 //
 //   .stad   game options       <userdata>/options.stad          (st::SettingsManager)
 //   .stcd   save games         <userdata>/saves/<slot>.stcd      (st::savegame)
-//   .staod  animation descriptors  assets/animation_descriptor/*.staod (shipped, read-only)
+//   .staod  animation descriptors  assets/animation_descriptor/*.staod (shipped, read-only —
+//           packed into the .strd/.stafp asset package; load them through
+//           st::anim::LoadAnimationDescriptor, which reads via wi::helper::FileRead so a
+//           packaged descriptor resolves. readFile below is the plain-file path, for tools.)
 //
 // Note .staod is NOT the asset package index — that is .strd (see io/asset/), which is
 // a flat binary table, not NBT. The two briefly shared this extension; they no longer do.

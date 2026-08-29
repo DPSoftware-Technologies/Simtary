@@ -1,6 +1,9 @@
 #include "anim/AnimationDescriptor.h"
 #include "io/Nbt.h"
 
+#include "wiHelper.h"
+#include "wiVector.h"
+
 namespace st::anim {
 
 const AnimState* AnimationDescriptor::findState(const std::string& name) const {
@@ -15,8 +18,20 @@ const AnimTransition* AnimationDescriptor::findTransition(const std::string& fro
 }
 
 bool LoadAnimationDescriptor(const std::string& path, AnimationDescriptor& out, std::string* error) {
+    // Read through wi::helper::FileRead rather than opening the path directly, so a descriptor
+    // that lives INSIDE a mounted asset package resolves the same way a texture or a scene
+    // does. st::AssetSystem installs the asset-source override this call routes through; a
+    // path no package holds still falls through to the real filesystem, which is what keeps a
+    // loose .staod dropped in during development working. nbt::readFile is the plain-file
+    // path and stays for the tools, which link Nbt without the engine.
+    wi::vector<uint8_t> bytes;
+    if (!wi::helper::FileRead(path, bytes)) {
+        if (error) *error = "animation descriptor not found: " + path;
+        return false;
+    }
+
     nbt::Tag root;
-    if (!nbt::readFile(path, root, nullptr, error))
+    if (!nbt::read(bytes.data(), bytes.size(), root, nullptr, error))
         return false;
 
     out = AnimationDescriptor();
