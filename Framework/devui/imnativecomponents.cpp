@@ -8,6 +8,16 @@
 
 void NativeComponentsGUI(wi::scene::Scene& scene)
 {
+	// Global threading switch. Turning it off puts every component back on the main thread in
+	//	instance order - the first thing to try when a bug looks like a race between two
+	//	components rather than a bug inside one.
+	bool mt = wi::scene::NativeComponentManager::multithreading;
+	if (ImGui::Checkbox("multithreaded", &mt))
+		wi::scene::NativeComponentManager::multithreading = mt;
+	ImGui::SameLine();
+	ImGui::TextDisabled("(%u worker threads)", wi::jobsystem::GetThreadCount());
+	ImGui::Separator();
+
 	auto& instances = scene.nativeComponents.instances;
 	if (instances.empty())
 	{
@@ -50,6 +60,13 @@ void NativeComponentsGUI(wi::scene::Scene& scene)
 						inst.component->SetEnabled(enabled);
 					ImGui::SameLine();
 					ImGui::TextDisabled(inst.started ? "(started)" : "(awaiting start)");
+					ImGui::SameLine();
+					// Where this instance's Compute/FixedUpdate/Update actually ran.
+					if (inst.component->GetThreading() == wi::scene::NativeThreading::Parallel &&
+						wi::scene::NativeComponentManager::multithreading)
+						ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "[parallel]");
+					else
+						ImGui::TextDisabled("[main thread]");
 
 					ImGui::BeginDisabled(!enabled);
 					inst.component->DrawDebug();   // component-supplied widgets bound to live members

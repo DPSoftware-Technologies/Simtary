@@ -46,8 +46,10 @@ namespace wi::scene
 		//	So GPU persistent resources need to be created accordingly for them too:
 		RunScriptUpdateSystem(ctx);
 
-		// Native components run alongside scripts (single-threaded user C++); they may also
-		//	create/modify entities, so run before GPU persistent resource allocation below:
+		// Native components run after scripts. The system is multithreaded internally (each
+		//	component's Compute/FixedUpdate/Update is a job unless it opted out) but joins
+		//	before it returns: components may create/modify entities from their main-thread
+		//	callbacks, so this must finish before GPU persistent resource allocation below:
 		RunNativeComponentUpdateSystem(ctx);
 
 		RunSplineUpdateSystem(ctx);

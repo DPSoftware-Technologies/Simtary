@@ -2,7 +2,8 @@
 
 A Unity-like C++ component model for the Simtary engine. Attach C++ classes to scene
 entities ("GameObjects") and give them a full lifecycle —
-`Awake` / `OnEnable` / `Start` / `FixedUpdate` / `Update` / `OnDisable` / `Destroy`.
+`Awake` / `OnEnable` / `Start` / `Compute` / `FixedUpdate` / `Update` / `OnDisable` / `Destroy`.
+The per-frame stages run **multithreaded by default** (§2.2).
 Attachment is **data-driven through the engine `MetadataComponent`**, so everything
 stays editable in the Wicked Editor and is serialized with the scene.
 
@@ -97,24 +98,94 @@ ST_REGISTER_NATIVE_COMPONENT(Spinner)          // see §4
 Call order per instance:
 
 ```
-Awake → OnEnable → Start → (FixedUpdate*, Update) every frame → OnDisable → Destroy
+Awake → OnEnable → Start → (Compute, FixedUpdate*, Update) every frame → OnDisable → Destroy
 ```
 
-| Method | When |
-|--------|------|
-| `Awake()`           | once, the first frame the instance exists — **before** `OnEnable`/`Start`, and **regardless of the enabled flag**. Use for self-setup that doesn't depend on other components being started |
-| `OnEnable()`        | each time the instance goes disabled → enabled (including the first time it is seen while enabled, right after `Awake`) |
-| `Start()`           | once, before the first `Update`, **only while enabled** (also fires on a `dt == 0` load tick). An instance created disabled defers `Start` until first enabled |
-| `FixedUpdate(fdt)`  | 0..N times per frame on a fixed 60 Hz step (`FIXED_DT = 1/60`), only while enabled. Frame-rate independent — use for physics-style stepping |
-| `Update(dt)`        | every frame while enabled and `dt > 0` |
-| `OnDisable()`       | each time the instance goes enabled → disabled (and once before `Destroy` if it was still enabled) |
-| `Destroy()`         | once, when the attachment is removed: `NCI_` key deleted/changed, entity removed (`Entity_Remove`), or scene cleared (`Scene::Clear`) |
+| Method | Thread | When |
+|--------|--------|------|
+| `Awake()`           | main   | once, the first frame the instance exists — **before** `OnEnable`/`Start`, and **regardless of the enabled flag**. Use for self-setup that doesn't depend on other components being started |
+| `OnEnable()`        | main   | each time the instance goes disabled → enabled (including the first time it is seen while enabled, right after `Awake`) |
+| `Start()`           | main   | once, before the first `Compute`/`Update`, **only while enabled** (also fires on a `dt == 0` load tick). An instance created disabled defers `Start` until first enabled. Creating entities/components belongs here |
+| `Compute(dt)`       | worker | once per frame while enabled, **before any instance's `FixedUpdate`/`Update`**. The parallel stage: do the heavy math, park the result in a member, let `Update` apply it. Also runs on `dt == 0` frames |
+| `FixedUpdate(fdt)`  | worker | 0..N times per frame on a fixed 60 Hz step (`FIXED_DT = 1/60`), only while enabled. Frame-rate independent — use for physics-style stepping |
+| `Update(dt)`        | worker | every frame while enabled and `dt > 0` |
+| `OnDisable()`       | main   | each time the instance goes enabled → disabled (and once before `Destroy` if it was still enabled) |
+| `Destroy()`         | main   | once, when the attachment is removed: `NCI_` key deleted/changed, entity removed (`Entity_Remove`), or scene cleared (`Scene::Clear`) |
 
 `Destroy()` does **not** fire when a `Scene` is merely destructed without `Clear()`/removal — tie
 real teardown to explicit removal. None of the methods are required; override only what you need.
 
 > `FixedUpdate` is clamped to `MAX_FIXED_STEPS = 8` catch-up steps per frame to avoid the
 > "spiral of death" on a frame hitch; backlog beyond that is dropped.
+
+### 2.2 Threading
+
+`Compute`, `FixedUpdate` and `Update` run on the **job system's worker threads by default** —
+a scene with 500 components uses every core instead of one. The stages are barriered: every
+`Compute()` in the scene finishes before the first `FixedUpdate()` starts, and each fixed step
+finishes before the next one begins. Everything else (`Awake`, `OnEnable`, `Start`, `OnDisable`,
+`Destroy`, `DrawDebug`) always runs on the main thread, in instance order.
+
+Inside a parallel stage:
+
+| | |
+|---|---|
+| ✅ allowed | read/write your own members; read the scene (`GetComponent<T>()`, transforms, `Scene::Intersects`, `GetFloat`/`GetString`…); write a component no other instance writes this frame |
+| ❌ forbidden | creating/removing entities or components (`scene->xxx.Create/Remove`, `Entity_Create`/`Entity_Remove`/`Entity_Duplicate`, `Attach`/`DetachNativeComponent`), writing metadata, `wi::renderer::DrawLine`/`DrawSphere`… (unlocked global list), `wi::physics::*` mutations, GPU work (`GetDevice()->…`), ImGui, and writing anything another instance may also write |
+
+Two ways to do a forbidden thing:
+
+**1. Hand that one line to the main thread.** It still runs in the same frame, at the end of the
+current stage, in a deterministic order (instance order, then submission order):
+
+```cpp
+void Update(float dt) override {
+    hit = Raycast(...);                 // parallel: reads the scene, fine
+    RunOnMainThread([this] {            // the unsafe line only
+        wi::renderer::DrawLine(line);
+    });
+}
+```
+
+**2. Opt the whole component out.** One line in the body, no other change — that component's three
+per-frame callbacks go back to the serial main-thread pass with exactly the old semantics:
+
+```cpp
+struct PlayerMovement : wi::scene::NativeComponent {
+    ST_NATIVE_COMPONENT_MAIN_THREAD()   // Compute/FixedUpdate/Update run on the main thread
+    void Update(float dt) override {
+        wi::physics::MoveCharacter(...); // physics is not re-entrant from a job thread
+    }
+};
+```
+
+`SetEnabled()` and `SetEntityRef()` write metadata, so they defer themselves automatically — they
+are safe to call from any stage.
+
+The split is asked once per frame (`GetThreading()`), so a component may change its mind between
+frames. `NativeComponentManager::multithreading = false` (also a checkbox in the Native Components
+window) forces the whole scene back onto the main thread — the first thing to try when a bug looks
+like a race *between* components rather than a bug inside one.
+
+**Splitting work into `Compute` + `Update`.** `Compute` is not a second `Update`; it is the stage
+that has finished for the *whole scene* before any `Update` runs. Put the expensive, read-only part
+there and the applying part in `Update`, and reading another entity's result stops depending on
+component order:
+
+```cpp
+struct Sensor : wi::scene::NativeComponent {
+    st::RayHit hit;                          // computed this frame, read by anyone in Update
+    void Compute(float) override {           // parallel, whole scene, before every Update
+        hit = Raycast(*scene, MakeQuery());
+    }
+    void Update(float dt) override {         // still parallel, but every Compute is done
+        if (auto* other = GetComponent<Turret>()) other->AimAt(hit.position);
+    }
+};
+```
+
+Components below `NativeComponentManager::PARALLEL_MIN_COUNT` (8) parallel-eligible instances, or
+on a single-core machine, run serially anyway: the dispatch would cost more than it saves.
 
 ### 2.1 Enabling / disabling
 
@@ -266,12 +337,20 @@ During `Start()`, every instance for the entity is already constructed (creation
   system. Each tick it:
   1. **Prunes** instances whose `NCI_` key was removed or changed → fires `OnDisable()` (if enabled) then `Destroy()`.
   2. **Creates** instances for new `NCI_` keys → fills context, leaves them un-awoken/unstarted.
-  3. **Drives the lifecycle** on every instance: `Awake()` (once) → enable/disable edge from
-     `NCE_<id>` (`OnEnable`/`OnDisable`) → if enabled: `Start()` (once) → `FixedUpdate()` for each
-     accumulated fixed step → `Update(dt)` (when `dt > 0`). The fixed-step accumulator is shared
-     across all instances (one advance per frame).
-- The system is **single-threaded** on purpose: your `Update` may freely touch the scene.
-- `Entity_Remove` and `Scene::Clear` fire `Destroy()` on the affected instances.
+  3. **Drives the main-thread lifecycle** on every instance, serially: `Awake()` (once) →
+     enable/disable edge from `NCE_<id>` (`OnEnable`/`OnDisable`) → if enabled: `Start()` (once).
+     Enabled instances are sorted into a parallel list and a main-thread list while it walks them.
+  4. **Runs the per-frame stages**, one barrier each: `Compute(dt)` for the whole scene, then
+     `FixedUpdate(FIXED_DT)` once per accumulated fixed step, then `Update(dt)` (when `dt > 0`).
+     Each stage dispatches the parallel list over the job system, runs the opted-out instances
+     serially, then flushes whatever either of them handed to `RunOnMainThread`. The fixed-step
+     accumulator is shared across all instances (one advance per frame).
+- The system **joins before it returns**: `Scene::Update` continues single-threaded, so systems
+  after it see a settled scene.
+- `Entity_Remove` and `Scene::Clear` fire `Destroy()` on the affected instances. Called *during*
+  an update (a component removing an entity from its own `Update`) they are queued and applied at
+  the end of that same update — destroying immediately would free an instance the running stage
+  still points at.
 - `Scene::Merge` moves native instances from the merged scene into the target (entities keep their
   IDs through a merge). This is why `Start()` runs exactly once across a `LoadModel` + `Merge`,
   even though `LoadModel` updates a temp scene before merging.
@@ -340,6 +419,13 @@ void Scene2::OnGUI()
 - **Enabled state persists, runtime state does not.** `NCE_<id>` is metadata, so an instance
   disabled in the editor stays disabled across save/load. After load a disabled instance has not
   yet run `Start`; it does so the first time it is enabled. `Awake` runs once regardless of enabled.
+- **The per-frame stages are multithreaded** (§2.2). A component written for the old
+  single-threaded engine that touches the scene structurally, the renderer, physics or the GPU from
+  `Update` needs either `RunOnMainThread(...)` around that part or
+  `ST_NATIVE_COMPONENT_MAIN_THREAD()` in its body.
+- **Order between components is not guaranteed inside a stage** — it never really was, but now it
+  is not even sequential. If B must see A's result this frame, put A's work in `Compute()` and B's
+  read in `Update()`; the barrier between the two stages is the guarantee.
 - **`FixedUpdate` is global-stepped.** All instances share one fixed accumulator (advanced once per
   frame), so a disabled instance does not bank up steps to fire later when re-enabled.
 - One component per `LocalID`. Reusing a `LocalID` for a different `NCI_` value swaps the

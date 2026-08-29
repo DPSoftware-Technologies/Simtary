@@ -652,41 +652,34 @@ bool ReadSceneDescriptor (const std::string& path, SceneDescriptor& out,
 
 // ── conversion ─────────────────────────────────────────────────────────────────
 
-bool BuildSceneDescriptor (const std::string& wiscenePath,
-                           const std::string& resourcePrefix,
-                           AssetPackWriter*   writer,
-                           SceneDescriptor&   out,
-                           std::string* error) {
-    out = SceneDescriptor{};
+bool BuildSceneDescriptorFromMemory (const uint8_t* wisceneBytes, uint64_t size,
+                                     const std::string& name,
+                                     const std::string& sourceFile,
+                                     const std::string& resourcePrefix,
+                                     SceneDescriptor& out,
+                                     WisceneSplit&    splitOut,
+                                     std::string* error) {
+    out      = SceneDescriptor{};
+    splitOut = WisceneSplit{};
 
-    std::vector<uint8_t> source;
-    if (!ReadWholeFile(wiscenePath, source, error)) return false;
+    if (!SplitWiscene(wisceneBytes, size, splitOut, error)) return false;
 
-    WisceneSplit split;
-    if (!SplitWiscene(source.data(), source.size(), split, error)) {
-        if (error) *error = wiscenePath + ": " + *error;
-        return false;
-    }
-
-    out.name           = U8Path(wiscenePath).stem().string();
-    out.sourceFile     = NormalizePath(U8Path(wiscenePath).filename().string());
-    out.archiveVersion = split.archiveVersion;
+    out.name           = name;
+    out.sourceFile     = NormalizePath(sourceFile);
+    out.archiveVersion = splitOut.archiveVersion;
     out.buildTimestamp = NowSeconds();
-    if (writer) {
-        out.packUuidLo = writer->UuidLo();
-        out.packUuidHi = writer->UuidHi();
-    }
 
     SceneBlob ecs;
     ecs.kind  = StsdBlobKind::EcsArchive;
     ecs.codec = Codec::ZstdChunked;
-    ecs.data  = std::move(split.ecsArchive);
+    ecs.data  = std::move(splitOut.ecsArchive);
     out.blobs.push_back(std::move(ecs));
 
-    // Every resource the map embedded becomes a pack asset under `resourcePrefix`. The
-    // engine asks for these by the exact relative path it stored, which is why the
-    // runtime mounts the pack so that path resolves — see AssetSystem::Resolve.
-    for (const EmbeddedResource& r : split.resources) {
+    // The reference list. The engine asks for these by the exact relative path it
+    // stored, which is why the runtime mounts packages so that path resolves — see
+    // AssetSystem::Resolve. Recording them here is what lets a load say "13 of 14" and
+    // what lets MissingAssetsFor() answer before the world comes up grey.
+    for (const EmbeddedResource& r : splitOut.resources) {
         const std::string logical = NormalizePath(resourcePrefix + r.name);
 
         SceneAssetRef ref;
@@ -695,17 +688,41 @@ bool BuildSceneDescriptor (const std::string& wiscenePath,
         ref.flags       = AssetFlag_FromScene;
         ref.engineFlags = r.engineFlags;
         out.assets.push_back(ref);
+    }
+    return true;
+}
 
-        if (writer == nullptr) continue;
+bool BuildSceneDescriptor (const std::string& wiscenePath,
+                           const std::string& resourcePrefix,
+                           AssetPackWriter*   writer,
+                           SceneDescriptor&   out,
+                           std::string* error) {
+    std::vector<uint8_t> source;
+    if (!ReadWholeFile(wiscenePath, source, error)) return false;
+
+    WisceneSplit split;
+    if (!BuildSceneDescriptorFromMemory(source.data(), source.size(),
+                                        U8Path(wiscenePath).stem().string(),
+                                        U8Path(wiscenePath).filename().string(),
+                                        resourcePrefix, out, split, error)) {
+        if (error) *error = wiscenePath + ": " + *error;
+        return false;
+    }
+
+    if (writer) {
+        out.packUuidLo = writer->UuidLo();
+        out.packUuidHi = writer->UuidHi();
 
         // A texture two maps share is added once. This is the whole size win of the
         // conversion: today each .wiscene carries its own private copy.
-        if (writer->Contains(logical)) continue;
-
-        if (!writer->AddAuto(logical, split.Bytes() + r.offset, r.size,
-                             AssetFlag_FromScene, error)) {
-            if (error) *error = wiscenePath + ": " + *error;
-            return false;
+        for (const EmbeddedResource& r : split.resources) {
+            const std::string logical = NormalizePath(resourcePrefix + r.name);
+            if (writer->Contains(logical)) continue;
+            if (!writer->AddAuto(logical, split.Bytes() + r.offset, r.size,
+                                 AssetFlag_FromScene, error)) {
+                if (error) *error = wiscenePath + ": " + *error;
+                return false;
+            }
         }
     }
     return true;
