@@ -53,6 +53,7 @@
 #include "imgui.h"
 #include "ImGuizmo.h"
 #include "imeditorhistory.h"
+#include "io/model/ModelImporter.h"
 
 #include <memory>
 #include <vector>
@@ -79,6 +80,14 @@ public:
     // Raise the docked Resource Explorer. Called when a file is dropped on the window,
     // so the drop lands somewhere visible instead of into a hidden panel.
     void ShowResources() { showResources_ = true; }
+
+    // Queue a model / scene file to be merged into the CURRENT scene, landing in front of
+    // the editor free camera. Safe to call from the SDL event loop or a dialog thread: the
+    // path is parked and the load runs on the main thread in the next Draw().
+    void QueueImportModel(const std::string& path);
+    // True for the extensions QueueImportModel can merge into a scene. Used by the drop
+    // handler to tell "put this model in the world" from "add this file to the package".
+    static bool IsSceneImportPath(const std::string& path);
 
     // Everything ImGui. Called from st::App::DevUIRender() while editor mode is on, after
     // the DevUI main menu bar so the dock host lands under it.
@@ -175,6 +184,22 @@ private:
     // `defaultExt` is appended when the user types a bare name in the dialog.
     void RequestSaveAs(const char* defaultExt = "stsd");
     void FlushPendingSave(wi::scene::Scene& scene);
+
+    // Open the "import into this scene" file dialog. The result goes through
+    // QueueImportModel, so the load itself happens on the main thread.
+    void RequestImportModel();
+    void FlushPendingImport(wi::scene::Scene& scene);
+    // The options panel that stands between choosing a file and loading it. Drawn with
+    // ImGui rather than bolted onto the OS file dialog: a native dialog can only carry
+    // custom controls through a platform-specific hook (a Win32 OFNHookProc), which would
+    // make the one part of the editor a Linux user needs most into a Windows-only feature.
+    void DrawImportOptions(wi::scene::Scene& scene);
+    // The filter label the file dialog shows, built from the loaders that exist:
+    // "Model or scene (*.stsd;*.wiscene;*.gltf;...)".
+    static std::string ImportFilterDescription();
+    // Merge `path` into `scene` at SpawnPoint(). Returns the imported root, or
+    // INVALID_ENTITY on failure (the reason lands in the backlog and in lastImportMessage_).
+    wi::ecs::Entity ImportModelAtSpawn(wi::scene::Scene& scene, const std::string& path);
 
     bool enabled_ = false;
 
@@ -304,6 +329,30 @@ private:
     // Written by the file dialog's own thread, drained on the main thread in Draw().
     std::mutex  pendingSaveMutex_;
     std::string pendingSavePath_;
+
+    // ── scene import ─────────────────────────────────────────────────────────
+    // Same contract as the save path: the dialog thread (and the SDL drop handler) only
+    // park a path here; the load runs on the main thread, because it builds entities.
+    std::string lastImportMessage_;
+    bool        importDialogOpen_ = false;
+    std::mutex  pendingImportMutex_;
+    std::vector<std::string> pendingImportPaths_;
+
+    // What the options panel is editing. Kept for the whole session, so importing forty
+    // props in a row is one decision rather than forty.
+    st::model::ImportOptions importOptions_;
+    // Put EVERYTHING the import created under the one root, including the mesh, material
+    // and animation-data entities that carry no transform and would otherwise sit at the
+    // top of the Hierarchy as hundreds of loose rows.
+    bool importGroupUnderRoot_ = true;
+    // Off places the import at the world origin instead of in front of the free camera,
+    // which is what you want when a model was authored around its own origin.
+    bool importPlaceAtCamera_  = true;
+    // Unticked, the panel stops appearing and later imports use the settings as they stand.
+    bool importAskEveryTime_   = true;
+    // The file the panel is currently asking about; empty when it is closed.
+    std::string importOptionsPath_;
+    bool        importOptionsRequested_ = false;  // open the popup on the next frame
 
     // ── undo / redo ──────────────────────────────────────────────────────────
     EditorHistory history_;

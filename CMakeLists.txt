@@ -132,9 +132,17 @@ include(FetchContent)
 # between two top-level projects), but nothing is re-downloaded.
 set(SIMTARY_DEPS_DIR "${SIMTARY_ROOT}/deps" CACHE PATH
     "Shared source cache for fetched third-party dependencies")
-foreach(_dep sentry openal)
+# The marker is what proves a clone finished rather than a directory merely existing.
+# CMakeLists.txt serves for the two CMake projects; ufbx has none (it is two source
+# files), so it is recognised by a file it does own.
+set(_dep_markers "sentry=CMakeLists.txt" "openal=CMakeLists.txt"
+                 "tinygltf=CMakeLists.txt" "ufbx=ufbx.c")
+foreach(_entry IN LISTS _dep_markers)
+    string(REPLACE "=" ";" _parts "${_entry}")
+    list(GET _parts 0 _dep)
+    list(GET _parts 1 _marker)
     string(TOUPPER "${_dep}" _depu)
-    if (EXISTS "${SIMTARY_DEPS_DIR}/${_dep}/CMakeLists.txt")
+    if (EXISTS "${SIMTARY_DEPS_DIR}/${_dep}/${_marker}")
         set(FETCHCONTENT_SOURCE_DIR_${_depu} "${SIMTARY_DEPS_DIR}/${_dep}" CACHE PATH
             "Pre-populated ${_dep} source (Simtary/deps)" FORCE)
         message(STATUS "Simtary: using cached ${_dep} source at ${SIMTARY_DEPS_DIR}/${_dep}")
@@ -200,6 +208,61 @@ FetchContent_Declare(
     GIT_TAG        1.24.2
 )
 FetchContent_MakeAvailable(openal)
+
+# ─── Model importers: tinygltf (glTF/GLB) + ufbx (FBX/OBJ/MTL) ─────────────────
+# Both are C, and that is why these two were picked over the obvious alternatives.
+# This workspace builds with /EHsc- /GR- and _HAS_EXCEPTIONS=0 (see the app flags
+# below), so a C++ loader that throws — tinygltf v2 on top of nlohmann/json, say —
+# would either have to be compiled with its own exception settings and marshalled
+# across a C boundary, or run with JSON_NOEXCEPTION, which turns a malformed file
+# into std::abort(). A C parser has neither problem: it reports errors by return
+# code, which is the same contract Framework/io already uses.
+#
+#   tinygltf v3  pure-C, POD structs, arena allocation, no RTTI/exceptions
+#   ufbx         pure C, and it reads Wavefront OBJ/MTL as well as FBX, so the two
+#                libraries cover all four extensions between them
+#
+# SOURCE_SUBDIR points at a directory that does not exist ON PURPOSE: it stops
+# FetchContent from add_subdirectory()ing the upstream projects, which would build
+# their examples, tests and tools. Only the sources are wanted, and they are compiled
+# into SimtaryModelIO below.
+FetchContent_Declare(
+    tinygltf
+    GIT_REPOSITORY https://github.com/syoyo/tinygltf.git
+    GIT_TAG        release
+    SOURCE_SUBDIR  simtary-no-add-subdirectory
+)
+FetchContent_Declare(
+    ufbx
+    GIT_REPOSITORY https://github.com/ufbx/ufbx.git
+    GIT_TAG        master
+    SOURCE_SUBDIR  simtary-no-add-subdirectory
+)
+FetchContent_MakeAvailable(tinygltf ufbx)
+
+# One static library for both, compiled as C with warnings off: they are third-party
+# and their diagnostics would bury the engine's under a few hundred of their own.
+add_library(SimtaryModelIO STATIC
+    ${tinygltf_SOURCE_DIR}/tiny_gltf_v3.c
+    ${ufbx_SOURCE_DIR}/ufbx.c
+)
+target_include_directories(SimtaryModelIO PUBLIC
+    ${tinygltf_SOURCE_DIR}
+    ${ufbx_SOURCE_DIR}
+)
+set_target_properties(SimtaryModelIO PROPERTIES C_STANDARD 11 FOLDER "Simtary/ThirdParty")
+if (MSVC)
+    target_compile_options(SimtaryModelIO PRIVATE /w)
+else()
+    target_compile_options(SimtaryModelIO PRIVATE -w)
+endif()
+# Neither library is asked to touch the filesystem or decode an image on its own: the
+# importers feed them bytes that came through wi::helper::FileRead, so a model inside a
+# mounted asset package loads exactly like one on disk.
+target_compile_definitions(SimtaryModelIO PUBLIC
+    UFBX_NO_STDIO=1
+    SIMTARY_HAS_MODEL_IMPORTERS=1
+)
 
 if(WICKED_ENABLE_ASAN AND WICKED_ENABLE_TSAN)
     message(FATAL_ERROR "WICKED_ENABLE_ASAN and WICKED_ENABLE_TSAN are mutually exclusive!")
@@ -448,6 +511,14 @@ endif()
 option(SIMTARY_BUILD_TESTS "Build the framework test executables" ON)
 if (SIMTARY_BUILD_TESTS)
     enable_testing()
+
+    # The third-party half of Framework/io/model: tinygltf and ufbx, no engine and no
+    # graphics device. What breaks on a dependency bump is the API shape and the parse
+    # options, and none of that needs a device to check.
+    add_executable(model_import_test tests/model_import_test.cpp)
+    target_link_libraries(model_import_test PRIVATE Simtary::AppFlags SimtaryModelIO)
+    set_target_properties(model_import_test PROPERTIES FOLDER "Simtary/Tests")
+    add_test(NAME model_import_test COMMAND model_import_test)
 
     add_executable(nbt_test tests/nbt_test.cpp Framework/io/Nbt.cpp)
     target_include_directories(nbt_test PRIVATE Framework)

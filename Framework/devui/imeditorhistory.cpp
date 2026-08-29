@@ -149,6 +149,23 @@ void st::EditorHistory::RecordCreated(wi::scene::Scene& scene, Entity entity, co
 	Push(std::move(step));
 }
 
+void st::EditorHistory::RecordCreatedMany(wi::scene::Scene& scene,
+	const wi::vector<Entity>& entities, const char* label)
+{
+	if (entities.empty())
+		return;
+	Abort(); // a create is never nested inside another pending capture
+
+	Step step;
+	step.kind = Step::Kind::Entity;
+	step.label = label;
+	step.entities = entities;
+	step.archivesBefore.resize(entities.size());
+	step.existedBefore.resize(entities.size()); // value-initialised: none of them existed before
+	CaptureInto(scene, step, true);
+	Push(std::move(step));
+}
+
 void st::EditorHistory::CaptureInto(wi::scene::Scene& scene, Step& step, bool after)
 {
 	wi::vector<wi::Archive>& archives = after ? step.archivesAfter : step.archivesBefore;

@@ -20,11 +20,12 @@ Simtary/
 ├── assets/         engine-side assets: ImGui + StLensFlare shaders, faust_arch.h
 ├── shaders/        COMPILED engine shader cache, committed. Staged into every game's
 │                   output so no project pays the ~360-shader cold compile
-├── deps/           gitignored git clones of sentry-native + openal-soft, reused by
-│                   every project's FetchContent
+├── deps/           gitignored git clones of sentry-native, openal-soft, tinygltf and
+│                   ufbx, reused by every project's FetchContent
 ├── crashreporter/  SimtaryCrashReporter — one reporter GUI for all games
 ├── cmake/          SimtaryBootstrap, SimtaryApp, SimtaryPlatform, IncrementBuild
-├── tests/ tools/   nbt_test, asset_pack_test, stpack, make_player_descriptor
+├── tests/ tools/   nbt_test, asset_pack_test, model_import_test, stpack,
+│                   make_player_descriptor
 └── CMakeLists.txt
 ```
 
@@ -43,8 +44,10 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `ImguiHelper.cpp` | The hand-rolled ImGui backend and the per-frame UI ordering. |
 | `devui.cpp`, `devui/` | **DevUI** — developer tooling, not game UI: menu bar, backlog, graphics settings, hierarchy/properties, scene manager, About. Gated by `AppConfig::devUI`. |
 | `devui/imassets.*` | **Resource Explorer** — browse a mounted package (which part, what offset, which codec, what hash), and edit one: add / remove / rename / recompress assets and write it back. Lives ONLY in Editor mode, docked along the bottom. Reached through `App::Resources()`. |
+| `devui/imcomponentinspectors.*` | **The Properties field editors** — one function per `wi::scene::Scene` component manager, every option each component has. All 38 managers are covered, so the inspector's "no inline editor" list is a missing-table report, not a normal state. `imcomponents.*` stays the ADD/REMOVE catalogue; this is the EDIT surface. Name and Transform are drawn by `imhierarchy.cpp` instead, because they carry panel behaviour (shared row, euler cache, drift check) rather than a field list. |
 | `stLoading.cpp` | Default `RenderLoadingScreen` — the pipeline warm-up overlay plus whatever `LoadingState` carries. |
 | `io/` | `Nbt` (the `.stad`/`.stcd` format), `NbtStore`, `SettingsManager`, `SaveGame`, `PlayerPrefs`, `UserData` (LocalLow path resolver). |
+| `io/model/` | **Model import**: `.gltf`/`.glb` through tinygltf v3, `.fbx` and `.obj`/`.mtl` through ufbx. `st::model::Import()` builds nodes, meshes, PBR materials, skins and animations straight into a `wi::scene::Scene`. Both loaders are C — this workspace is `_HAS_EXCEPTIONS=0`, and a throwing C++ parser would need its own exception settings behind a C boundary. Every byte reaches them through `wi::helper::FileRead`, so a model inside a mounted asset package imports like one on disk. |
 | `io/asset/` | **The asset package**: `.strd` index + `.stafp<N>` payload parts + `.stsd` maps. `AssetFormat.h` is the on-disk layout, `AssetPack` reads it, `AssetPackWriter` builds it, `SceneDescriptor` splits and rebuilds `.wiscene`, `StHash.h` is XXH64. `AssetSystem` is the only engine-aware file: it mounts packages and installs `wi::helper::SetAssetSourceOverride` so every engine read resolves through them. Reach it anywhere via `st::AssetSystem::Get()`, or `App::Assets()`. |
 | `input/InputSystem.*` | Centralized action/axis keymap, refreshed once per frame. |
 | `crash/CrashHandler.*` | sentry-native + Crashpad, offline only; launches `SimtaryCrashReporter`. |
@@ -61,7 +64,7 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `display/DisplaySettings.*` | Player-facing video options: window mode, monitor, resolution, refresh rate, v-sync, frame cap, render scale. NOT DevUI — `st::App::Display().GUI(app)` drops into a game's own options menu, and DevUI renders the same panel in its Display tab. Sole owner of v-sync and the frame cap; `GraphicsSettings` deliberately no longer carries them. |
 | `audio/faust/` | `FaustManager` (OpenAL DSP host) + `FaustProcessor<T>`. Starts with no processors — games register their own AOT instruments. |
 | `SubWinStatus.*` | The native (Win32/X11) loading window, on its own thread, because a blocking `Scene::Load()` means no ImGui frame can be drawn. Two text lines - a phase and a dimmed, middle-elided detail line - plus a progress bar. Every setter is thread-safe; the detail line is written from loading workers. |
-| `anim/`, `eventBus.*`, `ZmqHandler.*` | Animation descriptors, main-thread event bus, ZMQ bridge, native (Win32/X11) loading window. |
+| `anim/`, `eventBus.*`, `ZmqHandler.*` | Animation descriptors (`.staod`, NBT — read through `wi::helper::FileRead`, so they resolve out of a mounted asset package), main-thread event bus, ZMQ bridge, native (Win32/X11) loading window. |
 
 ### Project hook surface (`st::App`)
 
@@ -448,6 +451,71 @@ files entirely (`st::App::HandleDroppedFile` returns unless `IsEditorMode()`), s
 dragging something onto a running game can never quietly start rewriting content. The
 panel is a docked editor window rather than a floating DevUI one for the same reason
 Hierarchy/Properties have `##editor` copies: docking one must not disturb the other.
+
+**Everything the editor creates lands in front of the free camera.** `EditorUI::SpawnPoint()`
+is six metres down the free camera's forward axis, and it is the one placement rule:
+`Scene > Create` uses it, `Scene > Import model...` uses it, and so does a model dropped on
+the viewport. Placement always goes through `PlaceEntityAt` (`devui/imcomponents.h`), which
+writes the 64-bit ABSOLUTE position as well as `translation_local` — an object placed only in
+local space comes back at the world origin after a save/load or an undo.
+
+**Four interchange formats import; `.wiscene` is not one of them.** `wi::scene::LoadModel`
+reads a `wi::Archive` and nothing else, which is the right SHIPPING format and the wrong
+authoring one — nothing exports it. `Framework/io/model` is the other half: `.gltf`, `.glb`,
+`.fbx` and `.obj` convert into components on load. `EditorUI::ImportModelAtSpawn` dispatches
+on extension across all three loaders (`.stsd` → `AssetSystem`, `.wiscene` → `LoadModel`,
+everything else → `st::model::Import`), and the editor's dialog filter and drop test are
+generated from `st::model::SupportedExtensions()`, so adding a backend is one edit.
+
+Handedness is converted in one place per backend and never twice: ufbx does it during load
+(`target_axes` + `MODIFY_GEOMETRY`, so no node is left with a negative scale), and the glTF
+importer mirrors Z per-vertex and reverses winding. `tests/model_import_test` covers the
+third-party half — API shapes, parse options, accessor layout, external-buffer callbacks —
+with no engine and no graphics device, which is the half that breaks on a dependency bump.
+
+**Import options are an ImGui panel, not a file-dialog extension.** A native dialog can
+only carry custom controls through a platform hook (a Win32 `OFNHookProc`), which would make
+the options Windows-only — so the OS dialog picks the FILE and `EditorUI::DrawImportOptions`
+asks everything else, as a modal, before anything is built. The dialog's filter LABEL is
+built by `ImportFilterDescription()` from `st::model::SupportedExtensions()`, because the
+Win32 helper shows `FileDialogParams::description` verbatim and never derives one from the
+extension list: a bare "Model or scene" would tell the user nothing about what opens.
+
+**"Import into a Hierarchy group" is not cosmetic.** A load creates the model's nodes AND its
+mesh, material and animation-data entities — and those carry no `TransformComponent`, so they
+get no parent, and the Hierarchy renders anything parentless as a top-level row. Importing one
+character therefore adds hundreds of loose rows next to the model. With the option on, every
+entity the import created is attached to the one root, which also makes the import a single
+thing to select, move, hide or delete. `Component_Attach` only rebases a transform when BOTH
+sides have one, so attaching a material is the pure metadata edit it looks like, and
+`RunHierarchyUpdateSystem` skips a child with neither transform nor layer.
+
+**Two things are called "import" and they are not the same.** The Resource Explorer imports
+a file into the asset PACKAGE (`AssetExplorer::QueueImport`). `EditorUI::ImportModelAtSpawn`
+merges a `.stsd` / `.wiscene` into the LIVE SCENE. `HandleDroppedFile` routes between them by
+extension: a model goes into the world, everything else goes into the package. The package
+side loses nothing by that — it has its own `Add files...` / `Add folder...` buttons.
+An import is one undo step even though a model creates hundreds of entities: the set is found
+by diffing the scene's entity list around the load and pushed through
+`EditorHistory::RecordCreatedMany`. A step that owned only the root would delete it and orphan
+every mesh and material behind it.
+
+**Drag and drop, in one table.** Two payload types, several destinations:
+
+| Payload | Dragged from | Dropped on | Result |
+|---|---|---|---|
+| `SIMTARY_ENTITY_PAYLOAD` | a Hierarchy row | another Hierarchy row | re-parent (`Component_Attach`, which rebases the transform so nothing jumps) |
+| `SIMTARY_ENTITY_PAYLOAD` | a Hierarchy row | the strip under the tree | un-parent (`Component_Detach`) |
+| `SIMTARY_ENTITY_PAYLOAD` | a Hierarchy row | an `EntityField` in Properties | bind a native component's entity reference (GUID, survives reload) |
+| `SIMTARY_ASSET_PAYLOAD` | a Resource Explorer row | an asset field in Properties | set that texture / sound / script / sky map to the asset's logical path |
+| `SIMTARY_ASSET_PAYLOAD` | a Resource Explorer row | the editor viewport | import the model at the spawn point (declined for non-models) |
+
+A re-parent target is only opened when the drop would be LEGAL — never onto itself or one of
+its own descendants — so an illegal row simply does not highlight, which reads as "not here"
+without a separate rejection cue. `AssetPayload` carries the logical path and type, not just
+the id, so a drop site needs to know nothing about the explorer's working set: a mounted
+package resolves its own logical paths (`"textures/wall.dds"`) through the asset-source
+override exactly as the engine stored them.
 
 **A new editor panel does not appear in an existing layout.** `BuildDefaultLayout` runs
 once and is then restored from `imgui.ini`, so a window added later comes up floating for

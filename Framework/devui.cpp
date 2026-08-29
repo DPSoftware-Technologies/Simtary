@@ -267,6 +267,17 @@ void st::App::HandleDroppedFile(const std::string& path) {
                           wi::backlog::LogLevel::Warning);
         return;
     }
+
+    // A dropped MODEL goes into the world, not into the package: it lands in front of the
+    // editor camera as a new entity tree. That is what dragging a .stsd or .wiscene onto an
+    // editor means, and the resource side loses nothing — the Resource Explorer has its own
+    // "Add files..." / "Add folder..." buttons for putting one in the asset package, and a
+    // scene the game actually loads gets there through Save As, not through a drop.
+    if (EditorUI::IsSceneImportPath(path)) {
+        editor_.QueueImportModel(path);
+        return;
+    }
+
     editor_.ShowResources();
     assetExplorer_.QueueImport(path);
 }

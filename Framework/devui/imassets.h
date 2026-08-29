@@ -47,10 +47,31 @@
 
 namespace st {
 
-// ImGui drag-drop payload carrying one asset ID, so an asset can be dragged from this
-// window onto anything that wants to consume one. Mirrors SIMTARY_ENTITY_PAYLOAD in
+// ImGui drag-drop payload carrying one asset, so an asset can be dragged from this window
+// onto anything that wants to consume one. Mirrors SIMTARY_ENTITY_PAYLOAD in
 // devui/imhierarchy.h.
 inline constexpr const char* SIMTARY_ASSET_PAYLOAD = "SIMTARY_ASSET";
+
+// What the payload carries. The PATH is in here, not just the id, so a consumer needs to
+// know nothing about the Resource Explorer's working set to use a dropped asset: a material
+// texture slot takes `path` verbatim, because a mounted package resolves its own logical
+// paths ("textures/wall.dds") through the asset-source override exactly as the engine
+// stored them. Fixed size, trivially copyable — ImGui copies payloads by value.
+struct AssetPayload {
+    uint64_t         id   = 0;
+    asset::AssetType type = asset::AssetType::Unknown;
+    char             path[248] = {};   // NUL-terminated logical path; truncated if longer
+
+    // True for what a scene can absorb as a model: the two forms the editor can merge.
+    bool IsModel () const {
+        const std::string p(path);
+        const size_t dot = p.find_last_of('.');
+        if (dot == std::string::npos) return false;
+        std::string ext = p.substr(dot + 1);
+        for (char& c : ext) if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+        return ext == "stsd" || ext == "wiscene";
+    }
+};
 
 class AssetExplorer {
 public:

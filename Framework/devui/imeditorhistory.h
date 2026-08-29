@@ -79,6 +79,13 @@ public:
     //	"before" is synthesised as "this entity had no components" — undoing the step strips
     //	it back to that, which is what removing it means to every panel here.
     void RecordCreated(wi::scene::Scene& scene, wi::ecs::Entity entity, const char* label);
+    // Same, for a batch that appeared together. A model import is the case this exists for:
+    //	it creates one root plus every mesh, material, armature and animation entity behind
+    //	it, and only a step that owns ALL of them can undo the import rather than orphan the
+    //	contents of a deleted root. The caller works out the set by diffing the scene's entity
+    //	list around the load.
+    void RecordCreatedMany(wi::scene::Scene& scene, const wi::vector<wi::ecs::Entity>& entities,
+        const char* label);
 
     // Capture the "after" state and push the step. Drops the step if nothing changed.
     void Commit(wi::scene::Scene& scene);

@@ -7,7 +7,7 @@
 #include <cstdio>
 #include <string>
 
-using namespace mi::nbt;
+using namespace st::nbt;
 
 static Tag makeState(int id, bool loop, const char* clip) {
     Tag c = Tag::Compound();

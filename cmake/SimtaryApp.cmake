@@ -334,6 +334,7 @@ function(simtary_add_app)
     target_link_libraries(${APP_NAME} PRIVATE
         Simtary::AppFlags   # exceptions-off / RTTI-off contract, matching the engine
         Simtary
+        SimtaryModelIO      # tinygltf + ufbx, for Framework/io/model (both are C)
         SDL2::SDL2
         ImGui_Lib
         sentry::sentry
@@ -502,23 +503,32 @@ function(simtary_add_app)
                         $<TARGET_FILE_DIR:${APP_NAME}>/assets
                 )
 
-                # ...then take the .wiscene sources back out, but ONLY when they have
-                # been packed. Without PACK_ASSETS the .wiscene IS the shipped map and
-                # removing it would leave the game with nothing to load.
+                # ...then take the sources that are now REDUNDANT back out, but ONLY when
+                # they have been packed. Without PACK_ASSETS the .wiscene IS the shipped
+                # map and removing it would leave the game with nothing to load.
                 #
-                # copy_directory has no filter, so the tree copy above brings the maps
-                # along with everything else. Once the packer has converted them, a
-                # .wiscene in the output is ~37 MB of the SAME content the .stsd and the
-                # package already hold: it doubles the build size, and it is a second
-                # copy that can go stale and still be found first. The source of truth
-                # stays in assets/contents/; the output keeps only the converted form.
+                # copy_directory has no filter, so the tree copy above brings everything
+                # along. Once the packer has run, two kinds of file in the output are a
+                # second copy of content that already shipped:
+                #
+                #   *.wiscene  ~37 MB of the SAME content the .stsd and the package hold.
+                #              It doubles the build size, and it can go stale and still be
+                #              found first.
+                #   *.staod    animation descriptors. They are in the package as
+                #              AssetType::Animation, and LoadAnimationDescriptor reads them
+                #              through the asset-source override, so the loose copy is only
+                #              a shadowing hazard.
+                #
+                # The source of truth stays in assets/contents/; the output keeps only the
+                # packaged form.
                 #
                 # This lives on ${APP}_Assets rather than on the pack step because the
                 # pack step is incremental - when it is up to date it does not run, and
-                # the copy above has just put the .wiscene back.
+                # the copy above has just put the files back.
                 if (APP_PACK_ASSETS)
                     file(GLOB_RECURSE _packed_sources CONFIGURE_DEPENDS
-                         ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}/*.wiscene)
+                         ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}/*.wiscene
+                         ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}/*.staod)
                     foreach (_src IN LISTS _packed_sources)
                         file(RELATIVE_PATH _rel ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR} ${_src})
                         list(APPEND _asset_copy_commands

@@ -37,11 +37,17 @@ bool EntityField(wi::scene::Scene& scene, const char* label,
 // Emit the hierarchy tree into the CURRENT window (no Begin/End). Clicking a row writes
 //	the clicked entity into `selected`.
 //
-//	A row is BOTH a selection target and a drag source, so the two are told apart by the mouse
-//	release, not the press: selection only moves when the press and the release land on the same
-//	row without passing the drag threshold. Dragging a row therefore leaves `selected` (and with
-//	it the Properties panel you are dropping onto) exactly where it was. The panel shows which
-//	mode it is in above the tree, and tints the row being carried.
+//	A row is a selection target, a drag SOURCE and a drop TARGET, so click and drag are told
+//	apart by the mouse release, not the press: selection only moves when the press and the
+//	release land on the same row without passing the drag threshold. Dragging a row therefore
+//	leaves `selected` (and with it the Properties panel you are dropping onto) exactly where it
+//	was. The panel shows which mode it is in above the tree, and tints the row being carried.
+//
+//	Dropping a row on ANOTHER ROW re-parents it (Scene::Component_Attach, which bakes the
+//	child's world transform into its new local one so it does not jump), and dropping it on the
+//	strip under the tree un-parents it. A target only opens when the drop would be legal —
+//	never onto itself or one of its own descendants — so an illegal row does not highlight.
+//	Both are one undo step when a `history` is supplied.
 //
 //	`history` is optional. Pass one (Editor mode does) and the panel also grows a Create
 //	button and a right-click menu — create child / duplicate / delete — each recorded as a
