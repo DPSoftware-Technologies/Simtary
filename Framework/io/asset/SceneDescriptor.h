@@ -118,6 +118,10 @@ struct SceneBlob {
 struct SceneDescriptor {
     std::string name;         // "s1map"
     std::string sourceFile;   // "scenes/s1map.wiscene", for provenance
+    // The package build this map's resources were written alongside. ZERO means the map
+    // is not bound to any particular build — an editor save whose resources were all
+    // already mounted has nothing to bind to, and a UUID check against it is not a
+    // mismatch, it is "no opinion".
     uint64_t    packUuidLo    = 0;
     uint64_t    packUuidHi    = 0;
     uint64_t    archiveVersion = 0;
@@ -199,6 +203,21 @@ bool BuildSceneDescriptor (const std::string& wiscenePath,
                            AssetPackWriter*   writer,
                            SceneDescriptor&   out,
                            std::string* error = nullptr);
+
+// Same, from a .wiscene that is already in memory — which is what the in-game editor
+// has after wi::scene::Scene::Serialize, with no file in between.
+//
+// `splitOut` keeps the resource BYTES alive and reachable: the descriptor only records
+// names and IDs, so a caller that wants to decide per resource whether to pack it
+// (the editor packs only what the mounted packages do not already hold) needs the split
+// itself. Read them at `splitOut.Bytes() + r.offset`.
+bool BuildSceneDescriptorFromMemory (const uint8_t* wisceneBytes, uint64_t size,
+                                     const std::string& name,
+                                     const std::string& sourceFile,
+                                     const std::string& resourcePrefix,
+                                     SceneDescriptor& out,
+                                     WisceneSplit&    splitOut,
+                                     std::string* error = nullptr);
 
 // Convenience: Build + Serialize + write `<outDir>/<name>.stsd`.
 bool ConvertWiscene (const std::string& wiscenePath,

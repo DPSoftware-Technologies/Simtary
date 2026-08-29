@@ -1,5 +1,9 @@
 #include "imeditor.h"
 
+#include "io/asset/AssetSystem.h"
+#include "io/asset/SceneDescriptor.h"
+#include "io/asset/AssetPackWriter.h"
+
 #include "stApp.h"
 #include "imhierarchy.h"
 #include "imcomponents.h"
@@ -42,6 +46,146 @@ constexpr const char* kResources      = "Resource Explorer##editor";
 constexpr const char* kDockHost       = "##SimtaryEditorDockHost";
 
 constexpr float kPitchLimit = 1.55f; // ~89 degrees; stops the freecam flipping over the pole
+
+// Aspect presets. Index 0 is "free": width and height move independently. Shared by the
+//	Game Viewport's resolution override and by every Camera View.
+struct AspectRatio { const char* label; float value; };
+const AspectRatio kAspectRatios[] = {
+	{ "Free",    0.0f },
+	{ "16:9",    16.0f / 9.0f },
+	{ "16:10",   16.0f / 10.0f },
+	{ "21:9",    21.0f / 9.0f },
+	{ "2.39:1",  2.39f },
+	{ "4:3",     4.0f / 3.0f },
+	{ "3:2",     3.0f / 2.0f },
+	{ "1:1",     1.0f },
+	{ "9:16",    9.0f / 16.0f },
+};
+
+// The "Resolution" + "Ratio" menu pair. One copy, two callers: a Camera View's authored
+//	output size and the Game Viewport's resolution override are the same control.
+//	`ratio` locks the aspect, so Width drives Height and Height goes read-only.
+void DrawResolutionMenus(int& width, int& height, int& ratio)
+{
+	if (ImGui::BeginMenu("Resolution"))
+	{
+		struct Preset { const char* label; int w, h; };
+		static const Preset presets[] = {
+			{ "1280 x 720",   1280, 720 },
+			{ "1920 x 1080",  1920, 1080 },
+			{ "2560 x 1440",  2560, 1440 },
+			{ "3840 x 2160",  3840, 2160 },
+			{ "1080 x 1920",  1080, 1920 },
+			{ "1080 x 1080",  1080, 1080 },
+			{ "2048 x 858",   2048, 858 },
+		};
+		for (const Preset& p : presets)
+		{
+			const bool active = (width == p.w && height == p.h);
+			if (ImGui::MenuItem(p.label, nullptr, active))
+			{
+				width = p.w;
+				height = p.h;
+				ratio = 0; // an explicit resolution wins over a locked ratio
+			}
+		}
+		ImGui::Separator();
+		ImGui::SetNextItemWidth(90);
+		if (ImGui::DragInt("Width", &width, 4, 16, 8192) && ratio > 0)
+			height = std::max(16, (int)(width / kAspectRatios[ratio].value));
+		ImGui::SetNextItemWidth(90);
+		ImGui::BeginDisabled(ratio > 0); // height is derived while a ratio is locked
+		ImGui::DragInt("Height", &height, 4, 16, 8192);
+		ImGui::EndDisabled();
+		ImGui::EndMenu();
+	}
+
+	if (ImGui::BeginMenu("Ratio"))
+	{
+		for (int i = 0; i < IM_ARRAYSIZE(kAspectRatios); ++i)
+		{
+			if (!ImGui::MenuItem(kAspectRatios[i].label, nullptr, ratio == i))
+				continue;
+			ratio = i;
+			if (i > 0)
+				height = std::max(16, (int)(width / kAspectRatios[i].value));
+		}
+		ImGui::EndMenu();
+	}
+}
+
+// "Show Game Preview" off: RenderPath3D's own defaults, which is exactly what an editor
+//	path looked like before there was a preview at all. Spelled out rather than left to the
+//	constructor because the path object is REUSED - turning the preview off has to undo what
+//	GraphicsSettings::MirrorTo wrote into it, or the game's tonemap and colour grading simply
+//	stay. Kept in the same order as MirrorTo so the two can be diffed by eye.
+void ApplyEngineDefaults(wi::RenderPath3D& path)
+{
+	// The projector / laser passes were copied off the game path; they go with the preview.
+	path.custom_post_processes.clear();
+	path.setlayerMask(0xFFFFFFFF);
+	path.colorspace = wi::graphics::ColorSpace::SRGB;
+
+	path.setAO(wi::RenderPath3D::AO_DISABLED);
+	path.setAORange(1.0f);
+	path.setAOSampleCount(16);
+	path.setAOPower(1.0f);
+	path.setSSREnabled(false);
+	path.setSSRQuality(wi::renderer::PostProcessQuality::Medium);
+	path.setSSGIEnabled(false);
+	path.setSSGIDepthRejection(8.0f);
+	path.setRaytracedReflectionsEnabled(false);
+	path.setRaytracedReflectionsRange(10000.0f);
+	path.setRaytracedReflectionsQuality(wi::renderer::PostProcessQuality::Medium);
+	path.setReflectionRoughnessCutoff(0.6f);
+	path.setRaytracedDiffuseEnabled(false);
+	path.setRaytracedDiffuseRange(10.0f);
+	path.setRaytracedDiffuseQuality(wi::renderer::PostProcessQuality::Medium);
+	path.setReflectionsEnabled(true);
+
+	path.setShadowsEnabled(true);
+	path.setScreenSpaceShadowSampleCount(16);
+	path.setScreenSpaceShadowRange(1.0f);
+
+	path.setFXAAEnabled(false);
+	path.setBloomEnabled(true);
+	path.setBloomThreshold(1.0f);
+	path.setMotionBlurEnabled(false);
+	path.setMotionBlurStrength(100.0f);
+	path.setDepthOfFieldEnabled(true);
+	path.setDepthOfFieldStrength(10.0f);
+	path.setSharpenFilterEnabled(false);
+	path.setSharpenFilterAmount(0.28f);
+	path.setCRTFilterEnabled(false);
+	path.setLensFlareEnabled(true);
+	path.setLightShaftsEnabled(false);
+	path.setLightShaftsStrength(0.5f);
+	path.setLightShaftsFadeSpeed(3.0f);
+	path.setVolumeLightsEnabled(true);
+	path.setChromaticAberrationEnabled(false);
+	path.setChromaticAberrationAmount(2.0f);
+	path.setDitherEnabled(true);
+	path.setOutlineEnabled(false);
+	path.setOutlineThreshold(0.2f);
+	path.setOutlineThickness(1.0f);
+	path.setOutlineColor(XMFLOAT4(0, 0, 0, 1));
+
+	path.setEyeAdaptionEnabled(false);
+	path.setEyeAdaptionKey(0.115f);
+	path.setEyeAdaptionRate(1.0f);
+
+	path.setTonemap(wi::renderer::Tonemap::ACES);
+	path.setColorGradingEnabled(true);
+	path.setExposure(1.0f);
+	path.setHDRCalibration(1.0f);
+	path.setBrightness(0.0f);
+	path.setContrast(1.0f);
+	path.setSaturation(1.0f);
+
+	path.setMeshBlendEnabled(true);
+	path.setVisibilityComputeShadingEnabled(false);
+	path.setMSAASampleCount(1);
+}
 
 // Wireframe frustum for a camera that has no CameraComponent in the scene — the ACTIVE game
 //	camera is a free-standing wi::scene::GetCamera(), so wi::renderer's own "debug cameras"
@@ -129,6 +273,11 @@ void st::EditorUI::SetEnabled(bool on)
 	}
 	else
 	{
+		// Back to the window canvas before anything else: this is the one path a shipping
+		//	frame takes out of editor mode, and it must not leave the game at 1080p in a
+		//	4K window.
+		ApplyGameViewResolution(false);
+
 		// The render targets may still be referenced by frames in flight.
 		DestroyCameraViews();
 		if (editorPath_)
@@ -146,12 +295,17 @@ void st::EditorUI::ReleaseInput()
 {
 	ReleaseFreeCamLook();
 	ReleaseInputCapture();
+	// Draw() is what re-applies the Game Viewport's resolution override every frame, and
+	//	hiding the DevUI is exactly the case where Draw() stops running. Same reason the
+	//	input capture is handed back here.
+	ApplyGameViewResolution(false);
 }
 
 void st::EditorUI::Shutdown()
 {
 	ReleaseFreeCamLook();
 	ReleaseInputCapture();
+	ApplyGameViewResolution(false);
 	DestroyCameraViews();
 	if (editorPath_)
 	{
@@ -290,7 +444,14 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 			if (ImGui::MenuItem("Save", "Ctrl+S", false, hasPath))
 				SaveScene(scene, scenePath_);
 			if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S"))
-				RequestSaveAs();
+				RequestSaveAs("stsd");
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Native .stsd: entities here, textures in the asset package");
+			ImGui::Separator();
+			if (ImGui::MenuItem("Export .wiscene..."))
+				RequestSaveAs("wiscene");
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("One self-contained wi::Archive, for the standalone Wicked editor");
 			ImGui::Separator();
 			ImGui::TextDisabled("%s", hasPath ? scenePath_.c_str() : "(never saved)");
 			ImGui::EndMenu();
@@ -326,6 +487,8 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 		{
 			ImGui::MenuItem("Editor Viewport", nullptr, &showEditorViewport_);
 			ImGui::MenuItem("Game Viewport", nullptr, &showGameViewport_);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Its menu bar sets the resolution the GAME renders at.");
 			ImGui::Separator();
 			if (ImGui::MenuItem("New Camera View"))
 			{
@@ -356,18 +519,18 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 
 		if (ImGui::BeginMenu("Debug"))
 		{
-			ImGui::MenuItem("Match game renderer", nullptr, &matchGameRenderer_);
+			// The preview switch itself lives on each viewport's own menu bar - it is a
+			//	per-viewport setting, and this is the global knob that goes with it.
+			ImGui::MenuItem("Show Game Preview (Editor Viewport)", nullptr, &showGamePreview_);
 			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Render the editor and camera views through the game's own "
-					"graphics settings - AO, bloom, tonemap, exposure, colour grading, "
-					"colorspace - instead of bare RenderPath3D defaults.");
-			ImGui::BeginDisabled(!matchGameRenderer_);
+				ImGui::SetTooltip("Also on the Editor Viewport's own menu bar. Each Camera "
+					"View carries its own copy.");
 			ImGui::MenuItem("Stable exposure", nullptr, &stableExposure_);
 			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Pin the exposure instead of mirroring auto-exposure. An "
-					"auto-exposure history is per-path, so a view that only renders while its "
-					"panel is visible drifts to its own brightness and stops matching.");
-			ImGui::EndDisabled();
+				ImGui::SetTooltip("Applies to every previewing viewport. Pins the exposure "
+					"instead of mirroring auto-exposure: an auto-exposure history is "
+					"per-path, so a view that only renders while its panel is visible drifts "
+					"to its own brightness and stops matching.");
 			ImGui::Separator();
 
 			ImGui::TextDisabled("debug draws - editor viewport only");
@@ -505,11 +668,88 @@ void st::EditorUI::DrawToolbar()
 
 // -------------------------------------------------------------------- viewport ---
 
+void st::EditorUI::DrawEditorViewportToolbar()
+{
+	if (!ImGui::BeginMenuBar())
+		return;
+
+	ImGui::Checkbox("Show Game Preview", &showGamePreview_);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Render this viewport through the game's own renderer - the live "
+			"graphics settings (AO, bloom, tonemap, exposure, colour grading), the game "
+			"path's colorspace and layer mask, and its custom post process passes "
+			"(projectors, lasers). Off falls back to bare RenderPath3D defaults.\n\n"
+			"Debug draws are separate and stay on either way - see Debug in the menu bar "
+			"above.");
+
+	ImGui::Separator();
+	ImGui::TextDisabled("%u x %u", editorViewSize_.x, editorViewSize_.y);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("The editor viewport always follows its panel exactly, so picking "
+			"and the gizmo map 1:1.");
+
+	ImGui::EndMenuBar();
+}
+
+void st::EditorUI::DrawGameViewportToolbar()
+{
+	if (!ImGui::BeginMenuBar())
+		return;
+
+	// Free Aspect is the only mode a shipping build has: the path follows the window canvas.
+	//	Anything else forces st::ProjectorRenderPath::forcedResolution and the image below is
+	//	letterboxed into whatever shape the dock happens to give the panel.
+	if (ImGui::BeginMenu(gameRes_.fixed ? "Fixed Resolution" : "Free Aspect"))
+	{
+		if (ImGui::MenuItem("Free Aspect", nullptr, !gameRes_.fixed))
+			gameRes_.fixed = false;
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Render at the window canvas size, the way the game ships.");
+		if (ImGui::MenuItem("Fixed Resolution", nullptr, gameRes_.fixed))
+			gameRes_.fixed = true;
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Render the GAME at a fixed size regardless of the window - the "
+				"honest way to check a 4K frame, a phone crop or a 2.39:1 letterbox. Cleared "
+				"automatically when editor mode leaves.");
+		ImGui::EndMenu();
+	}
+
+	ImGui::Separator();
+	ImGui::BeginDisabled(!gameRes_.fixed);
+	DrawResolutionMenus(gameRes_.width, gameRes_.height, gameRes_.ratio);
+	ImGui::EndDisabled();
+
+	// What the path is ACTUALLY at, not what the menu asked for: a forced size only lands on
+	//	the next frame's PreUpdate, and while Free Aspect is on the window is what decides.
+	ImGui::Separator();
+	if (gamePath_ != nullptr)
+	{
+		const uint32_t w = gamePath_->GetPhysicalWidth();
+		const uint32_t h = gamePath_->GetPhysicalHeight();
+		ImGui::TextDisabled("%u x %u  %.3f", w, h, (float)w / (float)std::max(1u, h));
+	}
+	else
+	{
+		ImGui::TextDisabled("%d x %d", gameRes_.width, gameRes_.height);
+	}
+
+	// Right-aligned reminder of what this window is, matching a Camera View's "view only".
+	{
+		const char* note = "click to play";
+		const float w = ImGui::CalcTextSize(note).x + ImGui::GetStyle().ItemSpacing.x * 2.0f;
+		if (ImGui::GetCursorPosX() < ImGui::GetWindowWidth() - w)
+			ImGui::SetCursorPosX(ImGui::GetWindowWidth() - w);
+		ImGui::TextDisabled("%s", note);
+	}
+
+	ImGui::EndMenuBar();
+}
+
 void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3D& path,
 	CameraComponent& cam, bool exactFit, wi::scene::Scene& scene, Entity& selected)
 {
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-	const bool open = ImGui::Begin(title, p_open);
+	const bool open = ImGui::Begin(title, p_open, ImGuiWindowFlags_MenuBar);
 	ImGui::PopStyleVar();
 	if (!open)
 	{
@@ -517,6 +757,15 @@ void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3
 		return;
 	}
 
+	// exactFit is what tells the two viewports apart everywhere in this function: true is
+	//	the Editor Viewport, false is the Game Viewport. Their menu bars differ for the same
+	//	reason the rest does - one previews, the other plays.
+	if (exactFit)
+		DrawEditorViewportToolbar();
+	else
+		DrawGameViewportToolbar();
+
+	// AFTER the menu bar: it takes a row off the top, and the editor path is sized from this.
 	const ImVec2 avail  = ImGui::GetContentRegionAvail();
 	const ImVec2 cursor = ImGui::GetCursorScreenPos();
 	const bool   usable = (avail.x >= 16.0f && avail.y >= 16.0f);
@@ -879,31 +1128,149 @@ void st::EditorUI::SaveScene(wi::scene::Scene& scene, const std::string& path)
 		return;
 	}
 
-	wi::Archive archive; // default-constructed = empty, write mode
-	scene.Serialize(archive);
-	if (archive.SaveFile(path))
+	// .stsd is the native format and the default; .wiscene is still written on request,
+	// because it is what the standalone Wicked editor opens and what the converter reads.
+	std::string ext = wi::helper::GetExtensionFromFileName(path);
+	for (char& c : ext)
+		if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+
+	const bool ok = (ext == "wiscene") ? SaveSceneArchive(scene, path)
+	                                   : SaveSceneDescriptor(scene, path);
+	if (ok)
 	{
 		scenePath_ = path;
-		lastSaveMessage_ = "saved " + wi::helper::GetFileNameFromPath(path);
 		wi::backlog::post("Editor: saved scene to " + path);
 	}
 	else
 	{
-		lastSaveMessage_ = "SAVE FAILED";
 		wi::backlog::post("Editor: FAILED to save scene to " + path, wi::backlog::LogLevel::Error);
 	}
 }
 
-void st::EditorUI::RequestSaveAs()
+bool st::EditorUI::SaveSceneArchive(wi::scene::Scene& scene, const std::string& path)
+{
+	wi::Archive archive; // default-constructed = empty, write mode
+	scene.Serialize(archive);
+	if (!archive.SaveFile(path))
+	{
+		lastSaveMessage_ = "SAVE FAILED";
+		return false;
+	}
+	lastSaveMessage_ = "saved " + wi::helper::GetFileNameFromPath(path) + " (.wiscene)";
+	return true;
+}
+
+bool st::EditorUI::SaveSceneDescriptor(wi::scene::Scene& scene, const std::string& path)
+{
+	// Embedding is turned ON for exactly this serialize, then put back.
+	//
+	// It is not for the bytes — the .stsd deliberately carries none. It is for the LIST:
+	// the resource block is the only place the engine records which files a scene
+	// actually uses, and without it the .stsd has no reference list, so nothing can
+	// report "13 of 14 assets" during a load or answer MissingAssetsFor() before the
+	// world comes up untextured. SplitWiscene then lifts the block straight back out,
+	// which is the same code path the build-time packer uses and is proven byte-exact.
+	const wi::resourcemanager::Mode previousMode = wi::resourcemanager::GetMode();
+	wi::resourcemanager::SetMode(wi::resourcemanager::Mode::EMBED_FILE_DATA);
+	wi::Archive archive;
+	scene.Serialize(archive);
+	wi::resourcemanager::SetMode(previousMode);
+
+	wi::vector<uint8_t> bytes;
+	archive.WriteData(bytes);
+
+	const std::string stem = wi::helper::GetFileNameFromPath(path);
+	const std::string name = wi::helper::RemoveExtension(stem);
+
+	std::string error;
+	st::asset::SceneDescriptor descriptor;
+	st::asset::WisceneSplit    split;
+	if (!st::asset::BuildSceneDescriptorFromMemory(bytes.data(), bytes.size(), name, stem,
+	                                               std::string(), descriptor, split, &error))
+	{
+		lastSaveMessage_ = "SAVE FAILED: " + error;
+		return false;
+	}
+
+	// Anything the mounted packages already hold needs no copy — the map just references
+	// it. Whatever is left is content this session introduced that lives nowhere the next
+	// run would find it, so it goes into a package beside the map and is mounted at once.
+	// Without this the map saves "successfully" and reloads untextured.
+	std::vector<size_t> unpacked;
+	for (size_t i = 0; i < split.resources.size(); ++i)
+	{
+		if (!st::AssetSystem::Get().Exists(descriptor.assets[i].path))
+			unpacked.push_back(i);
+	}
+
+	const std::string dir = wi::helper::GetDirectoryFromPath(path);
+	if (!unpacked.empty())
+	{
+		st::asset::AssetPackWriter writer;
+		st::asset::PackOptions options;
+		if (!writer.Begin(dir.empty() ? "." : dir, name, options, &error))
+		{
+			lastSaveMessage_ = "SAVE FAILED: " + error;
+			return false;
+		}
+		for (size_t i : unpacked)
+		{
+			const st::asset::EmbeddedResource& r = split.resources[i];
+			if (!writer.AddAuto(descriptor.assets[i].path, split.Bytes() + r.offset, r.size,
+			                    st::asset::AssetFlag_FromScene, &error))
+			{
+				lastSaveMessage_ = "SAVE FAILED: " + error;
+				return false;
+			}
+		}
+		if (!writer.Finish(&error))
+		{
+			lastSaveMessage_ = "SAVE FAILED: " + error;
+			return false;
+		}
+		descriptor.packUuidLo = writer.UuidLo();
+		descriptor.packUuidHi = writer.UuidHi();
+
+		const std::string index = (dir.empty() ? std::string() : dir) + name + ".strd";
+		if (st::AssetSystem::Get().Mount(index, "assets/", &error))
+			st::AssetSystem::Get().Install();
+	}
+
+	if (!st::asset::WriteSceneDescriptor(path, descriptor, st::asset::SceneWriteOptions{}, &error))
+	{
+		lastSaveMessage_ = "SAVE FAILED: " + error;
+		return false;
+	}
+
+	lastSaveMessage_ = "saved " + stem + "  (" + std::to_string(descriptor.assets.size()) +
+	                   " assets" + (unpacked.empty() ? ", all already packed"
+	                                                 : ", " + std::to_string(unpacked.size()) +
+	                                                   " written to " + name + ".strd") + ")";
+	return true;
+}
+
+void st::EditorUI::RequestSaveAs(const char* defaultExt)
 {
 	if (saveDialogOpen_)
 		return;
 	saveDialogOpen_ = true;
+	saveDefaultExt_ = defaultExt;
 
 	wi::helper::FileDialogParams params;
 	params.type = wi::helper::FileDialogParams::SAVE;
-	params.description = "Simtary/Wicked scene";
-	params.extensions.push_back("wiscene");
+	// Native first. Both are offered in the one filter the Win32 helper builds, so the
+	// extension the user types still decides; this only sets what a bare name becomes.
+	if (saveDefaultExt_ == "wiscene")
+	{
+		params.description = "Wicked scene archive";
+		params.extensions.push_back("wiscene");
+	}
+	else
+	{
+		params.description = "Simtary scene descriptor";
+		params.extensions.push_back("stsd");
+		params.extensions.push_back("wiscene");
+	}
 
 	// The dialog runs on its own thread, so this callback is NOT on the main thread and
 	// must not touch the scene. Park the path; Draw() serializes it next frame.
@@ -930,7 +1297,7 @@ void st::EditorUI::FlushPendingSave(wi::scene::Scene& scene)
 
 	// The dialog does not append the extension when the user typed a bare name.
 	if (wi::helper::GetExtensionFromFileName(path).empty())
-		path += ".wiscene";
+		path += "." + saveDefaultExt_;
 
 	SaveScene(scene, path);
 }
@@ -964,8 +1331,16 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	wi::scene::Scene& scene = wi::scene::GetScene();
 
 	// Everything the render pass needs from the app, grabbed while we still have one.
+	//	RenderEditorView / RenderCameraViews run later in the frame with no App& to hand.
 	gfxSettings_    = &app.Graphics();
 	gameColorSpace_ = gamePath.colorspace;
+	gamePath_       = &gamePath;
+	// The typed handle is the app's own path, which is the only one carrying the resolution
+	//	override. A project that activated a path of its own in OnRenderPathSetup still gets
+	//	the preview (that only needs wi::RenderPath3D), it just has no resolution control -
+	//	there is nowhere to put the override on a path the framework does not own.
+	gameRenderPath_ = (&app.renderPath == &gamePath) ? &app.renderPath : nullptr;
+	ApplyGameViewResolution(true);
 
 	// Main-thread tail of a Save As dialog that finished on its own thread.
 	FlushPendingSave(scene);
@@ -1072,7 +1447,13 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	//	focus it — the cursor is hidden and warped. Treating that as "the game has input"
 	//	breaks the deadlock; the game's own ESC handling is what gives it back.
 	const bool gameOwnsCursor = st::InputSystem::Get().IsMouseCaptured();
-	const bool gameHasInput   = gameViewFocused_ || gameOwnsCursor;
+	// ...and one exception to the exception: an open popup or menu owns the keyboard and the
+	//	mouse while it is up. The Game Viewport has its own menu bar (resolution), and opening
+	//	it focuses the Game Viewport window - so without this, dragging the Width field would
+	//	also be typing at the game.
+	const bool popupOpen = ImGui::IsPopupOpen(nullptr,
+		ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+	const bool gameHasInput   = (gameViewFocused_ && !popupOpen) || gameOwnsCursor;
 
 	const bool captureWanted = !gameHasInput;
 	if (captureWanted != inputCaptureActive_)
@@ -1152,7 +1533,7 @@ void st::EditorUI::RenderEditorView(float dt)
 	editorCamera_.zFarP  = camFar_;
 	editorCamera_.UpdateCamera();
 
-	MatchGameRenderer(*editorPath_);
+	ApplyViewportRenderer(*editorPath_, showGamePreview_);
 
 	// Debug draws, editor viewport only. The scope restores the globals afterwards, and the
 	//	game path already rendered this frame, so the Game Viewport never sees any of it.
@@ -1176,10 +1557,13 @@ void st::EditorUI::RenderEditorView(float dt)
 	editorPath_->PostRender();
 }
 
-void st::EditorUI::MatchGameRenderer(wi::RenderPath3D& path) const
+void st::EditorUI::ApplyViewportRenderer(wi::RenderPath3D& path, bool gamePreview) const
 {
-	if (!matchGameRenderer_)
+	if (!gamePreview)
+	{
+		ApplyEngineDefaults(path);
 		return;
+	}
 
 	// The engine assigns colorspace to the ACTIVE path only (wiApplication.cpp), so an
 	//	editor-owned path keeps the SRGB default. On an HDR10 swapchain that alone sends the
@@ -1188,25 +1572,51 @@ void st::EditorUI::MatchGameRenderer(wi::RenderPath3D& path) const
 
 	if (gfxSettings_ != nullptr)
 		gfxSettings_->MirrorTo(path, stableExposure_);
+
+	// The rest of "the same renderer", which is not a graphics setting:
+	//
+	//	layer mask     a game that keeps a layer off the player's screen keeps it off this
+	//	               one too, otherwise the preview shows more than the game does.
+	//	custom passes  st::ProjectorSystem and st::LaserSystem both hang their compute pass
+	//	               on RenderPath3D::custom_post_processes, and each system Bind()s
+	//	               exactly ONE path - so the preview cannot be hooked, it has to be
+	//	               handed a copy of the game path's list. What the passes read from that
+	//	               copy is view independent: params0 carries the descriptor index of the
+	//	               projector/laser upload buffer and the count, both written by
+	//	               ProjectorSystem::Update earlier this frame, and the projector shadow
+	//	               maps they sample were recorded by the game path's own postprocess
+	//	               chain - which has already run by the time an editor path renders.
+	if (gamePath_ != nullptr)
+	{
+		path.setlayerMask(gamePath_->getLayerMask());
+		path.custom_post_processes = gamePath_->custom_post_processes;
+	}
+}
+
+// -------------------------------------------------- game viewport resolution ---
+
+void st::EditorUI::ApplyGameViewResolution(bool enabled)
+{
+	if (gameRenderPath_ == nullptr)
+		return;
+
+	// Editor-only, by construction: leaving editor mode (or shutting down) puts the game
+	//	path back on the window canvas, so a resolution picked here can never follow the
+	//	build out of the editor and letterbox a shipping frame.
+	if (!enabled || !gameRes_.fixed)
+	{
+		gameRenderPath_->forcedResolution = XMUINT2(0, 0);
+		return;
+	}
+
+	gameRenderPath_->forcedResolution = XMUINT2(
+		(uint32_t)std::max(16, gameRes_.width),
+		(uint32_t)std::max(16, gameRes_.height));
 }
 
 // -------------------------------------------------------------- camera views ---
 
 namespace {
-
-// Aspect presets. Index 0 is "free": width and height move independently.
-struct AspectRatio { const char* label; float value; };
-const AspectRatio kAspectRatios[] = {
-	{ "Free",    0.0f },
-	{ "16:9",    16.0f / 9.0f },
-	{ "16:10",   16.0f / 10.0f },
-	{ "21:9",    21.0f / 9.0f },
-	{ "2.39:1",  2.39f },
-	{ "4:3",     4.0f / 3.0f },
-	{ "3:2",     3.0f / 2.0f },
-	{ "1:1",     1.0f },
-	{ "9:16",    9.0f / 16.0f },
-};
 
 std::string CameraLabel(wi::scene::Scene& scene, Entity e)
 {
@@ -1269,6 +1679,17 @@ void st::EditorUI::DrawCameraViewToolbar(wi::scene::Scene& scene, CameraView& vi
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Which camera this view renders through");
 
+	// -- renderer --
+	ImGui::Separator();
+	ImGui::Checkbox("Show Game Preview", &view.showGamePreview);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Render this view through the game's own renderer - the live "
+			"graphics settings (AO, bloom, tonemap, exposure, colour grading), the game "
+			"path's colorspace and layer mask, and its custom post process passes "
+			"(projectors, lasers). Off falls back to bare RenderPath3D defaults.\n\n"
+			"Per view: one window can sit on the shipping look while another shows flat "
+			"geometry.");
+
 	// -- resolution + aspect --
 	ImGui::Separator();
 	ImGui::Checkbox("Fit", &view.matchPanel);
@@ -1276,52 +1697,7 @@ void st::EditorUI::DrawCameraViewToolbar(wi::scene::Scene& scene, CameraView& vi
 		ImGui::SetTooltip("Render at the panel's pixel size instead of a fixed resolution");
 
 	ImGui::BeginDisabled(view.matchPanel);
-
-	if (ImGui::BeginMenu("Resolution"))
-	{
-		struct Preset { const char* label; int w, h; };
-		static const Preset presets[] = {
-			{ "1280 x 720",   1280, 720 },
-			{ "1920 x 1080",  1920, 1080 },
-			{ "2560 x 1440",  2560, 1440 },
-			{ "3840 x 2160",  3840, 2160 },
-			{ "1080 x 1920",  1080, 1920 },
-			{ "1080 x 1080",  1080, 1080 },
-			{ "2048 x 858",   2048, 858 },
-		};
-		for (const Preset& p : presets)
-		{
-			const bool active = (view.width == p.w && view.height == p.h);
-			if (ImGui::MenuItem(p.label, nullptr, active))
-			{
-				view.width = p.w;
-				view.height = p.h;
-				view.ratio = 0; // an explicit resolution wins over a locked ratio
-			}
-		}
-		ImGui::Separator();
-		ImGui::SetNextItemWidth(90);
-		if (ImGui::DragInt("Width", &view.width, 4, 16, 8192) && view.ratio > 0)
-			view.height = std::max(16, (int)(view.width / kAspectRatios[view.ratio].value));
-		ImGui::SetNextItemWidth(90);
-		ImGui::BeginDisabled(view.ratio > 0); // height is derived while a ratio is locked
-		ImGui::DragInt("Height", &view.height, 4, 16, 8192);
-		ImGui::EndDisabled();
-		ImGui::EndMenu();
-	}
-
-	if (ImGui::BeginMenu("Ratio"))
-	{
-		for (int i = 0; i < IM_ARRAYSIZE(kAspectRatios); ++i)
-		{
-			if (!ImGui::MenuItem(kAspectRatios[i].label, nullptr, view.ratio == i))
-				continue;
-			view.ratio = i;
-			if (i > 0)
-				view.height = std::max(16, (int)(view.width / kAspectRatios[i].value));
-		}
-		ImGui::EndMenu();
-	}
+	DrawResolutionMenus(view.width, view.height, view.ratio);
 	ImGui::EndDisabled();
 
 	ImGui::Separator();
@@ -1461,7 +1837,7 @@ void st::EditorUI::RenderCameraViews(float dt)
 		//	pointing at the scene's own camera would change what the game renders with.
 		view.cam = *src;
 
-		MatchGameRenderer(*view.path);
+		ApplyViewportRenderer(*view.path, view.showGamePreview);
 
 		view.path->init((uint32_t)view.width, (uint32_t)view.height, 96.0f);
 		view.path->PreUpdate();

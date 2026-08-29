@@ -33,16 +33,33 @@
 //			}
 //		};
 //		ST_REGISTER_NATIVE_COMPONENT(MyClass1) // put this in a .cpp file
+//
+//	Threading:
+//		Compute(), FixedUpdate() and Update() run MULTI-THREADED by default: the scene's
+//		instances are spread over the job system's worker threads. The stages are barriered,
+//		so every Compute() in the scene has finished before the first FixedUpdate() starts,
+//		and each FixedUpdate() step finishes before the next one begins.
+//		Awake/OnEnable/Start/OnDisable/Destroy/DrawDebug always run on the main thread.
+//		From a parallel stage you may read the scene and write your own instance, but NOT
+//		create/remove entities or components, write metadata, or call the renderer, physics
+//		or the GPU - queue that with RunOnMainThread(), or opt the component out entirely:
+//			struct MyClass1 : wi::scene::NativeComponent
+//			{
+//				ST_NATIVE_COMPONENT_MAIN_THREAD()   // Compute/FixedUpdate/Update go serial
+//			};
 
 #include "wiECS.h"
 #include "wiVector.h"
 #include "wiUnorderedMap.h"
 #include "wiJobSystem.h"
+#include "wiSpinLock.h"
 
 #include <string>
 #include <memory>
 #include <functional>
 #include <type_traits>
+#include <atomic>
+#include <thread>
 
 namespace wi::scene
 {
@@ -58,6 +75,22 @@ namespace wi::scene
 		return &id;
 	}
 
+	// Where one component's per-frame callbacks (Compute / FixedUpdate / Update) are run.
+	enum class NativeThreading
+	{
+		Parallel,   // default: on the job system's worker threads, many instances at once
+		MainThread, // opt out: serially on the thread that drives Scene::Update
+	};
+
+	// The three per-frame stages, in the order they run. Each is a barrier: the whole scene
+	//  finishes one stage before any instance starts the next.
+	enum class NativeStage
+	{
+		Compute,     // heavy math / lookups, results read by Update
+		FixedUpdate, // fixed 60 Hz step, runs 0..MAX_FIXED_STEPS times per frame
+		Update,      // the frame's work
+	};
+
 	// Base class for a native component. Derive from this and override the lifecycle methods.
 	//	The engine fills in scene/entity/localID/componentName before Start() is called.
 	struct NativeComponent
@@ -67,32 +100,72 @@ namespace wi::scene
 		wi::ecs::Entity entity = wi::ecs::INVALID_ENTITY;  // owning entity ("GameObject")
 		int localID = 0;                                   // the <LocalID> from NCI_<LocalID>
 		std::string componentName;                         // registered name (NCI_ value)
+		uint32_t executionIndex = 0;                       // stable order key for this frame (engine-set)
 
 		NativeComponent() = default;
 		virtual ~NativeComponent() = default;
 
 		// Lifecycle (override in your subclass). Call order on an entity, per instance:
-		//	Awake -> OnEnable -> Start -> (FixedUpdate* , Update) every frame -> OnDisable -> Destroy
+		//	Awake -> OnEnable -> Start -> (Compute, FixedUpdate*, Update) every frame -> OnDisable -> Destroy
 		//
-		//	Awake       : once, the first frame the instance exists, BEFORE OnEnable/Start, and
-		//	              regardless of the enabled flag (use for self-setup independent of others).
-		//	OnEnable    : each time the instance transitions disabled -> enabled (incl. the first
-		//	              time it is seen while enabled). Fires right after Awake on first enable.
-		//	Start       : once, before the first Update, only while enabled. A disabled instance
-		//	              defers Start until it is first enabled.
-		//	FixedUpdate : zero or more times per frame on a fixed timestep (see FIXED_DT), only
-		//	              while enabled. Use for physics-style stepping independent of frame rate.
-		//	Update      : every frame while enabled and dt > 0.
-		//	OnDisable   : each time the instance transitions enabled -> disabled (and once before
-		//	              Destroy if it was still enabled).
-		//	Destroy     : once when removed / entity removed / scene cleared.
+		//	The [main] / [worker] tag is the thread the callback runs on (see GetThreading below).
+		//
+		//	Awake       : [main]   once, the first frame the instance exists, BEFORE OnEnable/Start,
+		//	              and regardless of the enabled flag (self-setup independent of others).
+		//	OnEnable    : [main]   each time the instance transitions disabled -> enabled (incl. the
+		//	              first time it is seen while enabled). Fires right after Awake on first enable.
+		//	Start       : [main]   once, before the first Compute/Update, only while enabled. A
+		//	              disabled instance defers Start until it is first enabled. This is where
+		//	              creating entities/components belongs - it is always on the main thread.
+		//	Compute     : [worker] once per frame while enabled, BEFORE any instance's FixedUpdate or
+		//	              Update. The parallel stage: do the heavy math here, park the result in a
+		//	              member, and let Update apply it. Runs on dt == 0 frames too (loading), so
+		//	              check dt if that matters.
+		//	FixedUpdate : [worker] zero or more times per frame on a fixed timestep (see FIXED_DT),
+		//	              only while enabled. Physics-style stepping, independent of frame rate.
+		//	Update      : [worker] every frame while enabled and dt > 0.
+		//	OnDisable   : [main]   each time the instance transitions enabled -> disabled (and once
+		//	              before Destroy if it was still enabled).
+		//	Destroy     : [main]   once when removed / entity removed / scene cleared.
 		virtual void Awake() {}
 		virtual void OnEnable() {}
 		virtual void Start() {}
+		virtual void Compute(float dt) {}
 		virtual void FixedUpdate(float fixedDt) {}
 		virtual void Update(float dt) {}
 		virtual void OnDisable() {}
 		virtual void Destroy() {}
+
+		// ------------------------------------------------------------------
+		// Threading.
+		//	Compute/FixedUpdate/Update run on job system worker threads by default, so a scene
+		//	full of components uses every core instead of one. The contract inside those three:
+		//
+		//		ALLOWED   : read and write this instance's own members; read the scene
+		//		            (GetComponent<T>(), transforms, Scene::Intersects, GetFloat/GetString...);
+		//		            write a component no other instance writes this frame.
+		//		FORBIDDEN : creating or removing entities/components (scene->xxx.Create/Remove,
+		//		            Entity_Create/Entity_Remove/Entity_Duplicate, Attach/DetachNativeComponent),
+		//		            writing metadata, wi::renderer::DrawLine/DrawSphere/... (unlocked global
+		//		            list), wi::physics::* mutations, GPU work (GetDevice()->...), ImGui, and
+		//		            writing anything another instance may also write.
+		//
+		//	Two ways out, choose per component:
+		//		1) RunOnMainThread([this]{ ... }) - queue just the unsafe part; it runs on the main
+		//		   thread at the end of the current stage, same frame, in a deterministic order.
+		//		2) ST_NATIVE_COMPONENT_MAIN_THREAD() in the component body - this component's three
+		//		   per-frame callbacks go back to the serial main-thread pass. No other change
+		//		   needed: identical semantics to the single-threaded engine.
+		//
+		//	SetEnabled() and SetEntityRef() write metadata, so they defer themselves automatically
+		//	when called from a worker thread - they are safe to call from anywhere.
+		virtual NativeThreading GetThreading() const { return NativeThreading::Parallel; }
+
+		// Queue work to run on the main thread at the end of the current stage (Compute, one
+		//	FixedUpdate step, or Update). Callable from any thread. Outside an update it simply
+		//	runs the callback right away. Callbacks are replayed in instance order, then in
+		//	submission order per instance, so the frame is reproducible whatever the scheduler did.
+		void RunOnMainThread(std::function<void()> fn);
 
 		// Enabled flag, backed by metadata NCE_<localID> (bool, default true when the key is
 		//	absent). Reading is the source of truth each frame; toggling fires OnEnable/OnDisable
@@ -229,12 +302,50 @@ namespace wi::scene
 		static constexpr int   MAX_FIXED_STEPS = 8;       // clamp to avoid the spiral of death
 		float fixedAccumulator = 0.0f;
 
+		// ---- threading (runtime only, never serialized) ----
+		// Global off switch for the parallel path: set false and every instance runs on the main
+		//	thread in instance order, exactly like the pre-multicore engine. First thing to try
+		//	when a bug smells like a race.
+		static inline bool multithreading = true;
+		// Under this many parallel-eligible instances the dispatch costs more than it saves.
+		static constexpr uint32_t PARALLEL_MIN_COUNT = 8;
+
+		struct DeferredCall
+		{
+			uint32_t order = 0;      // executionIndex of the instance that queued it
+			uint32_t sequence = 0;   // submission counter, breaks ties within one instance
+			std::function<void()> fn;
+		};
+		wi::SpinLock deferredLock;
+		wi::vector<DeferredCall> deferred;
+		std::atomic<uint32_t> deferredSequence{ 0 };
+		std::thread::id mainThreadID;                 // whoever called RunUpdate this frame
+		bool phaseRunning = false;                    // true while the lifecycle passes are running
+		wi::vector<wi::ecs::Entity> pendingRemovals;  // Entity_Remove asked for mid-pass
+		bool pendingClear = false;                    // Scene::Clear asked for mid-pass
+
+		// This frame's execution lists, rebuilt every RunUpdate. Kept as members so the
+		//	allocation is paid once instead of per frame.
+		wi::vector<Instance*> parallelList;
+		wi::vector<Instance*> serialList;
+
+		bool IsMainThread() const { return std::this_thread::get_id() == mainThreadID; }
+		void EnqueueMainThread(uint32_t order, std::function<void()> fn);
+		void FlushMainThreadQueue();
+		// Run one stage over the whole scene: parallel list dispatched, main-thread list serial,
+		//	then the deferred queue flushed. Returns when every instance has finished the stage.
+		void RunStage(NativeStage stage, float stageDt);
+
 		// Reconcile attachments against metadata, fire Start() on new ones and Update(dt) on all.
 		//	Called by Scene::RunNativeComponentUpdateSystem once per frame.
 		void RunUpdate(Scene& scene, float dt);
 		// Destroy + drop every instance on one entity (called from Scene::Entity_Remove).
+		//	Called while an update is in flight (a component removed an entity from its own
+		//	Update) it queues instead: destroying now would free an Instance the running pass
+		//	still points at. The queue is applied at the end of RunUpdate, same frame.
 		void RemoveEntity(wi::ecs::Entity entity);
-		// Destroy + drop everything (called from Scene::Clear).
+		// Destroy + drop everything (called from Scene::Clear). Also queued if an update is in
+		//	flight - the instances live until the end of that RunUpdate.
 		void Clear();
 
 		// Lookups used by NativeComponent::GetComponent / GetComponentByID / GetComponents:
@@ -252,6 +363,12 @@ namespace wi::scene
 			return std::unique_ptr<::wi::scene::NativeComponent>(new TYPE()); }, \
 			::wi::scene::GetNativeTypeID<TYPE>()); \
 	} }; static TYPE##_NativeReg _global_##TYPE##_NativeReg_instance; }
+
+// Opt a component out of multithreading: its Compute/FixedUpdate/Update run serially on the
+//	main thread, so they may touch the scene, the renderer, physics and the GPU freely.
+//	Place in the component's body:  struct MyClass1 : ... { ST_NATIVE_COMPONENT_MAIN_THREAD() ... };
+#define ST_NATIVE_COMPONENT_MAIN_THREAD() \
+	::wi::scene::NativeThreading GetThreading() const override { return ::wi::scene::NativeThreading::MainThread; }
 
 // Register a native component under a custom name (when the NCI_ string differs from the C++ type name).
 //	Place in a .cpp file:  ST_REGISTER_NATIVE_COMPONENT_AS(MyClass1, "Spinner")

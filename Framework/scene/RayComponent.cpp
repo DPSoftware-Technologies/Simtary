@@ -53,6 +53,9 @@ const RayHit& RayComponent::Cast() {
 }
 
 void RayComponent::Update(float /*dt*/) {
+	// Runs on a job thread (the default): the cast itself only reads the scene, which is
+	// exactly the work worth spreading over cores - a scene full of rays now costs one
+	// core's worth of casting divided by however many the machine has.
 	if (everyFrame) Cast();
 
 	if (debugDraw) {
@@ -64,7 +67,10 @@ void RayComponent::Update(float /*dt*/) {
 		const XMFLOAT4 color = hit_.hit ? XMFLOAT4(0.2f, 1.0f, 0.3f, 1.0f) : XMFLOAT4(1.0f, 0.3f, 0.2f, 1.0f);
 		line.color_start = color;
 		line.color_end = color;
-		wi::renderer::DrawLine(line);
+		// wi::renderer keeps debug lines in a plain global vector with no lock, so the one
+		// unsafe line here is handed to the main thread rather than dropping the whole
+		// component out of the parallel pass. It still lands this frame.
+		RunOnMainThread([line] { wi::renderer::DrawLine(line); });
 	}
 }
 

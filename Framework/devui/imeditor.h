@@ -13,9 +13,13 @@
 //	Two viewports, two cameras, two RenderPath3D instances:
 //
 //	  Game Viewport   — the game's own path (st::App::renderPath) and its camera, exactly
-//	                    what a player sees. Kept at the window canvas size and letterboxed
-//	                    into the panel, so the game's aspect ratio never changes just
-//	                    because the editor layout moved.
+//	                    what a player sees. Letterboxed into the panel, so the game's aspect
+//	                    ratio never changes just because the editor layout moved. Its own
+//	                    menu bar sets the RESOLUTION it renders at — "Free Aspect" follows
+//	                    the window canvas (the shipping behaviour), or pick a fixed size and
+//	                    the game renders 1920x1080 / 9:16 / 2.39:1 regardless of the window.
+//	                    The override is editor-only: it is cleared the moment editor mode
+//	                    leaves, so nothing a shipping build runs ever sees it.
 //	  Editor Viewport — a SECOND RenderPath3D owned by this class, driven by a free camera
 //	                    that lives only in the editor. It is resized to fit its panel
 //	                    exactly (no letterbox), so screen-space picking and the gizmo map
@@ -23,6 +27,15 @@
 //	                    when it leaves, so a normal (non-editor) run pays nothing for it.
 //
 //	The scene is shared, so an edit made in either viewport shows up in both.
+//
+//	SHOW GAME PREVIEW (on by default, per viewport). The editor's extra paths are bare
+//	RenderPath3D instances — engine defaults, none of the game's AO / bloom / tonemap /
+//	exposure / colour grading, none of its custom post process passes (st::ProjectorSystem
+//	and st::LaserSystem both ride on that list), and the SRGB colorspace default even on an
+//	HDR10 swapchain. That is why they came out looking nothing like the Game Viewport. With
+//	the preview on, the viewport is brought in line with the live game renderer every frame
+//	and shows what the player would actually see; with it off it falls back to those bare
+//	defaults, which is the cheaper, flatter, look-at-the-geometry view.
 //
 //	ImGuizmo draws the translate/rotate/scale handles over the hovered viewport. It writes
 //	the manipulated WORLD matrix back through the parent transform, so dragging a child of a
@@ -48,6 +61,8 @@
 
 namespace wi::scene { struct Scene; }
 class GraphicsSettings; // Framework/devui/imgraphicsettings.h, global namespace
+
+namespace st { class ProjectorRenderPath; } // Framework/render/Projector.h
 
 namespace st {
 
@@ -110,6 +125,7 @@ private:
         int   height = 1080;
         int   ratio  = 0;            // index into kAspectRatios; 0 = free (W and H independent)
         bool  matchPanel = false;    // render at the panel's pixel size instead
+        bool  showGamePreview = true; // render through the game's renderer (see below)
 
         bool  live = false;          // panel was on screen and had a camera this frame
         std::unique_ptr<wi::RenderPath3D> path;
@@ -128,6 +144,9 @@ private:
     void DrawViewport(const char* title, bool* p_open, wi::RenderPath3D& path,
         wi::scene::CameraComponent& cam, bool exactFit,
         wi::scene::Scene& scene, wi::ecs::Entity& selected);
+    // Menu bars for the two built-in viewports, drawn inside DrawViewport.
+    void DrawEditorViewportToolbar();
+    void DrawGameViewportToolbar();
     // Returns true while the pointer is on (or dragging) a gizmo handle, so the caller
     // knows not to treat the same click as a viewport pick.
     bool DrawGizmo(wi::scene::Scene& scene, wi::ecs::Entity selected,
@@ -148,8 +167,13 @@ private:
     // editor viewport), keeping the current view angle.
     void FrameSelected(wi::scene::Scene& scene, wi::ecs::Entity selected);
 
+    // Dispatches on the extension: ".wiscene" writes a plain wi::Archive, anything
+    // else (including no extension) writes the native .stsd.
     void SaveScene(wi::scene::Scene& scene, const std::string& path);
-    void RequestSaveAs();
+    bool SaveSceneArchive(wi::scene::Scene& scene, const std::string& path);
+    bool SaveSceneDescriptor(wi::scene::Scene& scene, const std::string& path);
+    // `defaultExt` is appended when the user types a bare name in the dialog.
+    void RequestSaveAs(const char* defaultExt = "stsd");
     void FlushPendingSave(wi::scene::Scene& scene);
 
     bool enabled_ = false;
@@ -183,22 +207,6 @@ private:
     // path's render and put back afterwards — the Game Viewport keeps showing the shipping
     // picture while the editor viewport shows the scaffolding. The game path has already
     // rendered by the time RenderEditorView runs, which is what makes that possible.
-    // ── renderer preview ─────────────────────────────────────────────────────
-    // The editor's extra paths are bare RenderPath3D instances: engine defaults, none of
-    // the game's AO / bloom / tonemap / exposure / colour grading. That is why they came
-    // out looking nothing like the Game Viewport. When this is on, every editor path is
-    // brought in line with the live graphics settings each frame (GraphicsSettings::MirrorTo)
-    // and given the game path's colorspace, which is the other half of "wrong colour": the
-    // engine only assigns colorspace to the ACTIVE path, so on an HDR swapchain the extra
-    // paths were tonemapping for SRGB while the game tonemapped for HDR10.
-    bool matchGameRenderer_ = true;
-    bool stableExposure_    = true;  // see GraphicsSettings::MirrorTo
-    // Captured in Draw(); RenderEditorView/RenderCameraViews run without an App& to hand.
-    GraphicsSettings*        gfxSettings_    = nullptr;
-    wi::graphics::ColorSpace gameColorSpace_ = wi::graphics::ColorSpace::SRGB;
-    // Bring one editor-owned path in line with the game's renderer.
-    void MatchGameRenderer(wi::RenderPath3D& path) const;
-
     struct DebugDraw {
         bool cameras       = true;  // wireframe frustum per CameraComponent — on by default
         bool gameCamera    = true;  // the ACTIVE game camera, which is not a scene component
@@ -213,6 +221,42 @@ private:
         bool voxels        = false;
         int  voxelClipmap  = 1;
     } debug_;
+
+    // ── show game preview ────────────────────────────────────────────────────
+    // Per viewport, on by default. See the file header for what it buys. The Editor
+    // Viewport's flag lives here; each Camera View carries its own (CameraView::
+    // showGamePreview), so one window can sit on the shipping look while another shows
+    // flat geometry.
+    bool showGamePreview_ = true;
+    bool stableExposure_  = true;  // see GraphicsSettings::MirrorTo
+    // Captured in Draw(); RenderEditorView/RenderCameraViews run without an App& to hand.
+    GraphicsSettings*        gfxSettings_    = nullptr;
+    wi::graphics::ColorSpace gameColorSpace_ = wi::graphics::ColorSpace::SRGB;
+    // The live game path, read (never written) for the parts of "same renderer" that are
+    // not graphics settings: its layer mask and its custom post process list, which is
+    // where st::ProjectorSystem and st::LaserSystem hang their passes.
+    const wi::RenderPath3D* gamePath_ = nullptr;
+    // Same object, typed, for the Game Viewport's resolution override. Held so SetEnabled
+    // and Shutdown can clear the override without an App& to hand.
+    ProjectorRenderPath* gameRenderPath_ = nullptr;
+    // Bring one editor-owned path in line with the game's renderer, or (preview off) back
+    // to RenderPath3D's own defaults — the path object is reused, not rebuilt, so the
+    // second half has to be spelled out or MirrorTo's writes would simply stick.
+    void ApplyViewportRenderer(wi::RenderPath3D& path, bool gamePreview) const;
+
+    // ── game viewport resolution ─────────────────────────────────────────────
+    // "Free Aspect" (fixed == false) is the shipping behaviour: the game path follows the
+    // window canvas. Anything else forces st::ProjectorRenderPath::forcedResolution, and
+    // the Game Viewport letterboxes the result into whatever shape the dock gives it.
+    struct GameViewResolution {
+        bool fixed  = false;
+        int  width  = 1920;
+        int  height = 1080;
+        int  ratio  = 0;     // index into kAspectRatios; 0 = free (W and H independent)
+    } gameRes_;
+    // Push gameRes_ at the game path, or clear the override. Called every frame from Draw()
+    // and once with `false` on the way out of editor mode.
+    void ApplyGameViewResolution(bool enabled);
 
     // ── camera views ─────────────────────────────────────────────────────────
     //	unique_ptr elements because each view's RenderPath3D points at that view's own
@@ -253,6 +297,7 @@ private:
     bool  camInitialized_ = false; // snapped to the game camera on first open
 
     // ── scene save ───────────────────────────────────────────────────────────
+    std::string saveDefaultExt_ = "stsd";  // what Save As appends to a bare name
     std::string scenePath_;        // last saved/chosen path; "" until the first Save As
     std::string lastSaveMessage_;  // shown in the toolbar
     bool        saveDialogOpen_ = false;

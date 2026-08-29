@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <algorithm>
+#include <utility>
 
 using namespace wi::ecs;
 
@@ -182,6 +183,14 @@ namespace wi::scene
 	{
 		if (scene == nullptr)
 			return;
+		// Writing metadata is a structural scene write. Called from a worker thread (the
+		// default for Compute/FixedUpdate/Update) it has to wait for the main thread, so the
+		// call defers itself rather than making every caller think about it.
+		if (scene->nativeComponents.phaseRunning && !scene->nativeComponents.IsMainThread())
+		{
+			RunOnMainThread([this, name, target] { SetEntityRef(name, target); });
+			return;
+		}
 		MetadataComponent* m = scene->metadatas.GetComponent(entity);
 		if (m == nullptr)
 			m = &scene->metadatas.Create(entity);
@@ -193,6 +202,25 @@ namespace wi::scene
 		}
 		const std::string guid = EnsureEntityGUID(*scene, target);
 		m->string_values.set(key, guid);
+	}
+
+	// ------------------------------------------------------------------
+	// Main-thread hand-off
+	// ------------------------------------------------------------------
+	void NativeComponent::RunOnMainThread(std::function<void()> fn)
+	{
+		if (!fn)
+			return;
+		// Outside an update there is no stage to defer to, and no parallel work to race with.
+		if (scene == nullptr || !scene->nativeComponents.phaseRunning)
+		{
+			fn();
+			return;
+		}
+		// Inside one, queue it even when the caller already is the main thread: a component
+		// that opted out of multithreading then behaves exactly like a parallel one, which is
+		// what makes ST_NATIVE_COMPONENT_MAIN_THREAD() a drop-in switch either way.
+		scene->nativeComponents.EnqueueMainThread(executionIndex, std::move(fn));
 	}
 
 	// Enabled flag: metadata NCE_<localID> (bool), default true when absent.
@@ -212,6 +240,12 @@ namespace wi::scene
 	{
 		if (scene == nullptr)
 			return;
+		// See SetEntityRef: metadata writes belong on the main thread.
+		if (scene->nativeComponents.phaseRunning && !scene->nativeComponents.IsMainThread())
+		{
+			RunOnMainThread([this, value] { SetEnabled(value); });
+			return;
+		}
 		MetadataComponent* m = scene->metadatas.GetComponent(entity);
 		if (m == nullptr)
 			return;
@@ -282,6 +316,11 @@ namespace wi::scene
 	void NativeComponentManager::RunUpdate(Scene& scene, float dt)
 	{
 		auto range = wi::profiler::BeginRangeCPU("Native Components");
+
+		// Whoever drives Scene::Update is "the main thread" for this frame. Everything that
+		// has to happen there (metadata writes, entity removal, RunOnMainThread callbacks) is
+		// compared against this.
+		mainThreadID = std::this_thread::get_id();
 
 		// --- Pass A: prune instances that no longer match the metadata ---
 		wi::vector<Entity> empty_entities;
@@ -382,23 +421,19 @@ namespace wi::scene
 			}
 		}
 
-		// --- Pass C: drive the lifecycle (Awake -> enable edges -> Start -> FixedUpdate -> Update) ---
-		//	Single-threaded on purpose: user code may freely touch the scene.
+		// --- Pass C: drive the lifecycle (Awake -> enable edges -> Start) ---
+		//	Still single-threaded: these fire once per instance, they are where components
+		//	create entities and components, and their order is what a scene author reasons
+		//	about. Only the per-frame stages below go wide.
+		//
+		//	From here on the instance containers must not move: the stages hand out raw
+		//	Instance pointers, and user code may ask the scene to delete an entity mid-pass.
+		//	'phaseRunning' turns those removals into a queue applied at the end (see
+		//	RemoveEntity / Clear).
+		phaseRunning = true;
 
-		// Advance the shared fixed-step accumulator once per frame, clamped to avoid the
-		// "spiral of death" when a frame hitch dumps a large dt.
-		int fixedSteps = 0;
-		if (dt > 0)
-		{
-			fixedAccumulator += dt;
-			while (fixedAccumulator >= FIXED_DT && fixedSteps < MAX_FIXED_STEPS)
-			{
-				fixedAccumulator -= FIXED_DT;
-				++fixedSteps;
-			}
-			if (fixedAccumulator > FIXED_DT * MAX_FIXED_STEPS)
-				fixedAccumulator = 0.0f; // drop backlog beyond the clamp
-		}
+		parallelList.clear();
+		serialList.clear();
 
 		for (auto& pair : instances)
 		{
@@ -430,28 +465,180 @@ namespace wi::scene
 				}
 
 				if (!inst.enabled)
-					continue; // disabled: skip Start / FixedUpdate / Update
+					continue; // disabled: skip Start / Compute / FixedUpdate / Update
 
-				// Start: once, before the first Update, only while enabled.
+				// Start: once, before the first Compute/Update, only while enabled.
 				if (!inst.started)
 				{
 					c->Start();
 					inst.started = true;
 				}
 
-				for (int s = 0; s < fixedSteps; ++s)
-					c->FixedUpdate(FIXED_DT);
-
-				if (dt > 0)
-					c->Update(dt);
+				// Enabled and started -> it takes part in this frame's stages. Which list it
+				// lands in is asked once per frame, so a component may change its mind (a
+				// GetThreading() that depends on a parameter, say) between frames.
+				if (multithreading && c->GetThreading() == NativeThreading::Parallel)
+					parallelList.push_back(&inst);
+				else
+					serialList.push_back(&inst);
 			}
+		}
+		FlushMainThreadQueue(); // anything Awake/OnEnable/Start queued
+
+		// Execution order key: parallel instances first, then the main-thread ones. This is
+		// what the deferred queue sorts by, so a frame replays identically no matter which
+		// worker finished first.
+		uint32_t order = 0;
+		for (NativeComponentManager::Instance* inst : parallelList)
+			inst->component->executionIndex = order++;
+		for (NativeComponentManager::Instance* inst : serialList)
+			inst->component->executionIndex = order++;
+
+		// Advance the shared fixed-step accumulator once per frame, clamped to avoid the
+		// "spiral of death" when a frame hitch dumps a large dt.
+		int fixedSteps = 0;
+		if (dt > 0)
+		{
+			fixedAccumulator += dt;
+			while (fixedAccumulator >= FIXED_DT && fixedSteps < MAX_FIXED_STEPS)
+			{
+				fixedAccumulator -= FIXED_DT;
+				++fixedSteps;
+			}
+			if (fixedAccumulator > FIXED_DT * MAX_FIXED_STEPS)
+				fixedAccumulator = 0.0f; // drop backlog beyond the clamp
+		}
+
+		// --- Pass D: the per-frame stages, one barrier each ---
+		//	Compute for the whole scene, then every fixed step, then Update. Barriers are what
+		//	make Compute worth having: by the time any Update runs, every Compute has finished,
+		//	so reading another entity's computed result needs no ordering rule.
+		RunStage(NativeStage::Compute, dt);
+
+		for (int s = 0; s < fixedSteps; ++s)
+			RunStage(NativeStage::FixedUpdate, FIXED_DT);
+
+		if (dt > 0)
+			RunStage(NativeStage::Update, dt);
+
+		// --- Pass E: leave the pass, then apply what it asked for ---
+		phaseRunning = false;
+		parallelList.clear();   // the Instance pointers must not outlive the pass
+		serialList.clear();
+		FlushMainThreadQueue(); // a stage may have queued work after its own flush
+
+		if (pendingClear)
+		{
+			pendingClear = false;
+			pendingRemovals.clear();
+			Clear();
+		}
+		else if (!pendingRemovals.empty())
+		{
+			wi::vector<Entity> removals;
+			std::swap(removals, pendingRemovals);
+			for (Entity e : removals)
+				RemoveEntity(e);
 		}
 
 		wi::profiler::EndRange(range);
 	}
 
+	// One stage across the whole scene: the parallel instances dispatched over the job system,
+	//	then the opted-out ones serially, then whatever either of them handed to the main thread.
+	void NativeComponentManager::RunStage(NativeStage stage, float stageDt)
+	{
+		auto invoke = [stage, stageDt](NativeComponent* c)
+		{
+			switch (stage)
+			{
+			case NativeStage::Compute:     c->Compute(stageDt); break;
+			case NativeStage::FixedUpdate: c->FixedUpdate(stageDt); break;
+			case NativeStage::Update:      c->Update(stageDt); break;
+			}
+		};
+
+		if (!parallelList.empty())
+		{
+			// One job per instance (group size 1): component cost is user code and wildly
+			// uneven, so handing them out one at a time is what keeps a fat Update from
+			// pinning a worker while the others idle. Below PARALLEL_MIN_COUNT, or on a
+			// single-core machine, the dispatch costs more than it saves.
+			if (parallelList.size() >= PARALLEL_MIN_COUNT && wi::jobsystem::GetThreadCount() > 1)
+			{
+				NativeComponentManager::Instance* const* list = parallelList.data();
+				wi::jobsystem::context ctx;
+				wi::jobsystem::Dispatch(ctx, (uint32_t)parallelList.size(), 1,
+					[list, &invoke](wi::jobsystem::JobArgs args)
+					{
+						invoke(list[args.jobIndex]->component.get());
+					});
+				wi::jobsystem::Wait(ctx);
+			}
+			else
+			{
+				for (NativeComponentManager::Instance* inst : parallelList)
+					invoke(inst->component.get());
+			}
+		}
+
+		for (NativeComponentManager::Instance* inst : serialList)
+			invoke(inst->component.get());
+
+		FlushMainThreadQueue();
+	}
+
+	void NativeComponentManager::EnqueueMainThread(uint32_t order, std::function<void()> fn)
+	{
+		if (!fn)
+			return;
+		DeferredCall call;
+		call.order = order;
+		call.sequence = deferredSequence.fetch_add(1);
+		call.fn = std::move(fn);
+
+		deferredLock.lock();
+		deferred.push_back(std::move(call));
+		deferredLock.unlock();
+	}
+
+	void NativeComponentManager::FlushMainThreadQueue()
+	{
+		if (deferred.empty())
+			return;
+
+		// Instance order, then submission order within one instance: the threads finish in
+		// whatever order the scheduler picked, the replay must not depend on it.
+		std::stable_sort(deferred.begin(), deferred.end(),
+			[](const DeferredCall& a, const DeferredCall& b)
+			{
+				if (a.order != b.order)
+					return a.order < b.order;
+				return a.sequence < b.sequence;
+			});
+
+		// A callback may queue more work (or remove an entity), so the batch is swapped out
+		// before it runs - pushing into the vector being walked would invalidate it.
+		wi::vector<DeferredCall> batch;
+		std::swap(batch, deferred);
+		for (DeferredCall& call : batch)
+		{
+			if (call.fn)
+				call.fn();
+		}
+	}
+
 	void NativeComponentManager::RemoveEntity(Entity entity)
 	{
+		if (phaseRunning)
+		{
+			// Mid-update: a component asked the scene to delete an entity (possibly its own).
+			// Destroying the instances now would free memory the running stage still points
+			// at, so the removal waits for the end of RunUpdate - same frame, no dangling.
+			pendingRemovals.push_back(entity);
+			return;
+		}
+
 		auto it = instances.find(entity);
 		if (it == instances.end())
 			return;
@@ -469,6 +656,13 @@ namespace wi::scene
 
 	void NativeComponentManager::Clear()
 	{
+		if (phaseRunning)
+		{
+			// Same reasoning as RemoveEntity: the instances outlive the pass that asked.
+			pendingClear = true;
+			return;
+		}
+
 		for (auto& pair : instances)
 		{
 			for (NativeComponentManager::Instance& inst : pair.second)

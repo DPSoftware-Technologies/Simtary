@@ -354,11 +354,15 @@ int CommandScene (const Args& args) {
     if (!packPath.empty()) {
         if (!pack.Open(packPath, &error)) return Fail(error);
         packPtr = &pack;
-        if (scene.packUuidLo != pack.UuidLo() || scene.packUuidHi != pack.UuidHi()) {
+        const bool bound = scene.packUuidLo != 0 || scene.packUuidHi != 0;
+        if (bound && (scene.packUuidLo != pack.UuidLo() || scene.packUuidHi != pack.UuidHi())) {
             // Not fatal — the assets may still all be there — but it is the single most
             // likely reason a rebuild comes out missing textures, so it gets said.
             Say("stpack: warning: " + stsdPath + " was converted against a different pack build");
         }
+        // A zero UUID is not a mismatch: it means the map was never bound to one
+        // particular package build, which is what an editor save is when every resource
+        // it references already lived in whatever was mounted at the time.
     } else if (!scene.assets.empty()) {
         Say("stpack: warning: no --pack given, so " + std::to_string(scene.assets.size()) +
             " resources will not be embedded");

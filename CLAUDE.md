@@ -454,6 +454,34 @@ once and is then restored from `imgui.ini`, so a window added later comes up flo
 anyone with a saved layout. `Simtary > Editor > Reset Editor Layout` is the fix, and is
 why that menu item exists.
 
+**The editor saves `.stsd` by default; `.wiscene` is an explicit export.** `Scene > Save`
+and `Save As` write the native descriptor, and a bare filename gets `.stsd`;
+`Scene > Export .wiscene...` is the one that writes a self-contained `wi::Archive`, for
+the standalone Wicked editor. `EditorUI::SaveScene` dispatches on the extension, so
+either is reachable by typing one.
+
+**The native save turns resource embedding ON for one serialize, and not for the bytes.**
+`wi::resourcemanager`'s mode is `NO_EMBEDDING` throughout this workspace (nothing calls
+`SetMode`), so a scene serializes with its resource block empty — which is already the
+shape a `.stsd` blob wants. But the resource block is also the ONLY place the engine
+records WHICH files a scene uses, and the descriptor needs that list: without it nothing
+can report "13 of 14 assets" during a load, and `MissingAssetsFor()` cannot warn before
+the world comes up untextured. So `SaveSceneDescriptor` flips to `EMBED_FILE_DATA`
+around the one `Scene::Serialize` call, restores the previous mode immediately, and lets
+`SplitWiscene` lift the block straight back out — the same code path the build-time
+packer uses, and the one the tests prove byte-exact.
+
+**A native save writes a sidecar package only for what is not already mounted.** Every
+resource the mounted packages already hold is a reference and costs nothing; whatever is
+left is content that session introduced, which lives nowhere the next run would look, so
+it goes into `<name>.strd` beside the map and is mounted immediately. Skipping that step
+gives a map that saves "successfully" and reloads grey.
+
+**A zero `packUuid` in a `.stsd` is not a mismatch.** It means the map was never bound to
+one package build, which is exactly what an editor save is when every resource it
+references was already mounted. `stpack scene` only warns about a UUID that is set AND
+different.
+
 **Shader cache.** `Simtary/shaders/` is staged into every game's output before the
 incremental `offlineshadercompiler` pre-pass, so first launch is never cold. After a
 shader-heavy change, publish the result back with the
