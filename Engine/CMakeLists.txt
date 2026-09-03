@@ -97,6 +97,12 @@ file(GLOB SOURCE_FILES CONFIGURE_DEPENDS *.cpp)
 list(REMOVE_ITEM SOURCE_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/offlineshadercompiler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/wiRenderer.cpp
+    # wiAudio.cpp is replaced by stAudioLegacy.cpp, which implements the same
+    # wi::audio API on top of the OpenAL + Steam Audio engine. Both in the build
+    # would be duplicate symbols; the XAudio2/FAudio backend is what the engine
+    # moved off, and it crashed on any scene with a SoundComponent because
+    # wi::audio::Initialize() is never called.
+    ${CMAKE_CURRENT_SOURCE_DIR}/wiAudio.cpp
 )
 
 file(GLOB SHADER_FILES CONFIGURE_DEPENDS shaders/*.hlsl shaders/*.hlsli)
@@ -296,6 +302,16 @@ target_link_libraries(Simtary_common PUBLIC ${Simtary_STATIC_LIBRARIES})
 # AL/al.h include dir propagates to consumers of the engine.
 target_link_libraries(Simtary_common PUBLIC OpenAL)
 
+# Steam Audio (declared in the top-level CMakeLists). PUBLIC so phonon.h's include
+# dir and the SIMTARY_HAS_STEAMAUDIO define reach every consumer of the engine -
+# stAudioSpatial.h switches its whole implementation on that define, and a game TU
+# that saw a different value than the engine did would disagree about the layout of
+# Spatializer::Impl. When the SDK is absent the target simply does not exist and the
+# fallback panner compiles instead.
+if (TARGET SteamAudio)
+    target_link_libraries(Simtary_common PUBLIC SteamAudio)
+endif()
+
 if (PLATFORM MATCHES "SDL2")
     target_compile_definitions(Simtary_common PUBLIC SDL2=1)
 endif()
@@ -316,12 +332,16 @@ add_custom_command(
 )
 
 set_property(SOURCE
-    wiAudio.cpp
     wiOcean.cpp
     wiPhysics_Jolt.cpp
     wiGraphicsDevice_Vulkan.cpp
     wiGraphicsDevice_DX12.cpp
     stAudio.cpp
+    stAudioEngine.cpp
+    stAudioSpatial.cpp
+    stAudioClip.cpp
+    stAudioComponents.cpp
+    stAudioLegacy.cpp
 
     PROPERTY SKIP_UNITY_BUILD_INCLUSION TRUE
 )

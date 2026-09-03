@@ -42,6 +42,35 @@ bool EditString(const char* label, std::string& s)
 	return false;
 }
 
+// A string field naming an ASSET (a texture, a sound, a script, a sky map) plus a drop
+//	target for the Resource Explorer. Dropping a row from that window writes its LOGICAL
+//	path ("textures/wall.dds"), which is exactly the spelling a mounted package resolves,
+//	so a packed asset and a loose one are named the same way here.
+//
+//	Returns true only when the value changed by DROP, because a drop is one complete change
+//	while a keystroke is a third of a filename: callers apply a drop at once and apply typed
+//	edits on IsItemDeactivatedAfterEdit.
+bool AssetDropField(const char* label, std::string& value)
+{
+	EditString(label, value);
+
+	bool dropped = false;
+	if (ImGui::BeginDragDropTarget())
+	{
+		if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(st::SIMTARY_ASSET_PAYLOAD))
+		{
+			if (p->DataSize == (int)sizeof(st::AssetPayload))
+			{
+				const st::AssetPayload* a = (const st::AssetPayload*)p->Data;
+				value = a->path;
+				dropped = true;
+			}
+		}
+		ImGui::EndDragDropTarget();
+	}
+	return dropped;
+}
+
 bool ComponentHeader(Scene& scene, Entity e, const char* libraryKey,
 	const char* label, bool defaultOpen, st::EditorHistory* history)
 {
@@ -127,35 +156,6 @@ bool EditMask(const char* label, uint32_t& mask)
 		return true;
 	}
 	return false;
-}
-
-// A string field naming an ASSET (a texture, a sound, a script, a sky map) plus a drop
-//	target for the Resource Explorer. Dropping a row from that window writes its LOGICAL
-//	path ("textures/wall.dds"), which is exactly the spelling a mounted package resolves,
-//	so a packed asset and a loose one are named the same way here.
-//
-//	Returns true only when the value changed by DROP, because a drop is one complete change
-//	while a keystroke is a third of a filename: callers apply a drop at once and apply typed
-//	edits on IsItemDeactivatedAfterEdit.
-bool AssetDropField(const char* label, std::string& value)
-{
-	EditString(label, value);
-
-	bool dropped = false;
-	if (ImGui::BeginDragDropTarget())
-	{
-		if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(st::SIMTARY_ASSET_PAYLOAD))
-		{
-			if (p->DataSize == (int)sizeof(st::AssetPayload))
-			{
-				const st::AssetPayload* a = (const st::AssetPayload*)p->Data;
-				value = a->path;
-				dropped = true;
-			}
-		}
-		ImGui::EndDragDropTarget();
-	}
-	return dropped;
 }
 
 void HelpMarker(const char* text)

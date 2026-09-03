@@ -208,7 +208,10 @@ public:
 		// mirror silently does nothing, and neither is visible from the scene.
 		st::OpticDiagnostics(mirror->surface);
 
-		if (dirty) Apply();
+		// Apply() pushes the change into the live system; SaveBoundParams() writes the same
+		// values into the NCA_ metadata Bind() read them from, which is what makes an edit
+		// here survive a save and reload instead of living until the next scene load.
+		if (dirty) { Apply(); SaveBoundParams(); }
 	}
 };
 
@@ -329,7 +332,10 @@ public:
 
 		st::OpticDiagnostics(lens->surface);
 
-		if (dirty) Apply();
+		// Apply() pushes the change into the live system; SaveBoundParams() writes the same
+		// values into the NCA_ metadata Bind() read them from, which is what makes an edit
+		// here survive a save and reload instead of living until the next scene load.
+		if (dirty) { Apply(); SaveBoundParams(); }
 	}
 };
 

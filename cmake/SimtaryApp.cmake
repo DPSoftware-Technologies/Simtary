@@ -10,6 +10,7 @@
 #       SOURCE_DIR     src                 # default: <project>/src
 #       ASSETS_DIR     assets              # default: <project>/assets
 #       CONTENT_SUBDIR contents            # <assets>/<sub> lands in <exe>/assets
+#       SCENE_SUBDIR   scenes              # <assets>/<sub> holds the .wiscene SOURCES
 #       EXTRA_SOURCES  ...                 # sources outside SOURCE_DIR
 #       EXTRA_INCLUDES ...
 #       EXTRA_LIBS     ...
@@ -157,7 +158,7 @@ endif()
 # ── simtary_add_app() ─────────────────────────────────────────────────────────
 function(simtary_add_app)
     set(_opts NO_SHADER_WARM NO_CRASH_REPORTER PACK_ASSETS PACK_ONLY)
-    set(_one  NAME ORGANIZATION ICON SOURCE_DIR ASSETS_DIR CONTENT_SUBDIR
+    set(_one  NAME ORGANIZATION ICON SOURCE_DIR ASSETS_DIR CONTENT_SUBDIR SCENE_SUBDIR
               PACK_NAME PACK_PART_SIZE PACK_LEVEL)
     set(_multi EXTRA_SOURCES EXTRA_INCLUDES EXTRA_LIBS)
     cmake_parse_arguments(APP "${_opts}" "${_one}" "${_multi}" ${ARGN})
@@ -173,6 +174,17 @@ function(simtary_add_app)
     endif()
     if (NOT DEFINED APP_CONTENT_SUBDIR)
         set(APP_CONTENT_SUBDIR "contents")
+    endif()
+    # Maps live BESIDE the content tree, not inside it. assets/contents/ is "everything
+    # here becomes a packed resource"; a .wiscene is not a resource, it is the source a
+    # .stsd is converted from, and shipping it would be a second copy of every map. Two
+    # folders means neither step needs an exception list.
+    if (NOT DEFINED APP_SCENE_SUBDIR)
+        set(APP_SCENE_SUBDIR "scenes")
+    endif()
+    set(APP_SCENE_DIR "")
+    if (APP_SCENE_SUBDIR AND EXISTS ${APP_ASSETS_DIR}/${APP_SCENE_SUBDIR})
+        set(APP_SCENE_DIR ${APP_ASSETS_DIR}/${APP_SCENE_SUBDIR})
     endif()
     # ── project descriptor ────────────────────────────────────────────────────
     # assets/project.stpd is the build-time manifest (identity, icon, version). It is
@@ -269,16 +281,19 @@ function(simtary_add_app)
         )
     endif()
 
-    if (SIMTARY_BUMP_BUILD_NUMBER)
-        # Identity header generated from the descriptor, so main.cpp never repeats the
-    # name/organization/copyright that the manifest already states.
+    # Identity header generated from the descriptor, so main.cpp never repeats the
+    # name/organization/copyright that the manifest already states. Unconditional: it is
+    # not a build-number artefact, and generating it only when the counter may advance
+    # left every SIMTARY_BUILD_PROJECTS sweep (which forces the bump OFF) without a
+    # stProject.h to include.
     configure_file(
         ${SIMTARY_FRAMEWORK_DIR}/stProject.h.in
         ${_gendir}/stProject.h
         @ONLY
     )
 
-    add_custom_target(${APP_NAME}_BumpBuildNumber
+    if (SIMTARY_BUMP_BUILD_NUMBER)
+        add_custom_target(${APP_NAME}_BumpBuildNumber
             COMMAND ${CMAKE_COMMAND}
                 -DCOUNTER_FILE=${_counter}
                 -DTEMPLATE=${_template}
@@ -456,20 +471,38 @@ function(simtary_add_app)
     endif()
 
     # ── runtime DLLs ──────────────────────────────────────────────────────────
-    add_custom_command(TARGET ${APP_NAME} POST_BUILD
+    # PRE_LINK, not POST_BUILD, and that ordering is load-bearing. The shader warm
+    # step above runs offlineshadercompiler, which links the engine and therefore
+    # imports OpenAL32.dll and phonon.dll; it finds them through its WORKING_DIRECTORY,
+    # which is this output directory. Copying them in POST_BUILD puts them there AFTER
+    # the tool has already tried to start, so a clean tree dies with exit code
+    # -1073741515 (0xC0000135, STATUS_DLL_NOT_FOUND) before any DLL is staged. It only
+    # ever appeared to work because a previous build had left OpenAL32.dll behind.
+    add_custom_command(TARGET ${APP_NAME} PRE_LINK
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:${APP_NAME}>
         COMMENT "Copying SDL2 runtime library to output directory"
         VERBATIM
     )
     # openal-soft is built shared; its runtime DLL (OpenAL32.dll) must sit next to
-    # the executable so stAudio.cpp can open the default output device at runtime.
-    add_custom_command(TARGET ${APP_NAME} POST_BUILD
+    # the executable so the audio engine can open the default output device.
+    add_custom_command(TARGET ${APP_NAME} PRE_LINK
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:OpenAL> $<TARGET_FILE_DIR:${APP_NAME}>
         COMMENT "Copying OpenAL runtime library to output directory"
         VERBATIM
     )
+    # Steam Audio ships prebuilt; phonon.dll has to sit next to the executable for
+    # the same reason. Absent (SIMTARY_ENABLE_STEAMAUDIO=OFF, or no build for this
+    # platform) the engine runs its fallback panner and nothing needs staging.
+    if (TARGET SteamAudio)
+        add_custom_command(TARGET ${APP_NAME} PRE_LINK
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${SIMTARY_STEAMAUDIO_RUNTIME}" $<TARGET_FILE_DIR:${APP_NAME}>
+            COMMENT "Copying Steam Audio runtime library to output directory"
+            VERBATIM
+        )
+    endif()
 
     # ── assets ────────────────────────────────────────────────────────────────
     # Two copies, deliberately:
@@ -540,6 +573,18 @@ function(simtary_add_app)
             endif()
         endif()
 
+        # The maps. With PACK_ASSETS the packer writes <exe>/assets/<scenes>/*.stsd
+        # itself, and copying the .wiscene sources beside them would be exactly the
+        # duplicate this layout exists to remove. Without it the .wiscene IS the shipped
+        # map, so it has to be there.
+        if (APP_SCENE_DIR AND NOT APP_PACK_ASSETS AND NOT APP_PACK_ONLY)
+            list(APPEND _asset_copy_commands
+                COMMAND ${CMAKE_COMMAND} -E ${SIMTARY_COPY_DIR_CMD}
+                    ${APP_SCENE_DIR}
+                    $<TARGET_FILE_DIR:${APP_NAME}>/assets/${APP_SCENE_SUBDIR}
+            )
+        endif()
+
         add_custom_target(${APP_NAME}_Assets
             ${_asset_copy_commands}
             COMMENT "Syncing ${APP_NAME} assets -> <build>/assets and <exe>/assets"
@@ -565,6 +610,13 @@ function(simtary_add_app)
                     COMMAND ${CMAKE_COMMAND} -E copy_directory
                         ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}
                         $<TARGET_FILE_DIR:${APP_NAME}>/assets
+                )
+            endif()
+            if (APP_SCENE_DIR AND NOT APP_PACK_ASSETS AND NOT APP_PACK_ONLY)
+                list(APPEND _asset_resync_commands
+                    COMMAND ${CMAKE_COMMAND} -E copy_directory
+                        ${APP_SCENE_DIR}
+                        $<TARGET_FILE_DIR:${APP_NAME}>/assets/${APP_SCENE_SUBDIR}
                 )
             endif()
             if (APP_PACK_ASSETS OR APP_PACK_ONLY)
@@ -603,11 +655,13 @@ function(simtary_add_app)
             set(APP_PACK_LEVEL 9)
         endif()
         simtary_pack_assets(
-            TARGET      ${APP_NAME}
-            CONTENT_DIR ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}
-            NAME        ${APP_PACK_NAME}
-            PART_SIZE   ${APP_PACK_PART_SIZE}
-            LEVEL       ${APP_PACK_LEVEL}
+            TARGET        ${APP_NAME}
+            CONTENT_DIR   ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}
+            SCENE_SRC_DIR ${APP_SCENE_DIR}
+            SCENE_SUBDIR  ${APP_SCENE_SUBDIR}
+            NAME          ${APP_PACK_NAME}
+            PART_SIZE     ${APP_PACK_PART_SIZE}
+            LEVEL         ${APP_PACK_LEVEL}
         )
     endif()
 
@@ -619,6 +673,7 @@ endfunction()
 # executable, converting every .wiscene it finds into a .stsd on the way.
 #
 #   simtary_pack_assets(TARGET Milistry CONTENT_DIR .../assets/contents
+#                       [SCENE_SRC_DIR .../assets/scenes]
 #                       [NAME content] [PART_SIZE 50] [LEVEL 9]
 #                       [PACK_SUBDIR resources] [SCENE_SUBDIR scenes])
 #
@@ -634,6 +689,13 @@ endfunction()
 # bulk, the textures and meshes every map shares, is the part that belongs in a
 # deduplicated package.
 #
+# SCENE_SRC_DIR is where the .wiscene SOURCES are read from, and it is deliberately a
+# second directory rather than a corner of CONTENT_DIR: everything under CONTENT_DIR
+# becomes a packed resource, and a .wiscene is not a resource — it is the thing a .stsd
+# is converted FROM. Keeping the two apart is what lets the content rule stay
+# exception-free and stops a 37 MB map from also shipping loose. Maps left inside
+# CONTENT_DIR are still converted, so an older project layout keeps working.
+#
 # Unlike <APP>_Assets, this is a real add_custom_command with real DEPENDS rather than
 # an always-out-of-date target. It has to be: repacking 76 MB of maps through zstd on
 # every build, whether or not a single asset changed, is tens of seconds per build. The
@@ -643,7 +705,7 @@ endfunction()
 # The stamp file exists because the real outputs are N part files whose count is not
 # known until the packer has run, and CMake needs one name it can depend on.
 function(simtary_pack_assets)
-    set(_one TARGET CONTENT_DIR NAME PART_SIZE LEVEL PACK_SUBDIR SCENE_SUBDIR)
+    set(_one TARGET CONTENT_DIR SCENE_SRC_DIR NAME PART_SIZE LEVEL PACK_SUBDIR SCENE_SUBDIR)
     cmake_parse_arguments(PACK "" "${_one}" "" ${ARGN})
 
     if (NOT PACK_TARGET)
@@ -671,8 +733,17 @@ function(simtary_pack_assets)
     endif()
 
     file(GLOB_RECURSE _pack_inputs CONFIGURE_DEPENDS ${PACK_CONTENT_DIR}/*)
+
+    # The scene sources are inputs too, or editing a map would not repack it.
+    set(_scene_src_args "")
+    if (PACK_SCENE_SRC_DIR AND EXISTS ${PACK_SCENE_SRC_DIR})
+        file(GLOB_RECURSE _scene_inputs CONFIGURE_DEPENDS ${PACK_SCENE_SRC_DIR}/*.wiscene)
+        list(APPEND _pack_inputs ${_scene_inputs})
+        set(_scene_src_args --scene-src ${PACK_SCENE_SRC_DIR})
+    endif()
+
     if (NOT _pack_inputs)
-        message(STATUS "simtary_pack_assets(${PACK_TARGET}): content directory is empty, skipping")
+        message(STATUS "simtary_pack_assets(${PACK_TARGET}): nothing to pack, skipping")
         return()
     endif()
 
@@ -687,6 +758,7 @@ function(simtary_pack_assets)
         COMMAND $<TARGET_FILE:stpack> pack ${PACK_CONTENT_DIR}
                 --out ${_pack_dir}
                 --scene-dir ${_scene_dir}
+                ${_scene_src_args}
                 --name ${PACK_NAME}
                 --part-size ${PACK_PART_SIZE}
                 --level ${PACK_LEVEL}
@@ -714,6 +786,7 @@ function(simtary_pack_assets)
         COMMAND $<TARGET_FILE:stpack> pack ${PACK_CONTENT_DIR}
                 --out ${_pack_dir}
                 --scene-dir ${_scene_dir}
+                ${_scene_src_args}
                 --name ${PACK_NAME}
                 --part-size ${PACK_PART_SIZE}
                 --level ${PACK_LEVEL}

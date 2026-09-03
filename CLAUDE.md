@@ -144,12 +144,25 @@ transition, and `Scene::ReportProgress()` writes into it. The ImGui
 `RenderLoadingScreen` overlay only covers the non-blocking cases — chiefly the
 first-launch pipeline warm-up. Do not "simplify" one into the other.
 
+**A project's `assets/` has two content folders, and the split is what keeps the rules
+simple.** `assets/contents/` is "everything in here becomes a packed resource" — no
+exception list, no per-extension carve-out. `assets/scenes/` holds the `.wiscene`
+SOURCES, which are not resources at all: they are what a `.stsd` is converted FROM, and
+a map left inside `contents/` would be packed AND copied loose, ~37 MB of duplicate each.
+`simtary_add_app(SCENE_SUBDIR ...)` names the folder, `stpack pack --scene-src` is what
+reads it, and its maps' textures still land in the same package. Maps left inside
+`contents/` are still converted, so an older layout keeps working.
+
 **Assets sync on a custom target, not on POST_BUILD.** `<APP>_Assets` copies
 `assets/` to `<build>/assets` and `assets/contents/` to `<exe>/assets`, and the app
 target depends on it. It has to be a custom target: a POST_BUILD command only runs
 when the executable is actually relinked, so editing nothing but a scene or a texture
 left the stale copy in the output and the build reported success. Custom targets are
 always out of date, so `cmake --build` re-syncs content either way.
+
+`assets/scenes/` is copied to `<exe>/assets/scenes/` only when the project does NOT
+pack — with `PACK_ASSETS` the packer writes the converted `.stsd` there instead, and the
+`.wiscene` never ships.
 
 The copy is `copy_directory_if_different` — it adds and overwrites, it never deletes.
 After removing or renaming content, build `<APP>_AssetsResync`, which wipes both
@@ -583,6 +596,15 @@ ST_REGISTER_NATIVE_COMPONENT(Spinner)                     // self-registers at s
 Runtime state lives in `Scene::nativeComponents` (not serialized — rebuilt from
 metadata each `Update`); the system runs single-threaded via
 `Scene::RunNativeComponentUpdateSystem`, right after the script system.
+
+**An inspector edit only persists if it goes back through the metadata.** The scene saves
+`MetadataComponent`, not the live instance, so a `DrawDebug()` widget writing straight into
+a member changes the frame and nothing else — the value is gone on the next load. `Bind()`
+now RECORDS every field it binds, and `SaveBoundParams()` writes them all back to their
+`NCA_` keys; a hand-drawn `DrawDebug()` calls it once its widgets report a change
+(`if (dirty) { Apply(); SaveBoundParams(); }`, which is what every component in
+`Framework/` does). Parameters exposed through `DescribeParams()` instead need none of
+this: the shared inspector writes each edit back through `Set*()` itself.
 
 **Graphics API**: DirectX 12 on Windows, Vulkan on Linux (the SDL2 window is created
 with `SDL_WINDOW_VULKAN`). Pass `vulkan` as a command-line argument to force Vulkan on

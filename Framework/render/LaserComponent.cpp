@@ -390,7 +390,10 @@ public:
 			}
 		}
 
-		if (dirty) Apply();
+		// Apply() pushes the change into the live system; SaveBoundParams() writes the same
+		// values into the NCA_ metadata Bind() read them from, which is what makes an edit
+		// here survive a save and reload instead of living until the next scene load.
+		if (dirty) { Apply(); SaveBoundParams(); }
 	}
 };
 

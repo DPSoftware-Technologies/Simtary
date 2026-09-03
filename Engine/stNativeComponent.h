@@ -177,7 +177,17 @@ namespace wi::scene
 		// Debug/inspector UI (override in your subclass): draw ImGui widgets bound to this
 		//	instance's live members. Called by the scene debug UI (see imnativecomponents.h)
 		//	while an ImGui window is already active — do NOT Begin()/End() here. Editing a member
-		//	takes effect on the next Update(); it is NOT written back to metadata (not persisted).
+		//	takes effect on the next Update().
+		//
+		//	It is NOT persisted on its own: a widget writes the member and nothing else, so the
+		//	edit is gone on the next load unless the override says so. Track whether anything
+		//	changed and call SaveBoundParams() when it did — that writes every Bind()ed field
+		//	back to its NCA_ key, which is what the framework's own components do:
+		//
+		//		bool dirty = false;
+		//		dirty |= ImGui::SliderFloat("speed", &speed, 0, 100);
+		//		if (dirty) { Apply(); SaveBoundParams(); }
+		//
 		//	The base does nothing so components are debug-able only if they opt in.
 		virtual void DrawDebug() {}
 
@@ -187,6 +197,137 @@ namespace wi::scene
 		float       GetFloat(const std::string& name, float def = 0.0f) const;
 		std::string GetString(const std::string& name, const std::string& def = "") const;
 		bool        HasParam(const std::string& name) const;
+
+		// Parameter WRITES. Same NCA_<localID>_<name> keys, so a value set here is what
+		// Bind() reads on the next load and is saved with the scene. Like SetEnabled,
+		// these defer themselves to the main thread when called from a worker, so they
+		// are safe to call from anywhere.
+		void SetBool(const std::string& name, bool value);
+		void SetInt(const std::string& name, int value);
+		void SetFloat(const std::string& name, float value);
+		void SetString(const std::string& name, const std::string& value);
+
+		// ------------------------------------------------------------------
+		// Inspector description.
+		//	DrawDebug() is the other way to get widgets, and it cannot be used by a
+		//	component that lives in Engine/: ImGui is linked at the app level, so engine
+		//	code cannot call it. DescribeParams is the ImGui-free half of the same job -
+		//	the component says WHAT its parameters are and the editor decides how to
+		//	draw them (Framework/devui/imnativecomponents.cpp).
+		//
+		//	It is also less to get wrong where it applies: the editor writes every edit
+		//	back through SetFloat/SetBool/... for you, so nothing has to remember to call
+		//	SaveBoundParams() the way a hand-drawn DrawDebug() does.
+		//
+		//	Describe the same fields Start() binds, and the two stay in step:
+		//
+		//		void Start() override { Bind(speed, "speed"); }
+		//		void DescribeParams(wi::vector<NativeParam>& out) override
+		//		{
+		//			out.push_back(NativeParam::Float("speed", &speed, 0.0f, 100.0f));
+		//		}
+		struct NativeParam
+		{
+			enum class Type : uint8_t
+			{
+				Bool, Int, Float, String, Enum,
+				// A BUTTON. Not a value at all - `action` runs on click. Play/Pause/Stop.
+				Action,
+				// A value that does NOT live in the component: playback position, a level
+				// meter, anything the component only forwards. Read through `liveGet`,
+				// written through `liveSet` (null = read-only), and never persisted,
+				// because "where the playhead is right now" is not scene data.
+				Live,
+			};
+
+			const char* name = nullptr;      // the NCA_ argument name, and the widget label
+			Type type = Type::Float;
+			void* value = nullptr;           // points at the component's own member
+			float minValue = 0.0f;           // min == max means "no range, use a drag field"
+			float maxValue = 0.0f;
+			// Enum only: the option names, one after another, each NUL-terminated, with
+			// a second NUL at the end - ImGui's combo format. "Off Raycast Volumetric "
+			const char* labels = nullptr;
+			const char* tooltip = nullptr;   // hover text; may be null
+			const char* group = nullptr;     // section header to file it under; may be null
+			// String only: this names an ASSET, so the editor gives it a drop target and
+			// a row dragged from the Resource Explorer fills it in. Engine code cannot
+			// (and should not) know what a Resource Explorer is - it just says the field
+			// holds an asset path and the editor decides what that affords.
+			bool asset = false;
+
+			// Action / Live plumbing. Capture-less function pointers rather than
+			// std::function, so a NativeParam stays trivially copyable and the vector
+			// costs nothing to build every frame.
+			void  (*action)(NativeComponent&) = nullptr;   // Action: what the button does
+			float (*liveGet)(NativeComponent&) = nullptr;  // Live: current value
+			void  (*liveSet)(NativeComponent&, float) = nullptr; // Live: null = read-only
+			float (*liveMax)(NativeComponent&) = nullptr;  // Live: dynamic upper bound (clip length)
+			const char* format = nullptr;   // Live read-only: printf format, e.g. "%.2f s"
+			bool bar = false;               // Live read-only: draw a 0..1 progress bar
+			bool sameLine = false;          // put this widget on the previous row
+
+			static NativeParam Bool(const char* name, bool* value, const char* tooltip = nullptr, const char* group = nullptr)
+			{
+				NativeParam p; p.name = name; p.type = Type::Bool; p.value = value;
+				p.tooltip = tooltip; p.group = group; return p;
+			}
+			static NativeParam Int(const char* name, int* value, float lo = 0, float hi = 0, const char* tooltip = nullptr, const char* group = nullptr)
+			{
+				NativeParam p; p.name = name; p.type = Type::Int; p.value = value;
+				p.minValue = lo; p.maxValue = hi; p.tooltip = tooltip; p.group = group; return p;
+			}
+			static NativeParam Float(const char* name, float* value, float lo = 0, float hi = 0, const char* tooltip = nullptr, const char* group = nullptr)
+			{
+				NativeParam p; p.name = name; p.type = Type::Float; p.value = value;
+				p.minValue = lo; p.maxValue = hi; p.tooltip = tooltip; p.group = group; return p;
+			}
+			static NativeParam String(const char* name, std::string* value, const char* tooltip = nullptr, const char* group = nullptr)
+			{
+				NativeParam p; p.name = name; p.type = Type::String; p.value = value;
+				p.tooltip = tooltip; p.group = group; return p;
+			}
+			// A String that names an asset: same storage, but the editor accepts a drop.
+			static NativeParam Asset(const char* name, std::string* value, const char* tooltip = nullptr, const char* group = nullptr)
+			{
+				NativeParam p; p.name = name; p.type = Type::String; p.value = value;
+				p.tooltip = tooltip; p.group = group; p.asset = true; return p;
+			}
+			// A button. `fn` must be capture-less; cast the reference to your own type.
+			static NativeParam Action(const char* name, void (*fn)(NativeComponent&),
+				const char* tooltip = nullptr, const char* group = nullptr, bool sameLine = false)
+			{
+				NativeParam p; p.name = name; p.type = Type::Action; p.action = fn;
+				p.tooltip = tooltip; p.group = group; p.sameLine = sameLine; return p;
+			}
+			// A live scrubber: reads `get`, writes `set` while dragged. `max` supplies a
+			// bound that changes at runtime (a clip's length); without it `hi` is used.
+			static NativeParam Live(const char* name, float (*get)(NativeComponent&),
+				void (*set)(NativeComponent&, float) = nullptr, float lo = 0.0f, float hi = 1.0f,
+				float (*max)(NativeComponent&) = nullptr,
+				const char* tooltip = nullptr, const char* group = nullptr)
+			{
+				NativeParam p; p.name = name; p.type = Type::Live; p.liveGet = get;
+				p.liveSet = set; p.minValue = lo; p.maxValue = hi; p.liveMax = max;
+				p.tooltip = tooltip; p.group = group; return p;
+			}
+			// A read-only live readout: formatted text, or a 0..1 bar when `asBar`.
+			static NativeParam Readout(const char* name, float (*get)(NativeComponent&),
+				const char* fmt, bool asBar = false, const char* tooltip = nullptr, const char* group = nullptr)
+			{
+				NativeParam p; p.name = name; p.type = Type::Live; p.liveGet = get;
+				p.format = fmt; p.bar = asBar; p.tooltip = tooltip; p.group = group; return p;
+			}
+			static NativeParam Enum(const char* name, int* value, const char* labels, const char* tooltip = nullptr, const char* group = nullptr)
+			{
+				NativeParam p; p.name = name; p.type = Type::Enum; p.value = value;
+				p.labels = labels; p.tooltip = tooltip; p.group = group; return p;
+			}
+		};
+
+		// Append this component's editable parameters. The base returns none, so a
+		// component gets an inspector only if it opts in - same contract as DrawDebug.
+		virtual void DescribeParams(wi::vector<NativeParam>& out) {}
 
 		// Entity-reference parameter ("drag an object into a field", Unity-style).
 		//	Stored as a STRING arg NCA_<localID>_<name> whose value is the target entity's
@@ -203,6 +344,13 @@ namespace wi::scene
 
 		// One-line binding of a member field to a parameter (type deduced from the field):
 		//	Bind(speed, "Args3");  // same as: speed = GetFloat("Args3", speed);
+		//
+		//	The binding is also REMEMBERED, so SaveBoundParams() can write the field back to
+		//	the same NCA_ key later. That is what makes an inspector edit survive a save: a
+		//	component that draws its own widgets in DrawDebug() mutates the member directly,
+		//	and without a record of which member belongs to which key there is nothing to
+		//	persist. The field is captured by reference; instances are heap-owned and
+		//	non-copyable, so the reference stays valid for the life of the component.
 		template<typename T>
 		void Bind(T& field, const std::string& name)
 		{
@@ -211,7 +359,24 @@ namespace wi::scene
 			else if constexpr (std::is_floating_point_v<T>)                 field = (T)GetFloat(name, (float)field);
 			else if constexpr (std::is_integral_v<T> || std::is_enum_v<T>)  field = (T)GetInt(name, (int)field);
 			else static_assert(!sizeof(T*), "Bind: unsupported field type (use bool/int/float/std::string).");
+
+			RememberBinding(name, [&field](NativeComponent& self, const std::string& key) {
+				if constexpr (std::is_same_v<T, bool>)                          self.SetBool(key, field);
+				else if constexpr (std::is_same_v<T, std::string>)              self.SetString(key, field);
+				else if constexpr (std::is_floating_point_v<T>)                 self.SetFloat(key, (float)field);
+				else if constexpr (std::is_integral_v<T> || std::is_enum_v<T>)  self.SetInt(key, (int)field);
+			});
 		}
+
+		// Write every Bind()ed field back to its NCA_<localID>_<name> key.
+		//
+		//	The counterpart to Bind(). An inspector that draws widgets straight onto the
+		//	component's members (DrawDebug) changes the LIVE value and nothing else, so the
+		//	edit is gone on the next load; calling this once the widgets report a change makes
+		//	it part of the scene. Cheap and idempotent - it writes the values that are already
+		//	there - but it is a metadata write, so call it when something CHANGED, not every
+		//	frame. Like the Set*() calls it is built from, it defers itself to the main thread.
+		void SaveBoundParams();
 
 		// GetComponent<T>() — Unity-style lookup on the SAME entity:
 		//	- if T is an engine component (TransformComponent, MeshComponent, ...) returns it (or nullptr)
@@ -225,6 +390,22 @@ namespace wi::scene
 		// non-copyable (owns no copyable state by contract; instances are heap-owned by the manager)
 		NativeComponent(const NativeComponent&) = delete;
 		NativeComponent& operator=(const NativeComponent&) = delete;
+
+	private:
+		// What Bind() recorded: the NCA_ argument name and a writer that puts the member's
+		//	current value back under it. Type-erased because Bind is a template over the
+		//	FIELD's type and this list is not.
+		struct ParamBinding
+		{
+			std::string name;
+			std::function<void(NativeComponent&, const std::string&)> write;
+		};
+		wi::vector<ParamBinding> paramBindings;
+
+		// Re-binding the same name replaces the old entry rather than appending: Start() can
+		//	run again after a re-attach, and a duplicate would write the same key twice.
+		void RememberBinding(const std::string& name,
+			std::function<void(NativeComponent&, const std::string&)> write);
 	};
 
 	// Factory + type identity stored per registered component name.

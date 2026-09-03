@@ -1,4 +1,5 @@
 #include "imhierarchy.h"
+#include "imnativecomponents.h"
 #include "imcomponents.h"
 #include "imcomponentinspectors.h"
 #include "imeditorhistory.h"
@@ -223,9 +224,38 @@ static void EntityContextMenu(Scene& scene, Entity e, Entity& selected, st::Edit
 	ImGui::EndPopup();
 }
 
+// Walk the HierarchyComponent links from `e` up to its root, collecting every parent.
+//	That chain is what "Follow selected" has to open before the selected row exists to be
+//	scrolled to: a collapsed branch never submits its children at all.
+static void GatherAncestors(Scene& scene, Entity e, std::unordered_set<Entity>& out)
+{
+	Entity cur = e;
+	for (int guard = 0; guard < 1024; ++guard) // depth cap: a corrupt link cannot hang the UI
+	{
+		const HierarchyComponent* h = scene.hierarchy.GetComponent(cur);
+		if (h == nullptr || h->parentID == INVALID_ENTITY)
+			return;
+		cur = h->parentID;
+		if (!out.insert(cur).second) // already seen: the links form a cycle
+			return;
+	}
+}
+
+// One frame's "reveal the selection" request. Filled in by the Follow selected checkbox on
+//	the frame the selection CHANGED (and by the Reveal button), left empty on every other
+//	frame -- a tree that re-centred itself every frame could never be scrolled by hand.
+struct FollowRequest
+{
+	Entity target = INVALID_ENTITY;        // the row to scroll into view
+	std::unordered_set<Entity> ancestors;  // its parent chain, forced open on the way down
+
+	bool Wants() const { return target != INVALID_ENTITY; }
+};
+
 static void DrawNode(Scene& scene, Entity e,
 	const std::unordered_map<Entity, std::vector<Entity>>& children,
-	Entity& selected, std::unordered_set<Entity>& visited, st::EditorHistory* history)
+	Entity& selected, std::unordered_set<Entity>& visited, st::EditorHistory* history,
+	const FollowRequest& follow)
 {
 	if (!visited.insert(e).second) return; // cycle guard: never recurse an entity twice
 
@@ -243,10 +273,19 @@ static void DrawNode(Scene& scene, Entity e,
 	if (isDragged)
 		ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.00f, 0.78f, 0.25f, 1.00f));
 
+	// Follow selected: open the parents of the target so the row it wants is submitted this
+	//	frame. SetNextItemOpen writes the node's STORED open state, so the branch stays open
+	//	afterwards -- exactly as if the arrow had been clicked.
+	if (follow.Wants() && follow.ancestors.count(e) != 0)
+		ImGui::SetNextItemOpen(true);
+
 	const bool open = ImGui::TreeNodeEx(label.c_str(), flags);
 
 	if (isDragged)
 		ImGui::PopStyleColor();
+
+	if (follow.target == e)
+		ImGui::SetScrollHereY(0.5f);
 
 	HierarchyRowInteract(scene, e, selected, history);
 
@@ -256,7 +295,7 @@ static void DrawNode(Scene& scene, Entity e,
 	if (open && hasChildren)
 	{
 		for (Entity c : it->second)
-			DrawNode(scene, c, children, selected, visited, history);
+			DrawNode(scene, c, children, selected, visited, history, follow);
 		ImGui::TreePop();
 	}
 }
@@ -300,6 +339,44 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 	if (ImGui::SmallButton("Deselect"))
 		selected = INVALID_ENTITY;
 
+	// "Follow selected": when the selection changes somewhere ELSE -- a click in the viewport,
+	//	an undo, Create -- open the tree down to it and scroll it into view. Only on the frame it
+	//	changed, so the list can still be scrolled by hand while a selection stands.
+	//
+	//	The flag and the last-seen selection live in the WINDOW's own ImGui storage rather than in
+	//	file statics, because HierarchyGUI is drawn by two different windows (the editor's docked
+	//	panel and the floating DevUI one). Shared state would let whichever drew first consume the
+	//	change, leaving the other one never scrolling -- and would tie the two checkboxes together.
+	ImGuiStorage* store = ImGui::GetStateStorage();
+	const ImGuiID followKey  = ImGui::GetID("##follow_selected");
+	const ImGuiID lastSelKey = ImGui::GetID("##follow_last_selected");
+
+	bool followOn = store->GetBool(followKey, true);
+	if (ImGui::Checkbox("Follow selected", &followOn))
+		store->SetBool(followKey, followOn);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Expand the tree down to the selected entity and scroll it into view "
+			"whenever the selection changes -- picking in the viewport, undo, Create.");
+	ImGui::SameLine();
+	ImGui::BeginDisabled(selected == INVALID_ENTITY);
+	const bool revealNow = ImGui::SmallButton("Reveal");
+	ImGui::EndDisabled();
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Reveal the current selection once, whether or not Follow is on.");
+
+	// Entity is a uint32 counter and ImGuiStorage holds ints; the round trip is exact for every
+	//	id a scene can reach, and INVALID_ENTITY is 0, which is also the default.
+	const Entity lastSelected = (Entity)store->GetInt(lastSelKey, (int)INVALID_ENTITY);
+	if (selected != lastSelected)
+		store->SetInt(lastSelKey, (int)selected);
+
+	FollowRequest follow;
+	if (selected != INVALID_ENTITY && ((followOn && selected != lastSelected) || revealNow))
+	{
+		follow.target = selected;
+		GatherAncestors(scene, selected, follow.ancestors);
+	}
+
 	// Mode readout: tells you whether the next mouse-up selects a row or drops a reference.
 	if (const Entity dragging = CurrentDragEntity(); dragging != INVALID_ENTITY)
 		ImGui::TextColored(ImVec4(1.00f, 0.78f, 0.25f, 1.00f),
@@ -341,6 +418,10 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 			if (isDragged)
 				ImGui::PopStyleColor();
 
+			// Nothing to expand in a flat list, but the row still has to be scrolled to.
+			if (follow.target == e)
+				ImGui::SetScrollHereY(0.5f);
+
 			HierarchyRowInteract(scene, e, selected, history);
 			if (history != nullptr)
 				EntityContextMenu(scene, e, selected, *history);
@@ -370,7 +451,7 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 
 		std::unordered_set<Entity> visited;
 		for (Entity e : roots)
-			DrawNode(scene, e, children, selected, visited, history);
+			DrawNode(scene, e, children, selected, visited, history, follow);
 	}
 
 	// The other half of re-parenting: a strip under the tree that detaches whatever is dropped
@@ -586,7 +667,12 @@ static void DrawNativeComponents(Scene& scene, Entity e, st::EditorHistory* hist
 				ImGui::TextDisabled(inst.started ? "(started)" : "(awaiting start)");
 
 				ImGui::BeginDisabled(!enabled);
-				inst.component->DrawDebug(); // component-supplied widgets bound to live members
+				// Described parameters (persisted to NCA_ metadata) first, then the
+				// component's own hand-drawn debug widgets (live until reload). A
+				// component may use either or both; one that lives in Engine/ can only
+				// use the former, because ImGui is linked at the app level.
+				NativeComponentParamsGUI(*inst.component);
+				inst.component->DrawDebug();
 				ImGui::EndDisabled();
 			}
 			else

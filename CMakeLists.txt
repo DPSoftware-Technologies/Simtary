@@ -136,7 +136,8 @@ set(SIMTARY_DEPS_DIR "${SIMTARY_ROOT}/deps" CACHE PATH
 # CMakeLists.txt serves for the two CMake projects; ufbx has none (it is two source
 # files), so it is recognised by a file it does own.
 set(_dep_markers "sentry=CMakeLists.txt" "openal=CMakeLists.txt"
-                 "tinygltf=CMakeLists.txt" "ufbx=ufbx.c")
+                 "tinygltf=CMakeLists.txt" "ufbx=ufbx.c"
+                 "steamaudio=include/phonon.h")
 foreach(_entry IN LISTS _dep_markers)
     string(REPLACE "=" ";" _parts "${_entry}")
     list(GET _parts 0 _dep)
@@ -208,6 +209,82 @@ FetchContent_Declare(
     GIT_TAG        1.24.2
 )
 FetchContent_MakeAvailable(openal)
+
+# ─── Steam Audio: the 3D audio layer (core SDK only) ───────────────────────────
+# Steam Audio owns everything spatial - HRTF, distance, air absorption, occlusion,
+# transmission, geometry-driven reflections and pathing - while OpenAL Soft above
+# stays the output device and the 2D mixer. Engine/stAudioSpatial.cpp is the only
+# translation unit that sees phonon.h.
+#
+# CORE ONLY, and deliberately from the release archive rather than a git clone:
+# Valve ships the core SDK (phonon.h + phonon.dll) as its own zip, separate from the
+# Unity / Unreal / FMOD / Wwise integrations, which is exactly the "core only" split
+# wanted here. Building core/ from the git tree additionally needs Valve's own
+# dependency bootstrap (flatbuffers, pffft, mysofa, IPP, Embree) fetched by scripts
+# under core/build - a much slower and far more fragile cold configure for a library
+# that is shipped prebuilt for every platform this engine targets.
+#
+# It lands in the same shared deps cache as sentry/openal, so it is downloaded once
+# per workspace rather than once per project.
+set(SIMTARY_STEAMAUDIO_VERSION "4.6.1" CACHE STRING "Steam Audio core SDK version")
+option(SIMTARY_ENABLE_STEAMAUDIO "Fetch Steam Audio and build the 3D audio path against it (OFF falls back to distance attenuation plus stereo panning)" ON)
+
+if (SIMTARY_ENABLE_STEAMAUDIO)
+    FetchContent_Declare(
+        steamaudio
+        URL "https://github.com/ValveSoftware/steam-audio/releases/download/v${SIMTARY_STEAMAUDIO_VERSION}/steamaudio_${SIMTARY_STEAMAUDIO_VERSION}.zip"
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(steamaudio)
+
+    # The archive unpacks to a "steamaudio" directory holding include/ and lib/.
+    set(_sa_root "${steamaudio_SOURCE_DIR}")
+    if (EXISTS "${_sa_root}/steamaudio/include/phonon.h")
+        set(_sa_root "${_sa_root}/steamaudio")
+    endif()
+
+    # Platform subdirectory inside lib/. Only the desktop targets this workspace
+    # builds for are mapped; add android-*/ios here if a project ever needs them.
+    if (WIN32)
+        if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+            set(_sa_libdir "windows-x64")
+        else()
+            set(_sa_libdir "windows-x86")
+        endif()
+        set(_sa_shared "${_sa_root}/lib/${_sa_libdir}/phonon.dll")
+        set(_sa_implib "${_sa_root}/lib/${_sa_libdir}/phonon.lib")
+    elseif (APPLE)
+        set(_sa_libdir "osx")
+        set(_sa_shared "${_sa_root}/lib/${_sa_libdir}/libphonon.dylib")
+        set(_sa_implib "${_sa_shared}")
+    else()
+        set(_sa_libdir "linux-x64")
+        set(_sa_shared "${_sa_root}/lib/${_sa_libdir}/libphonon.so")
+        set(_sa_implib "${_sa_shared}")
+    endif()
+
+    if (EXISTS "${_sa_shared}" AND EXISTS "${_sa_root}/include/phonon.h")
+        add_library(SteamAudio SHARED IMPORTED GLOBAL)
+        set_target_properties(SteamAudio PROPERTIES
+            IMPORTED_LOCATION "${_sa_shared}"
+            IMPORTED_IMPLIB   "${_sa_implib}"
+            INTERFACE_INCLUDE_DIRECTORIES "${_sa_root}/include"
+            INTERFACE_COMPILE_DEFINITIONS "SIMTARY_HAS_STEAMAUDIO=1"
+        )
+        # Consumed by SimtaryApp.cmake to stage the runtime next to the executable,
+        # the same way OpenAL32.dll and SDL2.dll are.
+        set(SIMTARY_STEAMAUDIO_RUNTIME "${_sa_shared}" CACHE INTERNAL "Steam Audio runtime library")
+        set(SIMTARY_STEAMAUDIO_FOUND TRUE CACHE INTERNAL "Steam Audio is available")
+        message(STATUS "Simtary: Steam Audio ${SIMTARY_STEAMAUDIO_VERSION} (${_sa_libdir})")
+    else()
+        set(SIMTARY_STEAMAUDIO_FOUND FALSE CACHE INTERNAL "Steam Audio is available")
+        message(WARNING "Simtary: Steam Audio archive unpacked but no library for this platform at "
+                        "${_sa_shared} - 3D audio falls back to stereo panning.")
+    endif()
+else()
+    set(SIMTARY_STEAMAUDIO_FOUND FALSE CACHE INTERNAL "Steam Audio is available")
+    message(STATUS "Simtary: Steam Audio disabled - 3D audio falls back to stereo panning.")
+endif()
 
 # ─── Model importers: tinygltf (glTF/GLB) + ufbx (FBX/OBJ/MTL) ─────────────────
 # Both are C, and that is why these two were picked over the obvious alternatives.

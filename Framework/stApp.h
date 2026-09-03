@@ -351,6 +351,7 @@ private:
     bool showHierarchy = false;
     bool showProperties = false;
     bool showFaustDSP = false;
+    bool showAudioMixer = false;
 
     bool STDDBoneLines = false;
     bool STDDCameras = false;

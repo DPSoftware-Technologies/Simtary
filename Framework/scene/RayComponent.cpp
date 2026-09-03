@@ -75,14 +75,18 @@ void RayComponent::Update(float /*dt*/) {
 }
 
 void RayComponent::DrawDebug() {
-	ImGui::Combo("Forward axis", &forwardAxis, "+Z\0-Z\0-Y (spot light)\0+Y\0+X\0-X\0");
-	ImGui::DragFloat("Max distance", &maxDistance, 1.0f, 0.1f, 10000.0f, "%.1f m");
-	ImGui::DragFloat("Start offset", &startOffset, 0.01f, 0.0f, 50.0f, "%.3f m");
-	ImGui::Checkbox("Ignore self", &ignoreSelf);
-	ImGui::Checkbox("Cast every frame", &everyFrame);
+	// Every widget feeds one flag, so an edit can be written back to the NCA_ metadata
+	// Bind() read it from -- without that, tuning a ray in the inspector is lost on reload.
+	bool dirty = false;
+	dirty |= ImGui::Combo("Forward axis", &forwardAxis, "+Z\0-Z\0-Y (spot light)\0+Y\0+X\0-X\0");
+	dirty |= ImGui::DragFloat("Max distance", &maxDistance, 1.0f, 0.1f, 10000.0f, "%.1f m");
+	dirty |= ImGui::DragFloat("Start offset", &startOffset, 0.01f, 0.0f, 50.0f, "%.3f m");
+	dirty |= ImGui::Checkbox("Ignore self", &ignoreSelf);
+	dirty |= ImGui::Checkbox("Cast every frame", &everyFrame);
 	ImGui::SameLine();
 	if (ImGui::Button("Cast now")) Cast();
-	ImGui::Checkbox("Debug line", &debugDraw);
+	dirty |= ImGui::Checkbox("Debug line", &debugDraw);
+	if (dirty) SaveBoundParams();
 
 	ImGui::TextDisabled("Mode: %s", mode.c_str());
 
