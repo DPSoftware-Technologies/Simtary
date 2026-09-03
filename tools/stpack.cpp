@@ -5,16 +5,21 @@
 // nothing else — no engine, no graphics device — which is what lets it be a build step
 // rather than something the game has to be running to do.
 //
-//   stpack pack   <contentDir> --out <dir> [--scene-dir <dir>] [--name content]
-//                 [--part-size 50] [--chunk 256] [--level 9] [--stored] [--aggressive]
+//   stpack pack   <contentDir> --out <dir> [--scene-dir <dir>] [--scene-src <dir>]
+//                 [--name content] [--part-size 50] [--chunk 256] [--level 9] [--stored]
+//                 [--aggressive]
 //   stpack unpack <index.strd> --out <dir> [--filter <substring>] [--rebuild-scenes]
 //   stpack scene  <map.stsd> --out <map.wiscene> [--pack <index.strd>]
 //   stpack info   <index.strd | map.stsd> [--assets]
 //   stpack verify <index.strd>
 //
-// `pack` is the forward conversion: every .wiscene under contentDir is split into a
-// .stsd plus its resources, every other file is added as it is, and the result is one
-// .strd index next to N .stafp<N> parts. `scene` and `unpack --rebuild-scenes` are the
+// `pack` is the forward conversion: every .wiscene under contentDir (and under
+// --scene-src) is split into a .stsd plus its resources, every other file under
+// contentDir is added as it is, and the result is one .strd index next to N .stafp<N>
+// parts. --scene-src is what lets a project keep its maps OUT of the packed tree: a
+// .wiscene is the SOURCE a .stsd is converted from, not an asset that ships, so
+// assets/contents/ can mean "everything here goes into the package" with nothing to
+// except out of it. `scene` and `unpack --rebuild-scenes` are the
 // reverse, and they exist because a format you cannot get back out of is a format
 // nobody should adopt.
 //
@@ -143,8 +148,9 @@ void PrintUsage () {
     std::printf(
         "stpack - build and inspect Simtary asset packages\n"
         "\n"
-        "  stpack pack   <contentDir> --out <dir> [--scene-dir <dir>] [--name content]\n"
-        "                [--part-size 50] [--chunk 256] [--level 9] [--stored] [--aggressive]\n"
+        "  stpack pack   <contentDir> --out <dir> [--scene-dir <dir>] [--scene-src <dir>]\n"
+        "                [--name content] [--part-size 50] [--chunk 256] [--level 9]\n"
+        "                [--stored] [--aggressive]\n"
         "  stpack unpack <index.strd> --out <dir> [--filter <substring>] [--rebuild-scenes]\n"
         "  stpack scene  <map.stsd>    --out <map.wiscene> [--pack <index.strd>]\n"
         "  stpack info   <index.strd | map.stsd> [--assets]\n"
@@ -157,6 +163,10 @@ void PrintUsage () {
         "  --scene-dir   write the generated .stsd maps here as loose files instead of\n"
         "                packing them. A leading \"scenes/\" is stripped, so\n"
         "                contents/scenes/x.wiscene -> <scene-dir>/x.stsd\n"
+        "  --scene-src   an EXTRA directory searched for .wiscene sources, for a project\n"
+        "                that keeps its maps outside the packed content tree. Their\n"
+        "                resources still go into the package; only the sources live\n"
+        "                elsewhere. Nothing but .wiscene is read from it\n"
         "  -q            print nothing but errors\n");
 }
 
@@ -167,6 +177,7 @@ int CommandPack (const Args& args) {
     const std::string contentDir = args.positional[0];
     const std::string outDir     = args.Get("out");
     const std::string sceneDir   = args.Get("scene-dir");
+    const std::string sceneSrc   = args.Get("scene-src");
     const std::string baseName   = args.Get("name", "content");
     if (outDir.empty()) return Fail("pack needs --out <dir>");
 
@@ -205,13 +216,38 @@ int CommandPack (const Args& args) {
     uint32_t sceneCount = 0;
     uint64_t wisceneBytes = 0;
 
+    // Every .wiscene to convert, each paired with the root its relative path is measured
+    // against: the content tree, plus --scene-src for a project that keeps its maps
+    // outside it. Both end up in the same package, so where the SOURCE sits changes
+    // nothing about the output.
+    std::vector<std::pair<fs::path, fs::path>> sceneFiles;
+    for (const fs::path& p : files) {
+        if (LowerExtNoDot(p) == "wiscene") sceneFiles.emplace_back(p, root);
+    }
+    if (!sceneSrc.empty()) {
+        const fs::path sceneRoot = U8Path(sceneSrc);
+        if (!fs::is_directory(sceneRoot, ec)) return Fail(sceneSrc + " is not a directory");
+
+        std::vector<fs::path> found;
+        for (fs::recursive_directory_iterator it(sceneRoot, fs::directory_options::skip_permission_denied, ec), end;
+             it != end; it.increment(ec)) {
+            if (ec) break;
+            if (!it->is_regular_file(ec)) continue;
+            if (LowerExtNoDot(it->path()) != "wiscene") continue;
+            found.push_back(it->path());
+        }
+        std::sort(found.begin(), found.end()); // same reason as above: a reproducible pack
+        for (const fs::path& p : found) sceneFiles.emplace_back(p, sceneRoot);
+    }
+
     // Scenes first. Converting a map registers its resources, so a later loose copy of
     // the same texture is recognised as a duplicate and skipped instead of stored twice.
-    for (const fs::path& p : files) {
-        if (LowerExtNoDot(p) != "wiscene") continue;
+    for (const auto& entry : sceneFiles) {
+        const fs::path& p         = entry.first;
+        const fs::path& sceneRoot = entry.second;
 
         const std::string full   = p.string();
-        std::string        relDir = fs::relative(p.parent_path(), root, ec).generic_string();
+        std::string        relDir = fs::relative(p.parent_path(), sceneRoot, ec).generic_string();
         if (relDir == ".") relDir.clear();
 
         SceneDescriptor scene;
@@ -240,7 +276,8 @@ int CommandPack (const Args& args) {
             //
             // A leading "scenes/" is stripped because the scene directory already IS the
             // scenes folder — without this, contents/scenes/x.wiscene would land in
-            // <scene-dir>/scenes/x.stsd. Anything deeper is preserved.
+            // <scene-dir>/scenes/x.stsd. Anything deeper is preserved. A --scene-src root
+            // IS the scenes folder, so its files have no prefix to strip to begin with.
             std::string sub = relDir;
             if (sub == "scenes")                        sub.clear();
             else if (sub.rfind("scenes/", 0) == 0)      sub.erase(0, 7);

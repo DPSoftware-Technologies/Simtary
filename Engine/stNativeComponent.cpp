@@ -106,6 +106,89 @@ namespace wi::scene
 	}
 
 	// ------------------------------------------------------------------
+	// Parameter writes (same NCA_ keys, so Bind() picks them up on the next load)
+	// ------------------------------------------------------------------
+	// Each mirrors SetEnabled: a metadata write from a worker thread would race the
+	// component manager's own reconcile pass, so it is queued to the main thread and
+	// applied at the end of the current stage instead.
+	void NativeComponent::SetBool(const std::string& name, bool value)
+	{
+		if (scene == nullptr) return;
+		if (scene->nativeComponents.phaseRunning && !scene->nativeComponents.IsMainThread())
+		{
+			RunOnMainThread([this, name, value] { SetBool(name, value); });
+			return;
+		}
+		MetadataComponent* m = scene->metadatas.GetComponent(entity);
+		if (m == nullptr) return;
+		m->bool_values.set(ArgKey(this, name), value);
+	}
+	void NativeComponent::SetInt(const std::string& name, int value)
+	{
+		if (scene == nullptr) return;
+		if (scene->nativeComponents.phaseRunning && !scene->nativeComponents.IsMainThread())
+		{
+			RunOnMainThread([this, name, value] { SetInt(name, value); });
+			return;
+		}
+		MetadataComponent* m = scene->metadatas.GetComponent(entity);
+		if (m == nullptr) return;
+		m->int_values.set(ArgKey(this, name), value);
+	}
+	void NativeComponent::SetFloat(const std::string& name, float value)
+	{
+		if (scene == nullptr) return;
+		if (scene->nativeComponents.phaseRunning && !scene->nativeComponents.IsMainThread())
+		{
+			RunOnMainThread([this, name, value] { SetFloat(name, value); });
+			return;
+		}
+		MetadataComponent* m = scene->metadatas.GetComponent(entity);
+		if (m == nullptr) return;
+		m->float_values.set(ArgKey(this, name), value);
+	}
+	void NativeComponent::SetString(const std::string& name, const std::string& value)
+	{
+		if (scene == nullptr) return;
+		if (scene->nativeComponents.phaseRunning && !scene->nativeComponents.IsMainThread())
+		{
+			RunOnMainThread([this, name, value] { SetString(name, value); });
+			return;
+		}
+		MetadataComponent* m = scene->metadatas.GetComponent(entity);
+		if (m == nullptr) return;
+		m->string_values.set(ArgKey(this, name), value);
+	}
+
+	void NativeComponent::RememberBinding(const std::string& name,
+		std::function<void(NativeComponent&, const std::string&)> write)
+	{
+		for (ParamBinding& b : paramBindings)
+		{
+			if (b.name == name)
+			{
+				b.write = std::move(write);
+				return;
+			}
+		}
+		ParamBinding b;
+		b.name  = name;
+		b.write = std::move(write);
+		paramBindings.push_back(std::move(b));
+	}
+
+	void NativeComponent::SaveBoundParams()
+	{
+		// Each write defers itself to the main thread on its own when it has to, so this
+		//	needs no thread guard of its own.
+		for (ParamBinding& b : paramBindings)
+		{
+			if (b.write)
+				b.write(*this, b.name);
+		}
+	}
+
+	// ------------------------------------------------------------------
 	// Stable entity references (GUID-based)
 	// ------------------------------------------------------------------
 	static const std::string kEntityGUIDKey = "EntityGUID";

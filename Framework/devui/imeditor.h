@@ -242,10 +242,15 @@ private:
         bool springs       = false;
         bool boneLines     = false;
         bool partitionTree = false;
+        bool selection     = true;  // wireframe box around the selection - see QueueSelectionHighlight
         bool grid          = false;
         bool voxels        = false;
         int  voxelClipmap  = 1;
     } debug_;
+
+    // The selection, captured at the end of Draw(). RenderEditorView runs later in the frame,
+    // from st::App::Render, and is handed no selection of its own.
+    wi::ecs::Entity selectionHighlight_ = wi::ecs::INVALID_ENTITY;
 
     // ── show game preview ────────────────────────────────────────────────────
     // Per viewport, on by default. See the file header for what it buys. The Editor

@@ -10,6 +10,7 @@
 #include "wiEnums.h"
 #include "wiTextureHelper.h"
 #include "wiProfiler.h"
+#include "stAudio.h"
 #include "wiInitializer.h"
 #include "wiArguments.h"
 #include "wiFont.h"
@@ -401,6 +402,10 @@ namespace wi
 		wi::backlog::Update(canvas, dt);
 
 		wi::resourcemanager::UpdateStreamingResources(dt);
+
+		// Audio housekeeping: elects the primary collector, retires finished one-shots
+		// and tracks the volume sliders. The mix itself runs on its own thread.
+		wi::audio::UpdateAudio(dt);
 
 		if (activePath != nullptr)
 		{

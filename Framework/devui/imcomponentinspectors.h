@@ -53,6 +53,15 @@ std::string EntityLabel(wi::scene::Scene& scene, wi::ecs::Entity e);
 // Inline std::string text edit through a fixed scratch buffer. Returns true on change.
 bool EditString(const char* label, std::string& s);
 
+// EditString plus a Resource Explorer drop target. A dropped row writes its LOGICAL path
+//	("audio/test.wav"), which is the spelling a mounted package resolves, so a packed asset
+//	and a loose one are named the same way.
+//
+//	Returns true ONLY on a drop, not on a keystroke: a drop is one complete change, while a
+//	keystroke is a third of a filename. Callers apply a drop immediately and apply typed
+//	edits on IsItemDeactivatedAfterEdit.
+bool AssetDropField(const char* label, std::string& value);
+
 // One component's collapsing header plus the right-aligned "x" that detaches it.
 //	Returns true when the caller should draw the component's body — i.e. the header is open
 //	AND the component still exists. The "x" calls ComponentManager::Remove immediately, so

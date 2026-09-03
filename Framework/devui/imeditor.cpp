@@ -24,7 +24,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 using wi::ecs::Entity;
 using wi::ecs::INVALID_ENTITY;
@@ -224,6 +226,86 @@ void QueueCameraFrustum(const CameraComponent& cam, const XMFLOAT4& color)
 		edge(i, (i + 1) % 4);             // near rectangle
 		edge(4 + i, 4 + ((i + 1) % 4));   // far rectangle
 		edge(i, 4 + i);                   // the four side edges
+	}
+}
+
+// Wireframe box around one entity, taken from whichever bounds array the scene already keeps
+//	for it. Returns false when the entity has no bounds at all -- an empty transform, a bare
+//	light, a material -- so the caller can fall back to something else.
+bool QueueEntityBounds(wi::scene::Scene& scene, Entity e, const XMFLOAT4& color)
+{
+	auto box = [&](const wi::vector<wi::primitive::AABB>& bounds, size_t index) {
+		if (index >= bounds.size())
+			return false;
+		// depth = false: no depth test, so a selection standing behind or inside other geometry
+		//	is still visible. Finding what the Hierarchy just selected is the whole point.
+		wi::renderer::DrawBox(bounds[index], color, false);
+		return true;
+	};
+
+	if (scene.objects.Contains(e) && box(scene.aabb_objects, scene.objects.GetIndex(e))) return true;
+	if (scene.lights.Contains(e)  && box(scene.aabb_lights,  scene.lights.GetIndex(e)))  return true;
+	if (scene.decals.Contains(e)  && box(scene.aabb_decals,  scene.decals.GetIndex(e)))  return true;
+	if (scene.probes.Contains(e)  && box(scene.aabb_probes,  scene.probes.GetIndex(e)))  return true;
+	return false;
+}
+
+// Show what is selected in the PICTURE, not only in the Properties panel.
+//
+//	The whole SUBTREE is drawn, not just the selected entity: an imported model's root carries
+//	no ObjectComponent at all -- the meshes hang off its children -- so outlining the entity
+//	alone would leave the most common selection in this editor with no highlight whatsoever.
+//	The entity's own bounds are drawn bright and its descendants' dimmed, so selecting a parent
+//	still reads differently from selecting one of its parts.
+//
+//	An entity with no bounds anywhere in its subtree (a bare light, a camera, an empty group)
+//	falls back to a small box at its world position, which is enough to say where it is.
+//
+//	Queued rather than drawn, exactly like the camera frustum above: DrawDebugWorld consumes
+//	the queue, and the game path has already rendered by the time this runs, so only the editor
+//	viewport ever shows it.
+void QueueSelectionHighlight(wi::scene::Scene& scene, Entity selected)
+{
+	if (selected == INVALID_ENTITY)
+		return;
+
+	const XMFLOAT4 selfColor  = XMFLOAT4(1.00f, 0.62f, 0.12f, 1.00f);
+	// A dimmer orange rather than a lower alpha: the debug cube pipeline does not alpha blend,
+	//	so fading the colour is the only way to make the children read as secondary.
+	const XMFLOAT4 childColor = XMFLOAT4(0.55f, 0.34f, 0.07f, 1.00f);
+
+	bool drawn = QueueEntityBounds(scene, selected, selfColor);
+
+	// One pass over the hierarchy links, then a walk down from the selection. Building the map
+	//	is O(links); re-scanning for children at every level instead is O(links x depth), every
+	//	frame, on a list that can hold every entity in the map.
+	std::unordered_map<Entity, std::vector<Entity>> children;
+	for (size_t i = 0; i < scene.hierarchy.GetCount(); ++i)
+		children[scene.hierarchy[i].parentID].push_back(scene.hierarchy.GetEntity(i));
+
+	std::vector<Entity> stack{ selected };
+	std::unordered_set<Entity> visited;
+	while (!stack.empty())
+	{
+		const Entity e = stack.back();
+		stack.pop_back();
+		if (!visited.insert(e).second) // cycle guard: a corrupt parent link cannot spin here
+			continue;
+		if (e != selected && QueueEntityBounds(scene, e, childColor))
+			drawn = true;
+		const auto it = children.find(e);
+		if (it != children.end())
+			stack.insert(stack.end(), it->second.begin(), it->second.end());
+	}
+
+	if (!drawn)
+	{
+		if (const TransformComponent* t = scene.transforms.GetComponent(selected))
+		{
+			wi::primitive::AABB marker;
+			marker.createFromHalfWidth(t->GetPosition(), XMFLOAT3(0.25f, 0.25f, 0.25f));
+			wi::renderer::DrawBox(marker, selfColor, false);
+		}
 	}
 }
 
@@ -570,6 +652,12 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 			ImGui::MenuItem("Springs", nullptr, &debug_.springs);
 			ImGui::MenuItem("Bone lines", nullptr, &debug_.boneLines);
 			ImGui::MenuItem("Partition tree", nullptr, &debug_.partitionTree);
+			ImGui::Separator();
+			ImGui::MenuItem("Selection highlight", nullptr, &debug_.selection);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Wireframe box around the selected entity and, dimmed, around every "
+					"part under it. An imported model's root has no bounds of its own, which is why "
+					"the subtree is drawn and not just the row you clicked.");
 			ImGui::Separator();
 			ImGui::MenuItem("Grid", nullptr, &debug_.grid);
 			ImGui::MenuItem("Voxel helper", nullptr, &debug_.voxels);
@@ -1811,6 +1899,10 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	if (pendingSelection_ != INVALID_ENTITY)
 		selected = pendingSelection_;
 
+	// Hand the (now final) selection to the render pass, which runs later in the frame with no
+	// selection of its own.
+	selectionHighlight_ = selected;
+
 	// One place decides who owns the cursor, after every panel has had its say.
 	if (freeCamLookWanted_ != freeCamLookActive_)
 	{
@@ -1931,6 +2023,9 @@ void st::EditorUI::RenderEditorView(float dt)
 
 	if (debug_.gameCamera)
 		QueueCameraFrustum(wi::scene::GetCamera(), XMFLOAT4(1.0f, 0.85f, 0.2f, 1.0f));
+
+	if (debug_.selection)
+		QueueSelectionHighlight(wi::scene::GetScene(), selectionHighlight_);
 
 	editorPath_->PreRender();
 	editorPath_->Render();

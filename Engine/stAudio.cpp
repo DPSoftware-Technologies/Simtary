@@ -1,125 +1,106 @@
 #include "stAudio.h"
+#include "stAudioEngine.h"
+#include "stAudioComponents.h"
 #include "wiBacklog.h"
-
-#include <AL/al.h>
-#include <AL/alc.h>
 
 #include <atomic>
 #include <thread>
 #include <vector>
 #include <chrono>
-#include <cstdint>
+#include <algorithm>
 
 namespace wi::audio
 {
-	// Streaming parameters. Four buffers of 1024 frames at 48 kHz gives ~85 ms of
-	// queued audio — enough to ride over frame-time spikes without underrunning,
-	// while staying responsive to Start/Stop and gain changes.
-	static constexpr int kNumBuffers     = 4;
-	static constexpr int kFramesPerBuffer = 1024;
-
-	static inline float clamp01f(float x) { return x < -1.0f ? -1.0f : (x > 1.0f ? 1.0f : x); }
-
 	void InitializeOpenAL()
 	{
-		// Probe the default output device so boot logs show the active audio
-		// backend (and surface a missing-device early, instead of at first Play).
-		// Opened and closed here; DSPStream reopens its own device when streaming.
-		ALCdevice* device = alcOpenDevice(nullptr);
-		if (device == nullptr)
+		// First, and unconditionally: the editor should list the audio components even
+		// on a machine with no output device, and this call is also what pulls
+		// stAudioComponents.cpp out of the static library at all (see its comment).
+		st::RegisterAudioComponents();
+
+		st::audio::EngineConfig config;
+		// Reflection and pathing ray tracing is opt-in per emitter, but the simulator
+		// has to be built with room for it or a component that asks later gets nothing.
+		config.simulation.reflections = true;
+		config.simulation.pathing = true;
+
+		if (!st::audio::AudioEngine::Get().Initialize(config))
 		{
-			wilog_warning("stAudio: no OpenAL output device - audio disabled.");
+			wilog_warning("stAudio: audio engine did not start - the game runs silent.");
 			return;
 		}
-
-		const ALCchar* name = nullptr;
-		if (alcIsExtensionPresent(device, "ALC_ENUMERATE_ALL_EXT") == ALC_TRUE)
-			name = alcGetString(device, ALC_ALL_DEVICES_SPECIFIER);
-		if (name == nullptr)
-			name = alcGetString(device, ALC_DEFAULT_DEVICE_SPECIFIER);
-
-		wilog("stAudio: OpenAL initialized (device: %s).", name ? name : "default");
-		alcCloseDevice(device);
 	}
+
+	void ShutdownAudio()
+	{
+		st::audio::AudioEngine::Get().Shutdown();
+	}
+
+	void UpdateAudio(float dt)
+	{
+		st::audio::AudioEngine::Get().Update(dt);
+	}
+
+	// ── DSPStream ───────────────────────────────────────────────────────────────
 
 	struct DSPStream::Impl
 	{
-		ALCdevice*  device  = nullptr;
-		ALCcontext* context = nullptr;
-		ALuint      source  = 0;
-		ALuint      buffers[kNumBuffers] = {};
-
 		DSPSource* src = nullptr;
-		int   sampleRate  = 48000;
-		int   srcChannels = 1;   // channels the source fills
-		int   outChannels = 1;   // channels sent to OpenAL (source, clamped to 2)
-		ALenum format = AL_FORMAT_MONO16;
+		st::audio::EmitterRef emitter;
+		int sampleRate = 48000;
+		int srcChannels = 1;
+		int frameSize = 512;
 
 		std::thread worker;
-		std::atomic<bool>  running{ false };
+		std::atomic<bool> running{ false };
 		std::atomic<float> gain{ 1.0f };
 
-		// Scratch reused every buffer cycle (owned by the worker thread once running).
-		std::vector<std::vector<float>> planar; // [srcChannels][frames]
-		std::vector<float*>  planarPtrs;         // [srcChannels]
-		std::vector<int16_t> interleaved;        // outChannels * frames
-
-		// Render one buffer's worth of audio into `buf` and hand it to OpenAL.
-		void FillBuffer(ALuint buf)
-		{
-			src->Compute(kFramesPerBuffer, planarPtrs.data());
-
-			const float g = gain.load(std::memory_order_relaxed);
-			if (outChannels == 1)
-			{
-				const float* mono = planar[0].data();
-				for (int i = 0; i < kFramesPerBuffer; ++i)
-					interleaved[i] = (int16_t)(clamp01f(mono[i] * g) * 32767.0f);
-			}
-			else
-			{
-				const float* L = planar[0].data();
-				const float* R = planar[1].data();
-				for (int i = 0; i < kFramesPerBuffer; ++i)
-				{
-					interleaved[2 * i + 0] = (int16_t)(clamp01f(L[i] * g) * 32767.0f);
-					interleaved[2 * i + 1] = (int16_t)(clamp01f(R[i] * g) * 32767.0f);
-				}
-			}
-
-			const ALsizei bytes = (ALsizei)(interleaved.size() * sizeof(int16_t));
-			alBufferData(buf, format, interleaved.data(), bytes, sampleRate);
-		}
+		std::vector<std::vector<float>> planar;  // [srcChannels][frameSize]
+		std::vector<float*> planarPtrs;
+		std::vector<float> mono;
 
 		void Run()
 		{
-			// OpenAL's current context is process-wide; it was made current in
-			// Start() on the calling thread and remains valid here.
+			using clock = std::chrono::steady_clock;
+			const double blockSeconds = (double)frameSize / (double)sampleRate;
+			auto next = clock::now();
+
 			while (running.load(std::memory_order_acquire))
 			{
-				ALint processed = 0;
-				alGetSourcei(source, AL_BUFFERS_PROCESSED, &processed);
-				while (processed-- > 0)
+				st::audio::AudioBuffer& input = emitter->Input();
+
+				// Keep the emitter's ring topped up rather than rendering on a strict
+				// clock: the audio thread drains it a block at a time, and this only
+				// has to stay ahead of it.
+				while (running.load(std::memory_order_relaxed) && input.Space() >= frameSize)
 				{
-					ALuint buf = 0;
-					alSourceUnqueueBuffers(source, 1, &buf);
-					FillBuffer(buf);
-					alSourceQueueBuffers(source, 1, &buf);
+					src->Compute(frameSize, planarPtrs.data());
+
+					const float g = gain.load(std::memory_order_relaxed);
+					if (srcChannels == 1)
+					{
+						const float* s = planar[0].data();
+						for (int i = 0; i < frameSize; ++i)
+							mono[(size_t)i] = s[i] * g;
+					}
+					else
+					{
+						// Downmix: the emitter's input is mono because a spatialized
+						// source has one signal, and a 2D emitter is centred anyway.
+						const float scale = g / (float)srcChannels;
+						for (int i = 0; i < frameSize; ++i)
+						{
+							float sum = 0.0f;
+							for (int c = 0; c < srcChannels; ++c)
+								sum += planar[(size_t)c][(size_t)i];
+							mono[(size_t)i] = sum * scale;
+						}
+					}
+					input.WriteMono(mono.data(), frameSize);
 				}
 
-				// Recover from an underrun: if playback stopped while we still want
-				// to run, restart it (queued buffers were exhausted under load).
-				ALint state = 0;
-				alGetSourcei(source, AL_SOURCE_STATE, &state);
-				if (state != AL_PLAYING)
-				{
-					ALint queued = 0;
-					alGetSourcei(source, AL_BUFFERS_QUEUED, &queued);
-					if (queued > 0)
-						alSourcePlay(source);
-				}
-
-				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+				next += std::chrono::microseconds((int)(blockSeconds * 500000.0));
+				std::this_thread::sleep_until(next);
 			}
 		}
 	};
@@ -133,88 +114,64 @@ namespace wi::audio
 		if (s.running.load() || source == nullptr)
 			return false;
 
+		st::audio::AudioEngine& engine = st::audio::AudioEngine::Get();
+		if (!engine.IsInitialized())
+		{
+			wilog_error("stAudio: DSPStream::Start called before the audio engine came up.");
+			return false;
+		}
+
+		// The engine's mix rate is authoritative: resampling a live generator would
+		// cost more than telling it the right rate in the first place.
+		s.sampleRate = engine.GetSampleRate();
+		s.frameSize = engine.GetFrameSize();
+		if (sampleRate != s.sampleRate)
+			wilog("stAudio: DSPStream asked for %d Hz; rendering at the engine's %d Hz instead.",
+				sampleRate, s.sampleRate);
+
 		s.src = source;
-		s.sampleRate = sampleRate;
-		s.srcChannels = source->GetNumOutputs();
-		if (s.srcChannels < 1) s.srcChannels = 1;
-		s.outChannels = s.srcChannels >= 2 ? 2 : 1;
-		s.format = (s.outChannels == 1) ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16;
+		s.srcChannels = std::max(1, source->GetNumOutputs());
 
-		s.device = alcOpenDevice(nullptr); // default output device
-		if (s.device == nullptr)
-		{
-			wilog_error("stAudio: alcOpenDevice failed - no OpenAL output device.");
-			s.src = nullptr;
+		s.emitter = engine.CreateEmitter("dsp-stream");
+		if (!s.emitter)
 			return false;
-		}
-		s.context = alcCreateContext(s.device, nullptr);
-		if (s.context == nullptr || alcMakeContextCurrent(s.context) == ALC_FALSE)
-		{
-			wilog_error("stAudio: failed to create/activate OpenAL context.");
-			if (s.context) { alcDestroyContext(s.context); s.context = nullptr; }
-			alcCloseDevice(s.device); s.device = nullptr;
-			s.src = nullptr;
-			return false;
-		}
+		// Non-spatial by default: a Faust instrument is a signal, not a place. Callers
+		// that want it in the world flip it through GetEmitter().
+		s.emitter->SetSpatial(false);
+		s.emitter->SetSubmix(st::audio::Submix::SoundEffect);
+		s.emitter->Input(); // claim the pushed-samples path before anything reads it
 
-		alGenSources(1, &s.source);
-		alGenBuffers(kNumBuffers, s.buffers);
-		alSourcef(s.source, AL_GAIN, s.gain.load());
-
-		// Allocate render scratch.
-		s.planar.assign(s.srcChannels, std::vector<float>(kFramesPerBuffer, 0.0f));
-		s.planarPtrs.resize(s.srcChannels);
+		s.planar.assign((size_t)s.srcChannels, std::vector<float>((size_t)s.frameSize, 0.0f));
+		s.planarPtrs.resize((size_t)s.srcChannels);
 		for (int c = 0; c < s.srcChannels; ++c)
-			s.planarPtrs[c] = s.planar[c].data();
-		s.interleaved.assign((size_t)s.outChannels * kFramesPerBuffer, 0);
+			s.planarPtrs[(size_t)c] = s.planar[(size_t)c].data();
+		s.mono.assign((size_t)s.frameSize, 0.0f);
 
-		source->Prepare(sampleRate);
-
-		// Prime every buffer, queue them, and start playback before the worker
-		// thread takes over the recycle loop.
-		for (int i = 0; i < kNumBuffers; ++i)
-			s.FillBuffer(s.buffers[i]);
-		alSourceQueueBuffers(s.source, kNumBuffers, s.buffers);
-		alSourcePlay(s.source);
+		source->Prepare(s.sampleRate);
 
 		s.running.store(true, std::memory_order_release);
 		s.worker = std::thread([this] { impl_->Run(); });
+		s.emitter->Play();
 
-		wilog("stAudio: streaming started (%d Hz, %d ch).", sampleRate, s.outChannels);
+		wilog("stAudio: DSP stream started (%d Hz, %d source channels -> emitter \"%s\").",
+			s.sampleRate, s.srcChannels, s.emitter->GetName().c_str());
 		return true;
 	}
 
 	void DSPStream::Stop()
 	{
 		Impl& s = *impl_;
-		if (!s.running.exchange(false) && s.device == nullptr)
-			return; // never started / already stopped
+		if (!s.running.exchange(false) && !s.emitter)
+			return;
 
 		s.running.store(false);
 		if (s.worker.joinable())
 			s.worker.join();
 
-		if (s.source)
+		if (s.emitter)
 		{
-			alSourceStop(s.source);
-			// Detach any queued buffers so they can be deleted.
-			alSourcei(s.source, AL_BUFFER, 0);
-			alDeleteSources(1, &s.source);
-			s.source = 0;
-		}
-		alDeleteBuffers(kNumBuffers, s.buffers);
-		for (int i = 0; i < kNumBuffers; ++i) s.buffers[i] = 0;
-
-		if (s.context)
-		{
-			alcMakeContextCurrent(nullptr);
-			alcDestroyContext(s.context);
-			s.context = nullptr;
-		}
-		if (s.device)
-		{
-			alcCloseDevice(s.device);
-			s.device = nullptr;
+			st::audio::AudioEngine::Get().Destroy(s.emitter);
+			s.emitter.reset();
 		}
 		s.src = nullptr;
 	}
@@ -223,10 +180,10 @@ namespace wi::audio
 
 	void DSPStream::SetGain(float gain01)
 	{
-		if (gain01 < 0.0f) gain01 = 0.0f;
-		if (gain01 > 1.0f) gain01 = 1.0f;
-		impl_->gain.store(gain01, std::memory_order_relaxed);
+		impl_->gain.store(std::clamp(gain01, 0.0f, 1.0f), std::memory_order_relaxed);
 	}
 
 	float DSPStream::GetGain() const { return impl_->gain.load(std::memory_order_relaxed); }
+
+	std::shared_ptr<st::audio::Emitter> DSPStream::GetEmitter() const { return impl_->emitter; }
 }
