@@ -344,6 +344,24 @@ function(simtary_add_app)
         # opened with LoadLibrary/dlopen. PREFIX "" keeps the file called
         # "application.dll"/"application.so" on every platform instead of picking up
         # a "lib" on Unix, so AppConfig and the installer can name it once.
+        # MODULE_NAME is free-form: "application" (the default), the project's own name,
+        # or anything else. Two things have to be kept out of its way for that to hold.
+        #
+        # The import library and its .exp go to a build-only folder rather than next to
+        # the exe. Nothing links them - the host opens the module with LoadLibrary and
+        # GetProcAddress - and leaving them in the output directory means MODULE_NAME
+        # Milistry would try to write the Milistry.lib the HOST already owns, quietly
+        # replacing the import library the module itself links against.
+        #
+        # The PDB has the same collision and a worse failure: the two would overwrite
+        # each other and one binary would symbolise as addresses. dbghelp finds a PDB
+        # through the name recorded in the image, not by matching file names, so giving
+        # the module's a suffix costs nothing.
+        set(_module_pdb "${APP_MODULE_NAME}")
+        if (APP_MODULE_NAME STREQUAL APP_NAME)
+            set(_module_pdb "${APP_MODULE_NAME}_module")
+        endif()
+
         add_library(${_module_target} MODULE $<TARGET_OBJECTS:${_gamecode_target}>)
         set_target_properties(${_module_target} PROPERTIES
             OUTPUT_NAME     ${APP_MODULE_NAME}
@@ -351,6 +369,8 @@ function(simtary_add_app)
             LINKER_LANGUAGE CXX
             LIBRARY_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:${APP_NAME}>"
             RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:${APP_NAME}>"
+            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/module"
+            PDB_NAME        "${_module_pdb}"
         )
         set_target_properties(${_gamecode_target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
     else()
