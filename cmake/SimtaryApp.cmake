@@ -16,11 +16,24 @@
 #       EXTRA_LIBS     ...
 #       NO_SHADER_WARM                     # skip the engine shader pre-pass
 #       NO_CRASH_REPORTER                  # do not ship SimtaryCrashReporter
+#       MODULE                             # ship game code as a separate library
+#       MODULE_NAME    application         # its file name; default "application"
 #   )
 #
 # The framework (Simtary/Framework) is compiled INTO the app rather than linked as a
 # shared static library: each app gets its own generated version.h (build counter,
 # version, date) and its own AppConfig, so the objects are genuinely per-project.
+#
+# MODULE splits the OUTPUT in two without splitting the sources:
+#
+#   <NAME>.exe          engine + framework + the loader main()  (the HOST)
+#   application.dll     the project's own src/                  (the MODULE)
+#
+# The same src/main.cpp builds either way - ST_APP_ENTRY (Framework/stModule.h) is a
+# main() without MODULE and the module's exported descriptor with it. Editing a scene
+# then relinks a small DLL instead of a 12 MB executable. Read Framework/stModule.h
+# before turning it on: it is a matched-version boundary, not a stable ABI, and the
+# two halves must ship together.
 
 include_guard(GLOBAL)
 
@@ -155,11 +168,72 @@ if (NOT DEFINED SIMTARY_DXC)
     endif()
 endif()
 
+# ── _simtary_collect_static_libs() ────────────────────────────────────────────
+# Every static library that ends up on a target's link line, transitively.
+#
+# The direct list is not enough: the engine links Utility, Jolt and LUA as separate
+# archives that Simtary.lib does NOT absorb (linking a static library to an OBJECT
+# library does not merge the two), so a symbol like OffsetAllocator::free lives in a
+# lib nobody names in simtary_add_app. The module export list has to see all of them
+# or the module fails to link against symbols the host demonstrably has.
+function(_simtary_collect_static_libs TARGET OUT_VAR)
+    set(_seen "")
+    set(_found "")
+    set(_queue "${TARGET}")
+
+    while (_queue)
+        list(POP_FRONT _queue _item)
+
+        # PRIVATE dependencies of an INTERFACE/static target arrive wrapped; anything
+        # else built out of a generator expression cannot be resolved at configure
+        # time and is skipped rather than guessed at.
+        if (_item MATCHES "^\\$<LINK_ONLY:(.+)>$")
+            set(_item "${CMAKE_MATCH_1}")
+        endif()
+        if (_item MATCHES "\\$<")
+            continue()
+        endif()
+        if (NOT TARGET ${_item})
+            continue()   # a bare system library (user32, dbghelp, ...)
+        endif()
+
+        get_target_property(_aliased ${_item} ALIASED_TARGET)
+        if (_aliased)
+            set(_item "${_aliased}")
+        endif()
+        if (_item IN_LIST _seen)
+            continue()
+        endif()
+        list(APPEND _seen ${_item})
+
+        get_target_property(_type ${_item} TYPE)
+        if (_type STREQUAL "STATIC_LIBRARY")
+            list(APPEND _found ${_item})
+        endif()
+
+        # INTERFACE libraries carry no LINK_LIBRARIES, and imported targets carry no
+        # INTERFACE_LINK_LIBRARIES worth walking; both come back NOTFOUND and are
+        # simply not queued.
+        if (NOT _type STREQUAL "INTERFACE_LIBRARY")
+            get_target_property(_direct ${_item} LINK_LIBRARIES)
+            if (_direct)
+                list(APPEND _queue ${_direct})
+            endif()
+        endif()
+        get_target_property(_iface ${_item} INTERFACE_LINK_LIBRARIES)
+        if (_iface)
+            list(APPEND _queue ${_iface})
+        endif()
+    endwhile()
+
+    set(${OUT_VAR} "${_found}" PARENT_SCOPE)
+endfunction()
+
 # ── simtary_add_app() ─────────────────────────────────────────────────────────
 function(simtary_add_app)
-    set(_opts NO_SHADER_WARM NO_CRASH_REPORTER PACK_ASSETS PACK_ONLY)
+    set(_opts NO_SHADER_WARM NO_CRASH_REPORTER PACK_ASSETS PACK_ONLY MODULE)
     set(_one  NAME ORGANIZATION ICON SOURCE_DIR ASSETS_DIR CONTENT_SUBDIR SCENE_SUBDIR
-              PACK_NAME PACK_PART_SIZE PACK_LEVEL)
+              PACK_NAME PACK_PART_SIZE PACK_LEVEL MODULE_NAME)
     set(_multi EXTRA_SOURCES EXTRA_INCLUDES EXTRA_LIBS)
     cmake_parse_arguments(APP "${_opts}" "${_one}" "${_multi}" ${ARGN})
 
@@ -237,7 +311,64 @@ function(simtary_add_app)
         message(FATAL_ERROR "simtary_add_app(${APP_NAME}): no framework sources under ${SIMTARY_FRAMEWORK_DIR}")
     endif()
 
-    add_executable(${APP_NAME} ${_app_sources} ${_framework_sources} ${APP_EXTRA_SOURCES})
+    # ── targets ───────────────────────────────────────────────────────────────
+    # Default layout: one executable holding engine, framework and game.
+    #
+    # MODULE layout: the game's own sources move into a separate shared library that
+    # the executable loads at startup (Framework/stModule.h explains the boundary).
+    # The split is by TARGET, not by source: the same src/main.cpp builds either way,
+    # because ST_APP_ENTRY expands to a main() or to the module's exported descriptor
+    # depending on ST_MODULE_BUILD.
+    #
+    # Both halves are compiled through OBJECT libraries rather than straight into
+    # their final target. That is what lets the export list below be derived: the
+    # game's object files have to exist, and be inspectable, before the host links.
+    set(_module_target   "")
+    set(_gamecode_target "")
+    if (APP_MODULE)
+        if (NOT APP_MODULE_NAME)
+            # "application" by default, so the host does not have to know the project's
+            # name to find it. Pass MODULE_NAME to use the project's name instead.
+            set(APP_MODULE_NAME "application")
+        endif()
+        set(_module_target   ${APP_NAME}_Module)
+        set(_gamecode_target ${APP_NAME}_GameCode)
+        set(_framework_target ${APP_NAME}_Framework)
+
+        add_library(${_framework_target} OBJECT ${_framework_sources})
+        add_library(${_gamecode_target}  OBJECT ${_app_sources} ${APP_EXTRA_SOURCES})
+        add_executable(${APP_NAME} $<TARGET_OBJECTS:${_framework_target}>)
+        set_target_properties(${APP_NAME} PROPERTIES LINKER_LANGUAGE CXX)
+
+        # The module is a MODULE library, not SHARED: nothing links against it, it is
+        # opened with LoadLibrary/dlopen. PREFIX "" keeps the file called
+        # "application.dll"/"application.so" on every platform instead of picking up
+        # a "lib" on Unix, so AppConfig and the installer can name it once.
+        add_library(${_module_target} MODULE $<TARGET_OBJECTS:${_gamecode_target}>)
+        set_target_properties(${_module_target} PROPERTIES
+            OUTPUT_NAME     ${APP_MODULE_NAME}
+            PREFIX          ""
+            LINKER_LANGUAGE CXX
+            LIBRARY_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:${APP_NAME}>"
+            RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:${APP_NAME}>"
+        )
+        set_target_properties(${_gamecode_target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    else()
+        set(_framework_target ${APP_NAME})
+        add_executable(${APP_NAME} ${_app_sources} ${_framework_sources} ${APP_EXTRA_SOURCES})
+    endif()
+
+    # Every target that actually compiles C++ and therefore needs the include paths,
+    # the flags and the engine's usage requirements. Linking a library to an OBJECT
+    # library hands over those requirements without linking anything, which is exactly
+    # what the two halves need.
+    # The executable stays in the list even in MODULE mode: it compiles no C++ there,
+    # but it is still the target that does the linking and so needs the same libraries.
+    set(_compile_targets ${APP_NAME})
+    if (APP_MODULE)
+        list(APPEND _compile_targets ${_framework_target} ${_gamecode_target})
+    endif()
+
     source_group(TREE ${SIMTARY_FRAMEWORK_DIR} PREFIX "Simtary/Framework" FILES ${_framework_sources})
     source_group(TREE ${APP_SOURCE_DIR}        PREFIX "src"               FILES ${_app_sources})
 
@@ -305,7 +436,11 @@ function(simtary_add_app)
             VERBATIM
         )
         set_target_properties(${APP_NAME}_BumpBuildNumber PROPERTIES FOLDER "${APP_NAME}/Build")
-        add_dependencies(${APP_NAME} ${APP_NAME}_BumpBuildNumber)
+        # Every target that compiles against the generated version.h, which in MODULE
+        # mode is the two object libraries rather than the executable itself.
+        foreach (_target IN LISTS _compile_targets)
+            add_dependencies(${_target} ${APP_NAME}_BumpBuildNumber)
+        endforeach()
     else()
         message(STATUS "${APP_NAME}: build number frozen (SIMTARY_BUMP_BUILD_NUMBER=OFF)")
     endif()
@@ -335,18 +470,13 @@ function(simtary_add_app)
         endif()
     endif()
 
-    # ── include paths ─────────────────────────────────────────────────────────
-    target_include_directories(${APP_NAME} PRIVATE
-        ${SIMTARY_FRAMEWORK_DIR}    # stApp.h, stRun.h, io/, sysui/, input/, ...
-        ${SIMTARY_ROOT}/Engine      # Simtary.h and the rest of the engine core
-        ${SIMTARY_ROOT}/include     # vendored headers (faust ABI, stb_image)
-        ${SIMTARY_ROOT}/assets/shaders  # shader interop headers shared with C++ (StProjectorInterop.h, StLaserInterop.h)
-        ${APP_SOURCE_DIR}           # the project's own scenes/ + components/
-        ${_gendir}                  # generated version.h
-        ${APP_EXTRA_INCLUDES}
-    )
-
-    target_link_libraries(${APP_NAME} PRIVATE
+    # ── include paths + libraries ─────────────────────────────────────────────
+    # Applied to every target in _compile_targets. For the executable that means a
+    # real link; for the MODULE-mode object libraries it means the include paths and
+    # compile definitions only, since an OBJECT library takes usage requirements
+    # without linking anything. Both halves therefore compile against exactly the
+    # same headers and flags, which is what the build id at the bottom then asserts.
+    set(_app_link_libraries
         Simtary::AppFlags   # exceptions-off / RTTI-off contract, matching the engine
         Simtary
         SimtaryModelIO      # tinygltf + ufbx, for Framework/io/model (both are C)
@@ -358,6 +488,19 @@ function(simtary_add_app)
         libgfx          # software 2D rasterizer (GFX.h); propagates its include dir + GFXSDL
         ${APP_EXTRA_LIBS}
     )
+
+    foreach (_target IN LISTS _compile_targets)
+        target_include_directories(${_target} PRIVATE
+            ${SIMTARY_FRAMEWORK_DIR}    # stApp.h, stRun.h, io/, sysui/, input/, ...
+            ${SIMTARY_ROOT}/Engine      # Simtary.h and the rest of the engine core
+            ${SIMTARY_ROOT}/include     # vendored headers (faust ABI, stb_image)
+            ${SIMTARY_ROOT}/assets/shaders  # shader interop headers shared with C++ (StProjectorInterop.h, StLaserInterop.h)
+            ${APP_SOURCE_DIR}           # the project's own scenes/ + components/
+            ${_gendir}                  # generated version.h
+            ${APP_EXTRA_INCLUDES}
+        )
+        target_link_libraries(${_target} PRIVATE ${_app_link_libraries})
+    endforeach()
 
     if (WIN32)
         # dbghelp powers the symbolized crash summary (StackWalk64) in Framework/crash/CrashHandler.cpp
@@ -375,12 +518,155 @@ function(simtary_add_app)
 
     if (MSVC)
         # Remove these if you don't need crash symbolization
-        target_compile_options(${APP_NAME} PRIVATE $<$<CONFIG:Release>:/Zi>)
+        foreach (_target IN LISTS _compile_targets)
+            target_compile_options(${_target} PRIVATE $<$<CONFIG:Release>:/Zi>)
+        endforeach()
         target_link_options(${APP_NAME} PRIVATE
             $<$<CONFIG:Release>:/DEBUG>
             $<$<CONFIG:Release>:/OPT:REF>
             $<$<CONFIG:Release>:/OPT:ICF>
         )
+    endif()
+
+    # ── project module ────────────────────────────────────────────────────────
+    if (APP_MODULE)
+        # Everything that decides how the shared C++ types are LAID OUT. Host and
+        # module compare this string at load time and refuse to run as a mismatched
+        # pair, because that mismatch has no other symptom: SIMTARY_LARGE_WORLD alone
+        # changes sizeof(TransformComponent) by 12 bytes, and a host walking a scene
+        # array at the module's stride reads plausible garbage rather than crashing.
+        set(_engine_build_id
+            "${_app_version}-${CMAKE_CXX_COMPILER_ID}${CMAKE_CXX_COMPILER_VERSION}-lw${SIMTARY_LARGE_WORLD}-rtti${WICKED_ENABLE_RTTI}")
+
+        foreach (_target IN LISTS _compile_targets)
+            target_compile_definitions(${_target} PRIVATE
+                ST_ENGINE_BUILD_ID="${_engine_build_id}-$<CONFIG>"
+                ST_MODULE_NAME="${APP_MODULE_NAME}"
+            )
+        endforeach()
+        # ST_MODULE_HOST turns on Framework/stModuleMain.cpp (the loader main) and
+        # Framework/stModuleHost.cpp; ST_MODULE_BUILD switches ST_APP_ENTRY in the
+        # project's own source from an int main() to the exported descriptor.
+        target_compile_definitions(${_framework_target} PRIVATE ST_MODULE_HOST)
+        target_compile_definitions(${_gamecode_target}  PRIVATE ST_MODULE_BUILD)
+
+        # The host has to export symbols for the module to bind to. On ELF that is
+        # all this takes (CMake adds --export-dynamic); on Windows it also needs the
+        # explicit export list built below, and it is what produces the import
+        # library the module links against.
+        set_target_properties(${APP_NAME} PROPERTIES ENABLE_EXPORTS TRUE)
+
+        if (MSVC)
+            # ── derived export list ───────────────────────────────────────────
+            # NOT WINDOWS_EXPORT_ALL_SYMBOLS: the engine archive alone publishes about
+            # 64,700 symbols and a PE export table holds 65,535, so exporting the
+            # engine wholesale does not fit. cmake/simtary_module_def.ps1 intersects
+            # the module's undefined externals with what the host defines instead,
+            # which is a few thousand names and needs no dllexport annotation
+            # anywhere in the engine.
+            if (NOT SIMTARY_DUMPBIN)
+                get_filename_component(_msvc_bin "${CMAKE_LINKER}" DIRECTORY)
+                find_program(SIMTARY_DUMPBIN dumpbin HINTS "${_msvc_bin}")
+                if (NOT SIMTARY_DUMPBIN)
+                    message(FATAL_ERROR
+                        "simtary_add_app(${APP_NAME} MODULE): dumpbin.exe not found next to "
+                        "the linker (${CMAKE_LINKER}). Set -DSIMTARY_DUMPBIN=<path>.")
+                endif()
+            endif()
+            find_program(SIMTARY_POWERSHELL NAMES powershell.exe powershell)
+            if (NOT SIMTARY_POWERSHELL)
+                message(FATAL_ERROR "simtary_add_app(${APP_NAME} MODULE): powershell.exe not found.")
+            endif()
+
+            # Only STATIC inputs belong in the "defined by the host" set. A shared
+            # library's import lib publishes __imp_ stubs, not code: the module links
+            # SDL2 and OpenAL itself, and re-exporting their imports from the host
+            # would bind the module to the wrong thing.
+            set(_def_inputs "$<TARGET_OBJECTS:${_framework_target}>")
+            set(_def_lib_files "")
+            _simtary_collect_static_libs(${APP_NAME} _static_libs)
+            foreach (_lib IN LISTS _static_libs)
+                list(APPEND _def_inputs "$<TARGET_FILE:${_lib}>")
+                list(APPEND _def_lib_files "$<TARGET_FILE:${_lib}>")
+            endforeach()
+            list(LENGTH _static_libs _static_lib_count)
+            message(STATUS "${APP_NAME}: module export scan covers ${_static_lib_count} static libraries")
+
+            set(_moduledir  ${CMAKE_CURRENT_BINARY_DIR}/module)
+            set(_deffile    ${_moduledir}/${APP_NAME}_exports.def)
+            set(_undeflist  ${_moduledir}/gamecode_objects.$<CONFIG>.txt)
+            set(_deflist    ${_moduledir}/host_inputs.$<CONFIG>.txt)
+
+            # Response files: the object lists are long and per-configuration, and
+            # file(GENERATE) is the only place a $<TARGET_OBJECTS:> list can be turned
+            # into text at configure time.
+            file(GENERATE OUTPUT ${_undeflist}
+                 CONTENT "$<JOIN:$<TARGET_OBJECTS:${_gamecode_target}>,\n>\n")
+            file(GENERATE OUTPUT ${_deflist}
+                 CONTENT "$<JOIN:${_def_inputs},\n>\n")
+
+            # The .def is the OUTPUT and the generator leaves its timestamp alone when
+            # the symbol set has not changed. Both halves of that matter: the step
+            # itself re-runs on every build (it has to - only the fresh object files
+            # know what the game now references), while the host relinks only when the
+            # export list genuinely moved.
+            add_custom_command(
+                OUTPUT ${_deffile}
+                COMMAND ${SIMTARY_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+                        -File ${SIMTARY_ROOT}/cmake/simtary_module_def.ps1
+                        -Dumpbin ${SIMTARY_DUMPBIN}
+                        -UndefinedFrom ${_undeflist}
+                        -DefinedFrom ${_deflist}
+                        -Output ${_deffile}
+                # FILE-level dependencies, not just the target names. With targets
+                # alone the generator has no declared inputs, so the build treats an
+                # existing .def as up to date forever: a symbol added to the engine
+                # after the first configure never reaches the export list, and the
+                # module fails to link against something the host plainly has.
+                DEPENDS $<TARGET_OBJECTS:${_gamecode_target}>
+                        $<TARGET_OBJECTS:${_framework_target}>
+                        ${_def_lib_files}
+                        ${_undeflist} ${_deflist}
+                        ${SIMTARY_ROOT}/cmake/simtary_module_def.ps1
+                        ${_gamecode_target} ${_framework_target}
+                COMMENT "Deriving ${APP_NAME} module export list"
+                VERBATIM
+            )
+            add_custom_target(${APP_NAME}_ModuleExports DEPENDS ${_deffile})
+            set_target_properties(${APP_NAME}_ModuleExports PROPERTIES FOLDER "${APP_NAME}/Build")
+            add_dependencies(${APP_NAME} ${APP_NAME}_ModuleExports)
+
+            target_link_options(${APP_NAME} PRIVATE "/DEF:${_deffile}")
+        endif()
+
+        # What the module links for itself, and deliberately nothing else. SDL2 and
+        # OpenAL are shared libraries, so both halves binding to the same DLL is one
+        # copy and one set of globals. Every static library stays host-side: linking
+        # ImGui here would give the module its own ImGui context, and linking the
+        # engine here would give it a second wi::shared_ptr allocator table.
+        target_link_libraries(${_module_target} PRIVATE
+            ${APP_NAME}     # the host's import library - the whole point
+            SDL2::SDL2
+            OpenAL
+        )
+
+        if (MSVC)
+            # The same crash-symbolization contract the host gets. Without it the module
+            # ships with no PDB, and since the module is where the GAME lives, every
+            # crash report and every stack walk stops at a bare address exactly where it
+            # was about to become useful.
+            target_link_options(${_module_target} PRIVATE
+                $<$<CONFIG:Release>:/DEBUG>
+                $<$<CONFIG:Release>:/OPT:REF>
+                $<$<CONFIG:Release>:/OPT:ICF>
+            )
+        endif()
+
+        set_target_properties(${_framework_target} PROPERTIES FOLDER "${APP_NAME}")
+        set_target_properties(${_gamecode_target}  PROPERTIES FOLDER "${APP_NAME}")
+        set_target_properties(${_module_target}    PROPERTIES FOLDER "${APP_NAME}")
+
+        message(STATUS "${APP_NAME}: module layout - host ${APP_NAME}, module ${APP_MODULE_NAME}")
     endif()
 
     # ── crash reporter ────────────────────────────────────────────────────────

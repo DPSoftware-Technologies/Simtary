@@ -117,7 +117,7 @@ counter; only a build of that project does.
 `cmake/SimtaryBootstrap.cmake` is the single include a game needs; it pulls this
 whole workspace in with `add_subdirectory(... EXCLUDE_FROM_ALL)` and exposes:
 
-- `simtary_add_app(NAME ... ORGANIZATION ... ICON ... [SOURCE_DIR] [ASSETS_DIR] [CONTENT_SUBDIR] [EXTRA_SOURCES|INCLUDES|LIBS] [NO_SHADER_WARM] [NO_CRASH_REPORTER] [PACK_ASSETS] [PACK_ONLY] [PACK_NAME] [PACK_PART_SIZE] [PACK_LEVEL])`
+- `simtary_add_app(NAME ... ORGANIZATION ... ICON ... [SOURCE_DIR] [ASSETS_DIR] [CONTENT_SUBDIR] [EXTRA_SOURCES|INCLUDES|LIBS] [NO_SHADER_WARM] [NO_CRASH_REPORTER] [PACK_ASSETS] [PACK_ONLY] [PACK_NAME] [PACK_PART_SIZE] [PACK_LEVEL] [MODULE] [MODULE_NAME])`
 - `simtary_pack_assets(TARGET ... CONTENT_DIR ... [NAME] [PART_SIZE] [LEVEL] [PACK_SUBDIR] [SCENE_SUBDIR])`
 - `simtary_compile_shader(TARGET ... SOURCE ... PROFILE ... [ENTRY] [OUTPUT_NAME])`
 - `simtary_faust_regen(NAME ... CLASS ... DSP ... OUTPUT ...)`
@@ -562,6 +562,76 @@ gives a map that saves "successfully" and reloads grey.
 one package build, which is exactly what an editor save is when every resource it
 references was already mounted. `stpack scene` only warns about a UUID that is set AND
 different.
+
+**`simtary_add_app(MODULE)` ships the game as a DLL beside the engine executable, and
+the rules that make it safe are not optional.** `<NAME>.exe` holds engine + framework +
+a loader `main()`; `application.dll` holds the project's `src/`. One source tree serves
+both — `ST_APP_ENTRY` (`Framework/stModule.h`) expands to a `main()` normally and to the
+module's exported descriptor with `MODULE`. What the split buys is relink time: editing
+a scene relinks ~800 KB instead of 12 MB.
+
+It is a **matched-version** boundary, not a stable ABI. Host and module share C++ types
+and must come from one build; `ST_ENGINE_BUILD_ID` encodes the version, the compiler and
+every layout-affecting option (`SIMTARY_LARGE_WORLD` alone changes
+`sizeof(TransformComponent)` by 12 bytes) and the loader refuses a mismatched pair rather
+than reading a scene at the wrong stride.
+
+The module links **no** static library the host already has. SDL2 and OpenAL are shared
+and safe to link twice; ImGui, the engine and every other archive stay host-side, or the
+module gets a second ImGui context and a second engine.
+
+Exports are DERIVED, not annotated. `Simtary.lib` publishes ~64,700 symbols and a PE
+export table holds 65,535, so `WINDOWS_EXPORT_ALL_SYMBOLS` cannot work here.
+`cmake/simtary_module_def.ps1` intersects the module's undefined externals with what the
+host defines and writes a `.def` — about 100 symbols for the template. Its "defined" side
+must walk the link graph **transitively**: `Utility`, `Jolt` and `LUA` are separate
+archives that `Simtary.lib` does not absorb, and missing them means the module fails to
+link against symbols the host demonstrably has.
+
+**Five header-static bugs had to be fixed before any of this could run, and they are all
+the same bug.** A `static` inside an `inline` function or an inline variable is one
+instance per BINARY, not per process. A DLL therefore gets its OWN copy of state the
+engine assumes is global, and nothing warns you:
+
+- `wi::ecs::CreateEntity()` — the id counter. Host and module each had one starting at 1,
+  so both issued the SAME entity ids. Two entities sharing an id means attaching one to a
+  root can attach it to itself, and `Scene::Entity_IsDescendant` walks parents with **no
+  cycle guard**, so it spun forever. Now declared in `wiECS.h`, defined in `wiECS.cpp`.
+- `wi::scene::GetScene()` / `GetCamera()` — the module got its own world. It would load a
+  map into a scene the executable never renders. Now defined in `wiScene.cpp`.
+- `wi::graphics::GetDevice()` — the module's copy stayed `nullptr` forever, because it is
+  the executable's `Application::SetWindow` that assigns it. Now defined in
+  `wiGraphicsDevice.cpp`.
+- `wi::allocator::shared_allocators` was an inline variable — two 256-entry tables, two id
+  counters both starting at 0, so a `wi::shared_ptr` released on the other side was freed
+  through a block allocator built for a different type. Now a non-inline
+  `shared_allocator_table()` in `Engine/wiAllocator.cpp`.
+- `ska::flat_hash_map`'s `empty_default_table()` sentinel is a function-local static in a
+  class template, and `deallocate_data` guarded with `begin != empty_default_table()`. A
+  map default-constructed in the module and grown by host code failed that guard and
+  called `free()` on a static array. It now recognises the empty state STRUCTURALLY
+  (`max_lookups < min_lookups`, which `compute_max_lookups` can never return for a real
+  allocation).
+
+The symptoms were `0xC0000374` heap corruption at an unrelated `free`, and an infinite
+spin inside a hash lookup — in both cases pages of stack with nothing pointing at the
+cause. **The rule: state the engine treats as process-global must be declared in a header
+and defined in exactly one `.cpp`.** Two known survivors are per-module by design and
+sound: `make_shared_single`'s heap allocator and the `shared_block_allocator<T>` template
+variable each register their own id in the now-shared table, so an object is always freed
+through the allocator that made it. `wiPlatform.h`'s `SetWindowFullScreen` keeps a
+per-binary `WINDOWPLACEMENT`, which only matters if both halves toggle fullscreen.
+
+`Scene::Entity_IsDescendant` still has no cycle guard. Nothing produces a cycle now that
+ids are unique, but a corrupt scene file would hang the app with no diagnostic.
+
+**One CRT for the whole workspace, and `project()` must name every language.** `LUA` and
+`SimtaryModelIO` are C targets; while `project()` declared `LANGUAGES CXX` only, CMake
+never initialised the C runtime-library abstraction and MSBuild gave those two its own
+default — the STATIC CRT — while every C++ target used the dynamic one. Two CRTs in one
+link is two heaps. The visible symptom was only `LNK4098`; the invisible one was fatal at
+a module boundary. Fixed by `LANGUAGES C CXX` plus an explicit
+`CMAKE_MSVC_RUNTIME_LIBRARY`.
 
 **Shader cache.** `Simtary/shaders/` is staged into every game's output before the
 incremental `offlineshadercompiler` pre-pass, so first launch is never cold. After a

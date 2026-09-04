@@ -36,7 +36,11 @@ if (${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
     )
 endif()
 
-project(Simtary VERSION 1.0.0 LANGUAGES CXX)
+# C is listed alongside CXX deliberately. LUA and SimtaryModelIO are C targets, and a
+# language that project() does not declare never gets its MSVC runtime-library
+# abstraction initialised - those two then came out with an empty <RuntimeLibrary> and
+# MSBuild's own default, the static CRT. See the CMAKE_MSVC_RUNTIME_LIBRARY block below.
+project(Simtary VERSION 1.0.0 LANGUAGES C CXX)
 
 include(CheckIPOSupported)
 
@@ -110,6 +114,20 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ${WICKED_PIC})
+
+# One C runtime for the whole workspace, stated rather than inherited.
+#
+# Before this, project() declared CXX only and the two C targets (LUA,
+# SimtaryModelIO) came out with an EMPTY <RuntimeLibrary> - so MSBuild gave them its
+# own default, the STATIC CRT, while every C++ target used the dynamic one. The
+# visible symptom was just "LNK4098: defaultlib 'LIBCMT' conflicts". The invisible one
+# is worse: two CRTs in one link means two heaps, and a block allocated by one and
+# freed through the other corrupts them both. That is fatal for
+# simtary_add_app(MODULE), where a project module and its host pass std:: containers
+# across a DLL boundary constantly.
+if (MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
 
 # Use solution folders to organize projects
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)

@@ -875,6 +875,25 @@ private:
 
     void deallocate_data(EntryPointer begin, size_t num_slots_minus_one, int8_t max_lookups)
     {
+        // Simtary change: the empty state is recognised STRUCTURALLY, not by the
+        // address of Entry::empty_default_table().
+        //
+        // That sentinel is a function-local static inside a class template, so it is
+        // one array per BINARY, not one per process. Load a DLL that also uses
+        // wi::unordered_map - a project module built with simtary_add_app(MODULE), a
+        // plugin, anything dlopen'd - and a map default-constructed on one side points
+        // at that side's sentinel. When code on the OTHER side later grows the map,
+        // "begin != empty_default_table()" compares against its own copy, does not
+        // recognise it, and calls free() on a static array. The result is heap
+        // corruption that surfaces later at an unrelated free, with nothing in the
+        // stack pointing back here.
+        //
+        // max_lookups is an exact substitute: compute_max_lookups() never returns less
+        // than min_lookups for a real allocation, and the empty state is the only thing
+        // that carries min_lookups - 1. The pointer test is kept as well, so a same-
+        // module empty table still short-circuits exactly as before.
+        if (max_lookups < detailv3::min_lookups)
+            return;
         if (begin != Entry::empty_default_table())
         {
             AllocatorTraits::deallocate(*this, begin, num_slots_minus_one + max_lookups + 1);
