@@ -410,13 +410,26 @@ re-running zstd over 76 MB of maps on every build, changed or not, is tens of se
 each time. `<APP>_Repack` forces it; `<APP>_AssetsResync` drops the stamp so the next
 ordinary build regenerates the package it just wiped.
 
-**A packed build must not also ship the `.wiscene`.** `copy_directory` has no filter, so
-`<APP>_Assets` copies the maps along with everything else; with `PACK_ASSETS` on, the
-copy step then deletes exactly those files from the output. Leaving them costs ~37 MB
-each of duplicated content AND leaves a second copy that can go stale and still be
-found. The removal lives on the copy target, not the pack target, because the pack
-target is incremental and skips itself when up to date - by which time the copy has
-already put the `.wiscene` back.
+**Packing and copying loose are ALTERNATIVES, not companions.** With `PACK_ASSETS` the
+content directory is NOT copied to `<exe>/assets` at all — the package is the shipped
+form. `stpack` takes every regular file under it (the only thing it skips is `*.wiscene`,
+which it has already converted to `.stsd`), so a loose copy beside the package is a
+second copy of every asset. And it is a copy nothing reads: `AssetSystem::Install()` puts
+the packs in front of the filesystem, so a path the package holds always resolves out of
+the package.
+
+For Milistry that was 56 MB of dead weight beside a 90 MB package — `<exe>/assets` went
+from 156.6 MB to 100.9 MB — most of it one 53 MB `.wav`. It is also a staleness hazard in
+the one case the loose copy IS read: SDL loads the splash straight off disk before the
+override exists (`Framework/stRun.cpp`), so an out-of-date loose `splash.bmp` wins over
+the packed one. Removing it is safe because that code already falls back to reading the
+splash through `AssetSystem`.
+
+This replaced an older rule that copied the whole tree and then deleted only the
+`.wiscene` and `.staod` files back out. That left every other packed asset duplicated,
+and it re-copied them on EVERY build — `copy_if_different` sees the destination missing,
+because the previous build had just deleted it. `PACK_ONLY` now describes what
+`PACK_ASSETS` already does and is kept only as an accepted spelling.
 
 **The loading window carries two lines because two different things report.**
 `SubWinStatus` has a `status` (the PHASE - "Loading materials", "Processing assets",
@@ -569,6 +582,16 @@ a loader `main()`; `application.dll` holds the project's `src/`. One source tree
 both — `ST_APP_ENTRY` (`Framework/stModule.h`) expands to a `main()` normally and to the
 module's exported descriptor with `MODULE`. What the split buys is relink time: editing
 a scene relinks ~800 KB instead of 12 MB.
+
+`MODULE_NAME` is free-form — `application` (the default, so the host needs to know
+nothing about the project), the project's own name, or anything else; `--module=<name>`
+overrides it at runtime with no rebuild. Naming it after the project is handled rather
+than merely allowed: the module's import library, its `.exp` and its PDB would otherwise
+collide with the host's, so the first two go to `<build>/module/` (nothing links them —
+the host uses `LoadLibrary`/`GetProcAddress`) and the PDB gains a `_module` suffix.
+dbghelp resolves a PDB by the name recorded in the image, so the suffix costs nothing.
+Renaming leaves the previously-named DLL sitting in the output directory — delete it, or
+a stale `--module=` still finds it.
 
 It is a **matched-version** boundary, not a stable ABI. Host and module share C++ types
 and must come from one build; `ST_ENGINE_BUILD_ID` encodes the version, the compiler and

@@ -832,50 +832,33 @@ function(simtary_add_app)
                 # exist yet when this runs (it runs BEFORE the link, not after).
                 COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:${APP_NAME}>/assets
             )
-            # PACK_ONLY ships the .strd/.stafp set and nothing loose. The copy is
-            # skipped rather than made and deleted, because the package lands in the
-            # same folder and a delete would have to know which files it may touch.
-            if (NOT APP_PACK_ONLY)
+            # Packing and copying loose are ALTERNATIVES, not companions.
+            #
+            # stpack takes every regular file under the content directory (tools/stpack.cpp:
+            # the only thing it skips is *.wiscene, and only because it has already
+            # converted those into .stsd). So once the package is built, a loose copy of
+            # that tree is a second copy of every asset - and a copy nothing will ever
+            # read: AssetSystem::Install() puts the packs in front of the filesystem, so a
+            # path the package holds always resolves out of the package. For Milistry that
+            # was 56 MB of dead weight beside a 90 MB package, most of it one 53 MB .wav.
+            #
+            # It is also a staleness hazard in the one case it IS read: SDL loads the
+            # splash straight off disk before the override exists (Framework/stRun.cpp), so
+            # an out-of-date loose splash.bmp wins over the packed one.
+            #
+            # This replaces an older rule that copied the whole tree and then deleted just
+            # the .wiscene and .staod files from the output. That left every other packed
+            # asset duplicated, and it re-copied them on EVERY build: copy_if_different
+            # sees the destination missing (we deleted it) and copies again.
+            #
+            # PACK_ONLY therefore now describes what PACK_ASSETS already does; it is kept
+            # as an accepted spelling so existing projects keep configuring.
+            if (NOT APP_PACK_ONLY AND NOT APP_PACK_ASSETS)
                 list(APPEND _asset_copy_commands
                     COMMAND ${CMAKE_COMMAND} -E ${SIMTARY_COPY_DIR_CMD}
                         ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}
                         $<TARGET_FILE_DIR:${APP_NAME}>/assets
                 )
-
-                # ...then take the sources that are now REDUNDANT back out, but ONLY when
-                # they have been packed. Without PACK_ASSETS the .wiscene IS the shipped
-                # map and removing it would leave the game with nothing to load.
-                #
-                # copy_directory has no filter, so the tree copy above brings everything
-                # along. Once the packer has run, two kinds of file in the output are a
-                # second copy of content that already shipped:
-                #
-                #   *.wiscene  ~37 MB of the SAME content the .stsd and the package hold.
-                #              It doubles the build size, and it can go stale and still be
-                #              found first.
-                #   *.staod    animation descriptors. They are in the package as
-                #              AssetType::Animation, and LoadAnimationDescriptor reads them
-                #              through the asset-source override, so the loose copy is only
-                #              a shadowing hazard.
-                #
-                # The source of truth stays in assets/contents/; the output keeps only the
-                # packaged form.
-                #
-                # This lives on ${APP}_Assets rather than on the pack step because the
-                # pack step is incremental - when it is up to date it does not run, and
-                # the copy above has just put the files back.
-                if (APP_PACK_ASSETS)
-                    file(GLOB_RECURSE _packed_sources CONFIGURE_DEPENDS
-                         ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}/*.wiscene
-                         ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}/*.staod)
-                    foreach (_src IN LISTS _packed_sources)
-                        file(RELATIVE_PATH _rel ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR} ${_src})
-                        list(APPEND _asset_copy_commands
-                            COMMAND ${CMAKE_COMMAND} -E rm -f
-                                $<TARGET_FILE_DIR:${APP_NAME}>/assets/${_rel}
-                        )
-                    endforeach()
-                endif()
             endif()
         endif()
 
@@ -911,7 +894,9 @@ function(simtary_add_app)
                 COMMAND ${CMAKE_COMMAND} -E copy_directory
                     ${APP_ASSETS_DIR} ${CMAKE_CURRENT_BINARY_DIR}/assets
             )
-            if (NOT APP_PACK_ONLY)
+            # Same rule as the ordinary copy above: a packed build ships the package, not
+            # a loose second copy of everything in it.
+            if (NOT APP_PACK_ONLY AND NOT APP_PACK_ASSETS)
                 list(APPEND _asset_resync_commands
                     COMMAND ${CMAKE_COMMAND} -E copy_directory
                         ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}
