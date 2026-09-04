@@ -26,11 +26,15 @@ namespace wi::ecs
 	using Entity = uint64_t;
 	inline static constexpr Entity INVALID_ENTITY = 0;
 	// Runtime can create a new entity with this
-	inline Entity CreateEntity()
-	{
-		static std::atomic<Entity> next{ INVALID_ENTITY + 1 };
-		return next.fetch_add(1);
-	}
+	//
+	// Defined in wiECS.cpp, NOT inline here. The counter behind it must be one per
+	// PROCESS, and a function-local static in an inline function is one per BINARY: a
+	// DLL that called this got its own counter starting at 1 and handed out ids the
+	// executable was independently handing out too. Two entities then share an id, so
+	// attaching one to a root can attach it to itself, and Entity_IsDescendant - which
+	// walks parents with no cycle guard - spins forever. The failure looks like a hang
+	// deep inside a hash lookup, nowhere near here.
+	Entity CreateEntity();
 	inline static constexpr size_t INVALID_INDEX = ~0ull;
 
 	class ComponentLibrary;

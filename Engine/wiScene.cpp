@@ -31,6 +31,22 @@ namespace wi::scene
 {
 	static constexpr uint32_t small_subtask_groupsize = 256u;
 
+	// The global scene and camera live HERE, in one translation unit, and are declared
+	// (not defined) in wiScene.h. See the comment on the declarations: as inline
+	// functions their function-local statics were one instance per binary, so a DLL got
+	// a second world of its own.
+	Scene& GetScene()
+	{
+		static Scene scene;
+		return scene;
+	}
+
+	CameraComponent& GetCamera()
+	{
+		static CameraComponent camera;
+		return camera;
+	}
+
 	void Scene::Update(float dt)
 	{
 		GraphicsDevice* device = wi::graphics::GetDevice();

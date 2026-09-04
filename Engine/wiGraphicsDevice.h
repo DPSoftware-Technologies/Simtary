@@ -451,10 +451,11 @@ namespace wi::graphics
 	// This is a helper to get access to a global device instance
 	//	- The engine uses this, but it is not necessary to use a single global device object
 	//	- This is not a lifetime managing object, just a way to globally expose a reference to an object by pointer
-	inline GraphicsDevice*& GetDevice()
-	{
-		static GraphicsDevice* device = nullptr;
-		return device;
-	}
+	//
+	// Defined in wiGraphicsDevice.cpp, NOT inline here. A function-local static is one
+	// instance per binary: as an inline function, a DLL that called this got its own
+	// pointer, which the executable's Application::SetWindow never assigned — so every
+	// GetDevice() inside that DLL returned nullptr while the engine was plainly running.
+	GraphicsDevice*& GetDevice();
 
 }

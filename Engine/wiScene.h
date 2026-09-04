@@ -674,19 +674,18 @@ namespace wi::scene
 
 	// Helper that manages a global scene
 	//	(You don't need to use it, but it's an option for simplicity)
-	inline Scene& GetScene()
-	{
-		static Scene scene;
-		return scene;
-	}
+	//
+	// Defined in wiScene.cpp, NOT inline here. A function-local static is one instance
+	// per binary, not per process: as an inline function, every DLL that called this
+	// got its OWN global scene. A project module built with simtary_add_app(MODULE)
+	// would then load its map into a scene the executable never renders, and the two
+	// halves would disagree about the world with nothing to show for it.
+	Scene& GetScene();
 
 	// Helper that manages a global camera
 	//	(You don't need to use it, but it's an option for simplicity)
-	inline CameraComponent& GetCamera()
-	{
-		static CameraComponent camera;
-		return camera;
-	}
+	//	Same reason as GetScene() for not being inline.
+	CameraComponent& GetCamera();
 
 	// Helper function to open a wiscene file and add the contents to the global scene
 	//	fileName		:	file path
