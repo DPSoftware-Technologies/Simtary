@@ -10,7 +10,7 @@ namespace st {
 // This is deliberately separate from the engine's own lens flare
 // (Simtary/shaders/lensFlare*.hlsl), which is a texture-billboard system driven by
 // LightComponent::lensFlareNames. This one samples nothing and needs no authored
-// textures — it only needs the sun's screen position.
+// textures - it only needs the sun's screen position.
 //
 // Usage from Milistry:
 //   Init()               once, after the graphics device exists

@@ -98,14 +98,14 @@ std::vector<uint8_t> MakeFakeWiscene (const std::vector<uint8_t>& ecsPayload,
     return file;
 }
 
-// ── tests ──────────────────────────────────────────────────────────────────────
+// tests
 
 void TestHash () {
     // The published XXH64 vector for an empty input with seed 0. If this moves, the
     // implementation is not XXH64 any more and every shipped .strd is unreadable.
     CHECK(Hash64("", 0) == 0xEF46DB3751D8E999ull, "XXH64 empty-input vector");
 
-    // The streaming form has to agree with the one-shot form at every chunk boundary —
+    // The streaming form has to agree with the one-shot form at every chunk boundary
     // that is where a hand-written accumulator gets it wrong.
     const std::vector<uint8_t> data = Filler(9999, 7, false);
     const uint64_t oneShot = Hash64(data.data(), data.size());
@@ -236,7 +236,7 @@ void TestPackRoundTrip (const fs::path& dir) {
                 CHECK(std::memcmp(window.data(), e.data.data() + at, window.size()) == 0,
                       "ranged read returns the right bytes");
             }
-            // Past the end is an empty answer, not a failure — a plain file read behaves
+            // Past the end is an empty answer, not a failure - a plain file read behaves
             // the same way and the engine relies on it while walking mip chains.
             std::vector<uint8_t> tail;
             CHECK(pack.ReadRange(*a, e.data.size() + 10, 100, tail, &error), "read past end succeeds");
@@ -253,7 +253,7 @@ void TestPackRoundTrip (const fs::path& dir) {
     CHECK(pack.VerifyAll(&error), error.empty() ? "VerifyAll" : error.c_str());
 
     // An already-compressed asset must stay stored, or the zero-copy streaming path is
-    // gone — that is the property the whole codec-choice table exists to protect.
+    // gone - that is the property the whole codec-choice table exists to protect.
     if (const StrdAsset* dds = pack.Find("textures/wall.dds")) {
         CHECK(static_cast<Codec>(dds->codec) == Codec::None, "incompressible asset stays stored");
         CHECK(pack.MappedData(*dds) != nullptr, "stored asset is readable zero-copy");

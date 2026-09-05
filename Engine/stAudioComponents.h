@@ -1,5 +1,5 @@
 #pragma once
-// ─── stAudioComponents: audio on a GameObject ────────────────────────────────────
+// stAudioComponents: audio on a GameObject
 //
 // Two native components, and every entity can carry either or both:
 //
@@ -57,10 +57,10 @@ namespace st
 	// silently never appear in the editor. Idempotent.
 	void RegisterAudioComponents();
 
-	// ── Emitter (Speaker) ───────────────────────────────────────────────────────
+	// Emitter (Speaker)
 	struct AudioEmitterComponent : wi::scene::NativeComponent
 	{
-		// ── asset / transport ───────────────────────────────────────────────────
+		// asset / transport
 		std::string clip;                 // path; empty means "I will push samples into Input()"
 		bool  playOnStart = true;
 		bool  loop = false;
@@ -75,7 +75,7 @@ namespace st
 		// Feed Steam Audio a velocity derived from how far the entity moved this frame.
 		bool  computeVelocity = true;
 
-		// ── Steam Audio: direct path ────────────────────────────────────────────
+		// Steam Audio: direct path
 		int   distanceModel = (int)audio::DistanceAttenuationModel::Default; // 0 none, 1 inverse
 		float minDistance = 1.0f;
 		float maxDistance = 500.0f;
@@ -84,7 +84,7 @@ namespace st
 		float airAbsorptionMid = 0.0017f;
 		float airAbsorptionHigh = 0.0182f;
 
-		// ── Steam Audio: directivity ────────────────────────────────────────────
+		// Steam Audio: directivity
 		// Which of the entity's local axes the speaker points down. Same numbering as
 		// st::LocalAxes (Framework/scene/Ray.h) so a speaker, a laser and a projector on
 		// one entity all agree about "forward": 0 +Z, 1 -Z, 2 -Y, 3 +Y, 4 +X, 5 -X.
@@ -99,20 +99,20 @@ namespace st
 		// Lobe sharpness. 1 is a soft cardioid-ish shape, 8 is a searchlight.
 		float dipolePower = 1.0f;
 
-		// ── debug overlay ───────────────────────────────────────────────────────
+		// debug overlay
 		// Draw the directivity lobe in the world, so where a speaker is actually
 		// pointing is visible rather than inferred from two numbers.
 		bool  debugDraw = false;
 		float debugScale = 3.0f;      // metres the lobe is drawn at full gain
 
-		// ── Steam Audio: occlusion / transmission ───────────────────────────────
+		// Steam Audio: occlusion / transmission
 		int   occlusion = (int)audio::OcclusionMode::Off;        // 0 off, 1 raycast, 2 volumetric
 		float occlusionRadius = 1.0f;
 		int   occlusionSamples = 16;
 		int   transmission = (int)audio::TransmissionMode::Off;  // 0 off, 1 freq-independent, 2 freq-dependent
 		int   transmissionRays = 8;
 
-		// ── Steam Audio: reflections / pathing ──────────────────────────────────
+		// Steam Audio: reflections / pathing
 		bool  reflections = false;
 		float reflectionsMix = 1.0f;
 		bool  pathing = false;
@@ -122,7 +122,7 @@ namespace st
 		float pathingRange = 1000.0f;
 		bool  pathingValidation = true;
 
-		// ── Steam Audio: rendering ──────────────────────────────────────────────
+		// Steam Audio: rendering
 		int   output = (int)audio::SpatialOutput::Binaural;      // 0 binaural, 1 panning, 2 ambisonics
 		int   interpolation = (int)audio::HRTFInterpolation::Bilinear; // 0 nearest, 1 bilinear
 		float spatialBlend = 1.0f;
@@ -132,7 +132,7 @@ namespace st
 		bool  applyOcclusion = true;
 		bool  applyTransmission = true;
 
-		// ── access ──────────────────────────────────────────────────────────────
+		// access
 		const audio::EmitterRef& GetEmitter() const { return emitter_; }
 
 		// The samples this emitter is about to radiate. Write mono blocks here for a
@@ -187,7 +187,7 @@ namespace st
 		bool hasLastPosition_ = false;
 	};
 
-	// ── Collector (Microphone) ──────────────────────────────────────────────────
+	// Collector (Microphone)
 	struct AudioCollectorComponent : wi::scene::NativeComponent
 	{
 		// Highest priority among the enabled collectors becomes the player's ears and
@@ -199,7 +199,7 @@ namespace st
 		bool  routeToOutput = true;
 		bool  followTransform = true;
 
-		// ── Steam Audio: listener options ───────────────────────────────────────
+		// Steam Audio: listener options
 		int   output = (int)audio::SpatialOutput::Binaural;   // 0 binaural, 1 panning, 2 ambisonics
 		int   interpolation = (int)audio::HRTFInterpolation::Bilinear;
 		int   normalization = (int)audio::HRTFNormalization::None; // 0 none, 1 RMS
@@ -208,7 +208,7 @@ namespace st
 		float hrtfVolumeGain = 0.0f;
 		std::string sofaFile;   // custom HRTF; empty uses Steam Audio's built-in
 
-		// ── access ──────────────────────────────────────────────────────────────
+		// access
 		const audio::CollectorRef& GetCollector() const { return collector_; }
 
 		// What this microphone hears, updated every audio block. Stereo for

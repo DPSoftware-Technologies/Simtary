@@ -45,12 +45,12 @@ bool EntityField(wi::scene::Scene& scene, const char* label,
 //
 //	Dropping a row on ANOTHER ROW re-parents it (Scene::Component_Attach, which bakes the
 //	child's world transform into its new local one so it does not jump), and dropping it on the
-//	strip under the tree un-parents it. A target only opens when the drop would be legal —
-//	never onto itself or one of its own descendants — so an illegal row does not highlight.
+//	strip under the tree un-parents it. A target only opens when the drop would be legal
+//	never onto itself or one of its own descendants - so an illegal row does not highlight.
 //	Both are one undo step when a `history` is supplied.
 //
 //	`history` is optional. Pass one (Editor mode does) and the panel also grows a Create
-//	button and a right-click menu — create child / duplicate / delete — each recorded as a
+//	button and a right-click menu - create child / duplicate / delete - each recorded as a
 //	single undo step. Without it the panel is read-only apart from selection, which is what
 //	the plain DevUI Hierarchy window wants.
 void HierarchyGUI(wi::scene::Scene& scene, wi::ecs::Entity& selected,

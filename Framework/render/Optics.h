@@ -78,7 +78,7 @@ struct OpticSurface {
 	// that simply refuses to work.
 	bool resolved = false;
 
-	// ── diagnostics ──────────────────────────────────────────────────────────────
+	// diagnostics
 	// Written by Trace, reset by Update, read by the inspector. Mutable because Trace
 	// is const and this is not state - it is the answer to "is a beam actually
 	// reaching this thing?", which is otherwise pure guesswork.
@@ -108,7 +108,7 @@ struct Mirror {
 	// straight through instead of bouncing off the back of the glass.
 	bool doubleSided = true;
 
-	// ── dichroic / beam splitter ─────────────────────────────────────────────────
+	// dichroic / beam splitter
 	// A dichroic mirror reflects one band and TRANSMITS the rest, so one beam arrives
 	// and two leave. Turn this on and the trace branches: the reflected beam carries
 	// `tint * reflectance`, and a second beam continues straight on carrying
@@ -383,7 +383,7 @@ bool ResolveOpticSurface(const wi::scene::Scene& scene, OpticSurface& surface);
 bool IntersectOpticSurface(const OpticSurface& surface, const XMFLOAT3& origin, const XMFLOAT3& direction,
 	float minDistance, float maxDistance, float& distance, XMFLOAT3& point);
 
-// ── shared inspector pieces ─────────────────────────────────────────────────────
+// shared inspector pieces
 // The system panel and the native components both draw these, so they live here
 // rather than being written twice and drifting apart.
 

@@ -87,7 +87,7 @@ static constexpr int ST_LASER_ARRAY_MAX = 256;
 struct Laser {
 	bool enabled = true;
 
-	// ── placement ────────────────────────────────────────────────────────────────
+	// placement
 	// With followEntity set, position/direction are refreshed from that entity's world
 	// transform every frame and whatever you wrote into them is overwritten.
 	wi::ecs::Entity followEntity = wi::ecs::INVALID_ENTITY;
@@ -108,7 +108,7 @@ struct Laser {
 	// inside the weapon.
 	float startOffset = 0.0f;
 
-	// ── beam ─────────────────────────────────────────────────────────────────────
+	// beam
 	XMFLOAT3 color = XMFLOAT3(1.0f, 0.1f, 0.05f);
 
 	// The filament. Real laser beams are 1-3 mm; anything above a centimetre reads as
@@ -137,7 +137,7 @@ struct Laser {
 	float flicker = 0.0f;
 	float flickerRate = 24.0f; // Hz
 
-	// ── optics ───────────────────────────────────────────────────────────────────
+	// optics
 	// How many mirrors/lenses the beam may pass through. 0 traces a straight line and
 	// ignores every element.
 	int maxBounces = 4;
@@ -147,12 +147,12 @@ struct Laser {
 	// stops on the glass instead of bouncing. See BeamTraceDesc::opticBias.
 	float opticBias = 0.02f;
 
-	// ── array projection ─────────────────────────────────────────────────────────
+	// array projection
 	// Emit a pattern of rays instead of one. Off by default; see LaserArray above for
 	// what it costs and what the two spread modes mean.
 	LaserArray array;
 
-	// ── where the beam stops ─────────────────────────────────────────────────────
+	// where the beam stops
 	// Mesh hits anything drawn, Physics hits Jolt bodies, Both keeps the nearer, None
 	// lets the beam run its full range through the world. See scene/Ray.h.
 	RayQuery::Mode rayMode = RayQuery::Mode::Mesh;
@@ -161,7 +161,7 @@ struct Laser {
 	// Never stop on this entity. Set it to the weapon the laser is bolted to.
 	wi::ecs::Entity ignoreEntity = wi::ecs::INVALID_ENTITY;
 
-	// ── the projected spot ───────────────────────────────────────────────────────
+	// the projected spot
 	// The dot the beam paints where it lands: a small ball of glow in the air plus a
 	// mark spread across the surface itself.
 	bool dot = true;
@@ -170,7 +170,7 @@ struct Laser {
 	float surfaceRadius = 0.035f; // how far the mark spreads on the surface, metres
 	float surfaceIntensity = 8.0f;
 
-	// ── persistence trail ────────────────────────────────────────────────────────
+	// persistence trail
 	// Impact points are kept for `trailLife` seconds and fade out over that time, so
 	// a beam swept across a wall DRAWS on it instead of showing a single dot that
 	// vanishes the instant it moves. This is the same effect that makes a laser show
@@ -186,7 +186,7 @@ struct Laser {
 	// Trail points shrink as they age as well as dimming. 0 keeps them full size.
 	float trailShrink = 0.5f;
 
-	// ── debug ────────────────────────────────────────────────────────────────────
+	// debug
 	// Draw the traced path as engine debug lines, one per leg, coloured by what ended
 	// it: white = ran out of range, green = landed on geometry, cyan = reflected off a
 	// mirror, magenta = refracted through a lens.

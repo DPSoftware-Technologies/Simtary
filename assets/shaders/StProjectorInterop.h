@@ -79,7 +79,7 @@ struct StProjector
 	float pad0;
 	float pad1;
 
-	// ── aperture clip ────────────────────────────────────────────────────────────
+	// aperture clip
 	// A virtual projector - the reflection of a real one in a mirror, or its image
 	// through a lens - is a full cone from a point behind the glass, and without this
 	// it would light the whole room from there instead of only the patch the mirror

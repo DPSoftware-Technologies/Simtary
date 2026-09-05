@@ -1,5 +1,5 @@
 #pragma once
-// XXH64 — the one content hash the asset pipeline uses.
+// XXH64 - the one content hash the asset pipeline uses.
 //
 // Header only, no dependencies beyond <cstdint>/<cstddef>, because the build-time
 // packer (tools/stpack) links this and NOTHING else from the engine: it has to be
@@ -228,7 +228,7 @@ private:
 //
 //   CanonicalPath   NormalizePath, then lower cased. This is what gets HASHED, so a
 //                   lookup succeeds whether the caller wrote "Textures/Wall.DDS" or
-//                   "textures/wall.dds" — the two spellings differ between Windows and
+//                   "textures/wall.dds" - the two spellings differ between Windows and
 //                   Linux authoring far more often than they mean two different files.
 //
 // An asset ID is XXH64 of the canonical path, so it is reproducible from the path alone

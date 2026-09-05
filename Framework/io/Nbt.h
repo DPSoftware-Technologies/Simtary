@@ -2,17 +2,17 @@
 // Minimal NBT (Named Binary Tag) reader/writer for Milistry. Uncompressed, big-endian,
 // matching the classic NBT layout, so files can be inspected with standard NBT tools.
 //
-// One container format, three file extensions by ROLE — they are not interchangeable,
+// One container format, three file extensions by ROLE - they are not interchangeable,
 // and the reader does not care, so a wrong extension fails only at open time:
 //
 //   .stad   game options       <userdata>/options.stad          (st::SettingsManager)
 //   .stcd   save games         <userdata>/saves/<slot>.stcd      (st::savegame)
-//   .staod  animation descriptors  assets/animation_descriptor/*.staod (shipped, read-only —
+//   .staod  animation descriptors  assets/animation_descriptor/*.staod (shipped, read-only
 //           packed into the .strd/.stafp asset package; load them through
 //           st::anim::LoadAnimationDescriptor, which reads via wi::helper::FileRead so a
 //           packaged descriptor resolves. readFile below is the plain-file path, for tools.)
 //
-// Note .staod is NOT the asset package index — that is .strd (see io/asset/), which is
+// Note .staod is NOT the asset package index - that is .strd (see io/asset/), which is
 // a flat binary table, not NBT. The two briefly shared this extension; they no longer do.
 //
 // The project builds with exceptions and RTTI disabled (/EHsc- /GR-), so this API uses
@@ -23,7 +23,7 @@
 // order); a List holds same-typed unnamed elements. Build a tree, then write it; load it
 // back and read fields with defaults.
 //
-// Example — an animation_descriptor for a character:
+// Example - an animation_descriptor for a character:
 //
 //   st::nbt::Tag root = st::nbt::Tag::Compound();
 //   root.putString("character", "soldier");
@@ -77,7 +77,7 @@ struct Tag {
 
     Tag() = default;
 
-    // ── factories ─────────────────────────────────────────────────────────────
+    // factories
     static Tag Byte(int8_t v);
     static Tag Short(int16_t v);
     static Tag Int(int32_t v);
@@ -94,9 +94,9 @@ struct Tag {
     bool isCompound() const { return type == Type::Compound; }
     bool isList()     const { return type == Type::List; }
 
-    // ── compound access (reads return the default when this tag isn't a compound) ──
+    // compound access (reads return the default when this tag isn't a compound)
     // put() retypes a non-compound tag into an empty compound first, discarding its old
-    // payload — children are meaningless on any other type and would be dropped on save.
+    // payload - children are meaningless on any other type and would be dropped on save.
     Tag&       put(const std::string& name, Tag value); // insert or overwrite; returns stored ref
     const Tag* get(const std::string& name) const;      // nullptr if absent
     Tag*       get(const std::string& name);
@@ -121,12 +121,12 @@ struct Tag {
     std::string getString(const std::string& name, const std::string& def = std::string()) const;
     bool        getBool  (const std::string& name, bool    def = false) const;
 
-    // ── list access ─────────────────────────────────────────────────────────────
+    // list access
     // Retypes a non-list tag into a list, mirroring put(). All elements must share one
-    // type — a mixed list is unserializable and write() rejects it.
+    // type - a mixed list is unserializable and write() rejects it.
     Tag& add(Tag value); // append to a List; sets the element type from the first element
 
-    // ── scalar reads with default (numeric tags convert between each other) ─────
+    // scalar reads with default (numeric tags convert between each other)
     int64_t     asLong  (int64_t def = 0) const;
     double      asDouble(double  def = 0.0) const;
     std::string asString(const std::string& def = std::string()) const;
@@ -137,7 +137,7 @@ bool write(const Tag& root, const std::string& rootName, std::vector<uint8_t>& o
 bool read (const uint8_t* data, size_t size, Tag& outRoot,
            std::string* outRootName = nullptr, std::string* error = nullptr);
 
-// File helpers (binary). writeFile is atomic — it writes <path>.tmp and renames over the
+// File helpers (binary). writeFile is atomic - it writes <path>.tmp and renames over the
 // target, so an interrupted save never truncates the previous file. Both return false on
 // I/O failure; readFile also returns false (with `error` set) on malformed input.
 bool writeFile(const std::string& path, const Tag& root, const std::string& rootName = std::string());

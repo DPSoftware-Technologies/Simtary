@@ -1,5 +1,5 @@
 #pragma once
-// st::ModuleHost — host-side loading of the project module.
+// st::ModuleHost - host-side loading of the project module.
 //
 // Only compiled into a build made with simtary_add_app(... MODULE). See stModule.h
 // for what the boundary is and why it runs in this direction.

@@ -20,7 +20,7 @@ using namespace wi::scene;
 
 namespace st::devui {
 
-// ────────────────────────────────────────────────────────────────── helpers ───
+// helpers
 
 std::string EntityLabel(Scene& scene, Entity e)
 {
@@ -172,7 +172,7 @@ void HelpMarker(const char* text)
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────── layer ───
+// layer
 
 void DrawLayer(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -195,7 +195,7 @@ void DrawLayer(Scene& scene, Entity e, st::EditorHistory* history)
 	ImGui::Text("Effective: %08X", c->GetLayerMask());
 }
 
-// ──────────────────────────────────────────────────────────────── hierarchy ───
+// hierarchy
 
 void DrawHierarchy(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -222,7 +222,7 @@ void DrawHierarchy(Scene& scene, Entity e, st::EditorHistory* history)
 	}
 }
 
-// ───────────────────────────────────────────────────────────────── material ───
+// material
 
 void DrawMaterial(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -522,7 +522,7 @@ void DrawMaterial(Scene& scene, Entity e, st::EditorHistory* history)
 		m->SetDirty();
 }
 
-// ───────────────────────────────────────────────────────────────────── mesh ───
+// mesh
 
 void DrawMesh(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -622,7 +622,7 @@ void DrawMesh(Scene& scene, Entity e, st::EditorHistory* history)
 	}
 }
 
-// ───────────────────────────────────────────────────────────────── impostor ───
+// impostor
 
 void DrawImpostor(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -646,7 +646,7 @@ void DrawImpostor(Scene& scene, Entity e, st::EditorHistory* history)
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────── object ───
+// object
 
 void DrawObject(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -758,7 +758,7 @@ void DrawObject(Scene& scene, Entity e, st::EditorHistory* history)
 	}
 }
 
-// ───────────────────────────────────────────────────── rigid body physics ───
+// rigid body physics
 
 void DrawRigidBody(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -941,7 +941,7 @@ void DrawRigidBody(Scene& scene, Entity e, st::EditorHistory* history)
 	else if (refresh) c->SetRefreshParametersNeeded();
 }
 
-// ─────────────────────────────────────────────────── physics constraint ───
+// physics constraint
 
 void DrawConstraint(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -1038,7 +1038,7 @@ void DrawConstraint(Scene& scene, Entity e, st::EditorHistory* history)
 	else if (refresh) c->SetRefreshParametersNeeded();
 }
 
-// ────────────────────────────────────────────────────── soft body physics ───
+// soft body physics
 
 void DrawSoftBody(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -1084,7 +1084,7 @@ void DrawSoftBody(Scene& scene, Entity e, st::EditorHistory* history)
 	if (rebuild) c->physicsobject.reset();
 }
 
-// ───────────────────────────────────────────────────────────── armature ───
+// armature
 
 void DrawArmature(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -1108,7 +1108,7 @@ void DrawArmature(Scene& scene, Entity e, st::EditorHistory* history)
 		c->aabb._max.x, c->aabb._max.y, c->aabb._max.z);
 }
 
-// ──────────────────────────────────────────────────────────────────── light ───
+// light
 
 void DrawLight(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -1254,7 +1254,7 @@ void DrawLight(Scene& scene, Entity e, st::EditorHistory* history)
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────── camera ───
+// camera
 
 void DrawCamera(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -1341,7 +1341,7 @@ void DrawCamera(Scene& scene, Entity e, st::EditorHistory* history)
 		c->SetDirty();
 }
 
-// ──────────────────────────────────────────────────────── environment probe ───
+// environment probe
 
 void DrawProbe(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -1398,7 +1398,7 @@ void DrawProbe(Scene& scene, Entity e, st::EditorHistory* history)
 	}
 }
 
-// ────────────────────────────────────────────────────────────── force field ───
+// force field
 
 void DrawForceField(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -1422,7 +1422,7 @@ void DrawForceField(Scene& scene, Entity e, st::EditorHistory* history)
 	track("Set Force Range");
 }
 
-// ──────────────────────────────────────────────────────────────────── decal ───
+// decal
 
 void DrawDecal(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -1455,7 +1455,7 @@ void DrawDecal(Scene& scene, Entity e, st::EditorHistory* history)
 		c->displacementmap.IsValid() ? "yes" : "no");
 }
 
-// ──────────────────────────────────────────────────────────────── animation ───
+// animation
 
 const char* AnimationPathName(AnimationComponent::AnimationChannel::Path path)
 {
@@ -1583,7 +1583,7 @@ void DrawAnimation(Scene& scene, Entity e, st::EditorHistory* history)
 		ImGui::Text("Retarget sources: %zu", a->retargets.size());
 }
 
-// ─────────────────────────────────────────────────────────── animation data ───
+// animation data
 
 void DrawAnimationData(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -1599,7 +1599,7 @@ void DrawAnimationData(Scene& scene, Entity e, st::EditorHistory* history)
 		"authored here; a curve editor is the tool for this and this panel is not it.");
 }
 
-// ────────────────────────────────────────────────────────── emitted particles ───
+// emitted particles
 
 void DrawEmitter(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -1757,7 +1757,7 @@ void DrawEmitter(Scene& scene, Entity e, st::EditorHistory* history)
 	}
 }
 
-// ────────────────────────────────────────────────────────────── hair particles ───
+// hair particles
 
 void DrawHair(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -1826,7 +1826,7 @@ void DrawHair(Scene& scene, Entity e, st::EditorHistory* history)
 		c->SetDirty();
 }
 
-// ────────────────────────────────────────────────────────────────── weather ───
+// weather
 
 void DrawWeather(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -2113,7 +2113,7 @@ void DrawWeather(Scene& scene, Entity e, st::EditorHistory* history)
 	}
 }
 
-// ──────────────────────────────────────────────────────────────────── sound ───
+// sound
 
 void DrawSound(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -2142,7 +2142,7 @@ void DrawSound(Scene& scene, Entity e, st::EditorHistory* history)
 	ImGui::TextDisabled(c->soundResource.IsValid() ? "resource: loaded" : "resource: missing");
 }
 
-// ──────────────────────────────────────────────────────────────────── video ───
+// video
 
 void DrawVideo(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -2172,7 +2172,7 @@ void DrawVideo(Scene& scene, Entity e, st::EditorHistory* history)
 	ImGui::TextDisabled(c->videoResource.IsValid() ? "resource: loaded" : "resource: missing");
 }
 
-// ─────────────────────────────────────────────────────── inverse kinematics ───
+// inverse kinematics
 
 void DrawIK(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -2201,7 +2201,7 @@ void DrawIK(Scene& scene, Entity e, st::EditorHistory* history)
 		ImGui::DragFloat3("Target position", &c->target_position.x, 0.01f);
 }
 
-// ─────────────────────────────────────────────────────────────────── spring ───
+// spring
 
 void DrawSpring(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -2237,7 +2237,7 @@ void DrawSpring(Scene& scene, Entity e, st::EditorHistory* history)
 	ImGui::TextDisabled("%zu chained children", c->children.size());
 }
 
-// ───────────────────────────────────────────────────────────────── collider ───
+// collider
 
 void DrawCollider(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -2273,7 +2273,7 @@ void DrawCollider(Scene& scene, Entity e, st::EditorHistory* history)
 		[&](bool v) { c->SetCapsuleShadowEnabled(v); });
 }
 
-// ─────────────────────────────────────────────────────────────────── script ───
+// script
 
 void DrawScript(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -2309,7 +2309,7 @@ void DrawScript(Scene& scene, Entity e, st::EditorHistory* history)
 	ImGui::TextDisabled("%zu bytes compiled", c->script.size());
 }
 
-// ─────────────────────────────────────────────────────────────── expression ───
+// expression
 
 void DrawExpression(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -2408,7 +2408,7 @@ void DrawExpression(Scene& scene, Entity e, st::EditorHistory* history)
 	}
 }
 
-// ───────────────────────────────────────────────────────────────── humanoid ───
+// humanoid
 
 void DrawHumanoid(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -2490,7 +2490,7 @@ void DrawHumanoid(Scene& scene, Entity e, st::EditorHistory* history)
 	}
 }
 
-// ────────────────────────────────────────────────────────────────── terrain ───
+// terrain
 
 void DrawTerrain(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -2579,7 +2579,7 @@ void DrawTerrain(Scene& scene, Entity e, st::EditorHistory* history)
 		"the entities the generator creates, not from here.");
 }
 
-// ─────────────────────────────────────────────────────────────────── sprite ───
+// sprite
 
 void DrawSprite(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -2771,7 +2771,7 @@ void DrawSprite(Scene& scene, Entity e, st::EditorHistory* history)
 	}
 }
 
-// ────────────────────────────────────────────────────────────── sprite font ───
+// sprite font
 
 void DrawSpriteFont(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -2902,7 +2902,7 @@ void DrawSpriteFont(Scene& scene, Entity e, st::EditorHistory* history)
 	ImGui::Text("Measured: %.1f x %.1f", size.x, size.y);
 }
 
-// ─────────────────────────────────────────────────────────────── voxel grid ───
+// voxel grid
 
 void DrawVoxelGrid(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -2912,7 +2912,7 @@ void DrawVoxelGrid(Scene& scene, Entity e, st::EditorHistory* history)
 	const Edits track{ scene, e, history };
 
 	// init() reallocates the bitfield, so resolution goes through it rather than a raw store
-	//	— and it is an InputInt3 rather than a drag on purpose: the allocation is the product
+	//	and it is an InputInt3 rather than a drag on purpose: the allocation is the product
 	//	of the three axes, so dragging one of them through 512 would allocate a gigabyte on
 	//	the way to wherever the cursor was heading.
 	int res[3] = { (int)g->resolution.x, (int)g->resolution.y, (int)g->resolution.z };
@@ -2946,7 +2946,7 @@ void DrawVoxelGrid(Scene& scene, Entity e, st::EditorHistory* history)
 	ImGui::TextDisabled("Occupancy is filled by the navigation/pathfinding pass, not by hand.");
 }
 
-// ───────────────────────────────────────────────────────────────── metadata ───
+// metadata
 
 void DrawMetadata(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -3031,7 +3031,7 @@ void DrawMetadata(Scene& scene, Entity e, st::EditorHistory* history)
 		ImGui::TreePop();
 	}
 
-	// ── add a new entry ──
+	// add a new entry
 	static char newName[64] = "";
 	static int  newType = 0;
 	ImGui::SetNextItemWidth(140);
@@ -3066,7 +3066,7 @@ void DrawMetadata(Scene& scene, Entity e, st::EditorHistory* history)
 	}
 }
 
-// ──────────────────────────────────────────────────────────────── character ───
+// character
 
 void DrawCharacter(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -3143,7 +3143,7 @@ void DrawCharacter(Scene& scene, Entity e, st::EditorHistory* history)
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────── spline ───
+// spline
 
 void DrawSpline(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -3208,7 +3208,7 @@ void DrawSpline(Scene& scene, Entity e, st::EditorHistory* history)
 		s->SetDirty();
 }
 
-// ─────────────────────────────────────────────────────────── gaussian splat ───
+// gaussian splat
 
 void DrawGaussianSplat(Scene& scene, Entity e, st::EditorHistory* history)
 {
@@ -3230,10 +3230,10 @@ void DrawGaussianSplat(Scene& scene, Entity e, st::EditorHistory* history)
 		g->CreateRenderData();
 }
 
-// ────────────────────────────────────────────────────────────── dispatch ───
+// dispatch
 
 // One row per manager, in the same order the Add Component catalogue lists them, so the
-//	inspector and that menu read alike. Names and transforms are absent on purpose — see the
+//	inspector and that menu read alike. Names and transforms are absent on purpose - see the
 //	header.
 struct InspectorEntry
 {

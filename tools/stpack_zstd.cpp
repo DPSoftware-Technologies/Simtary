@@ -1,7 +1,7 @@
 // The one translation unit that compiles the vendored zstd amalgamation for stpack.
 //
 // The engine gets zstd through Engine/Utility/utility_common.cpp, but stpack links no
-// engine at all — that is the whole point of it being a build-step tool — so it needs
+// engine at all - that is the whole point of it being a build-step tool - so it needs
 // its own copy. Same trick as utility_common.cpp: include the .c inside extern "C" so
 // the symbols keep C linkage and ASAN does not trip over a mismatched mangling.
 //

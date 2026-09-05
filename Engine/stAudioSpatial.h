@@ -1,5 +1,5 @@
 #pragma once
-// ─── stAudioSpatial: the Steam Audio layer ───────────────────────────────────────
+// stAudioSpatial: the Steam Audio layer
 //
 // Steam Audio owns every 3D decision in this engine: distance attenuation, air
 // absorption, directivity, occlusion, transmission, geometry-driven reflections and
@@ -36,7 +36,7 @@
 
 namespace st::audio
 {
-	// ── enums mirroring the SDK ─────────────────────────────────────────────────
+	// enums mirroring the SDK
 
 	enum class DistanceAttenuationModel
 	{
@@ -101,7 +101,7 @@ namespace st::audio
 		Ambisonics,   // B-format at `ambisonicsOrder`, decoded by the collector
 	};
 
-	// ── per-emitter settings ────────────────────────────────────────────────────
+	// per-emitter settings
 	// Everything Steam Audio lets you set per source. Defaults are the SDK's own
 	// defaults, so a component that touches nothing behaves like a stock IPLSource.
 	struct EmitterSpatialSettings
@@ -151,7 +151,7 @@ namespace st::audio
 		bool  applyTransmission = true;
 	};
 
-	// ── per-collector settings ──────────────────────────────────────────────────
+	// per-collector settings
 	struct CollectorSpatialSettings
 	{
 		SpatialOutput output = SpatialOutput::Binaural;
@@ -163,7 +163,7 @@ namespace st::audio
 		std::string sofaFile;            // optional custom HRTF (.sofa); empty = built-in
 	};
 
-	// ── global simulation settings ──────────────────────────────────────────────
+	// global simulation settings
 	// These size the ray tracer and cannot change without rebuilding the simulator,
 	// so they are read once at Initialize().
 	struct SimulationSettings
@@ -182,7 +182,7 @@ namespace st::audio
 		float updateRateHz = 10.0f;   // how often the reflection/pathing job re-runs
 	};
 
-	// ── live per-frame state pushed from the game thread ────────────────────────
+	// live per-frame state pushed from the game thread
 	// Plain data, snapshotted under a lock once per frame and read lock-free by the
 	// audio thread. Positions and vectors are render-origin-relative (see the header
 	// comment); `velocity` is metres/second and only matters if Doppler is on.
@@ -207,7 +207,7 @@ namespace st::audio
 		bool  audible = false;       // survived the maxDistance cull and has signal
 	};
 
-	// ── the spatializer ─────────────────────────────────────────────────────────
+	// the spatializer
 	// One per process. Owned by the audio engine; Initialize/Shutdown are called from
 	// stAudioEngine and are not for game code.
 	class Spatializer

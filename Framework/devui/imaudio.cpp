@@ -66,7 +66,7 @@ void AudioMixerGUI () {
     const audio::AudioEngine::Stats stats = engine.GetStats();
     audio::Spatializer& spatializer = audio::Spatializer::Get();
 
-    // ── transport / master ────────────────────────────────────────────────────
+    // transport / master
     bool paused = engine.IsPaused();
     if (ImGui::Checkbox("pause all", &paused))
         engine.SetPaused(paused);
@@ -96,7 +96,7 @@ void AudioMixerGUI () {
               [](float v) { audio::AudioEngine::Get().SetSubmixVolume(audio::Submix::Ambient, v); });
     }
 
-    // ── OpenAL ────────────────────────────────────────────────────────────────
+    // OpenAL
     if (ImGui::CollapsingHeader("OpenAL - device and 2D", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (ImGui::BeginTable("openal", 2, ImGuiTableFlags_SizingStretchProp)) {
             LabelledValue("device", "%s", engine.GetDeviceName());
@@ -123,7 +123,7 @@ void AudioMixerGUI () {
         LevelBar(stats.mixLoad > 1.0f ? 1.0f : stats.mixLoad, "mix load");
     }
 
-    // ── Steam Audio ───────────────────────────────────────────────────────────
+    // Steam Audio
     if (ImGui::CollapsingHeader("Steam Audio - 3D", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (!spatializer.IsSteamAudioAvailable()) {
             ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f), "Steam Audio is NOT active.");
@@ -154,7 +154,7 @@ void AudioMixerGUI () {
         }
     }
 
-    // ── collectors ────────────────────────────────────────────────────────────
+    // collectors
     std::vector<audio::CollectorRef> collectors;
     engine.GetCollectors(collectors);
 
@@ -204,7 +204,7 @@ void AudioMixerGUI () {
         }
     }
 
-    // ── emitters ──────────────────────────────────────────────────────────────
+    // emitters
     std::vector<audio::EmitterRef> emitters;
     engine.GetEmitters(emitters);
 

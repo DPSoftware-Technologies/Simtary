@@ -124,7 +124,7 @@ bool ReadArchivePrologue (const uint8_t* data, uint64_t size, ArchivePrologue& o
 
 } // namespace
 
-// ── .wiscene split ─────────────────────────────────────────────────────────────
+// .wiscene split
 
 bool SplitWiscene (const uint8_t* data, uint64_t size, WisceneSplit& out, std::string* error) {
     out = WisceneSplit{};
@@ -193,7 +193,7 @@ bool SplitWiscene (const uint8_t* data, uint64_t size, WisceneSplit& out, std::s
         return false;
     }
 
-    // ── read the embedded resource block ──────────────────────────────────────
+    // read the embedded resource block
     // Layout, straight out of wi::resourcemanager::Serialize_WRITE:
     //   u64 count, then per entry u64 nameLen, name, u64 flags, u64 dataLen, data.
     uint64_t cursor = jumpBefore;
@@ -230,7 +230,7 @@ bool SplitWiscene (const uint8_t* data, uint64_t size, WisceneSplit& out, std::s
     }
 
     if (cursor != jumpAfter) {
-        // Not fatal — a future engine version could append to the block — but it means
+        // Not fatal - a future engine version could append to the block - but it means
         // this build did not understand all of it, and silently dropping the tail would
         // lose data on the way back out.
         SetError(error, "resource block ends at " + std::to_string(cursor) +
@@ -239,7 +239,7 @@ bool SplitWiscene (const uint8_t* data, uint64_t size, WisceneSplit& out, std::s
         return false;
     }
 
-    // ── build the resource-free archive ───────────────────────────────────────
+    // build the resource-free archive
     // Everything up to the resource block is copied verbatim, so the entity bytes are
     // never re-encoded and never reinterpreted. Only the second jump moves, because
     // the block it points past is now 8 bytes long instead of megabytes.
@@ -297,7 +297,7 @@ bool MergeWiscene (const uint8_t* ecsArchive, uint64_t ecsSize,
     return true;
 }
 
-// ── .stsd ──────────────────────────────────────────────────────────────────────
+// .stsd
 
 const std::vector<uint8_t>* SceneDescriptor::EcsArchive () const {
     for (const SceneBlob& b : blobs)
@@ -392,7 +392,7 @@ bool DecodeBlob (const uint8_t* src, const StsdBlob& meta, std::vector<uint8_t>&
                             (ZSTD_isError(got) ? ZSTD_getErrorName(got) : "short output"));
             return false;
         }
-        // One frame, so there is nothing to report part-way through — only the end.
+        // One frame, so there is nothing to report part-way through - only the end.
         if (progress.report) progress.report(meta.originalSize, meta.originalSize, progress.userdata);
         return true;
     }
@@ -431,7 +431,7 @@ bool DecodeBlob (const uint8_t* src, const StsdBlob& meta, std::vector<uint8_t>&
                                 (ZSTD_isError(got) ? ZSTD_getErrorName(got) : "short output"));
                 return false;
             }
-            // Per frame, so a 36 MB map reports ~140 times instead of once — enough for a
+            // Per frame, so a 36 MB map reports ~140 times instead of once - enough for a
             // bar that visibly moves, cheap enough to be free next to the inflate itself.
             if (progress.report) progress.report(origin + len, meta.originalSize, progress.userdata);
         }
@@ -650,7 +650,7 @@ bool ReadSceneDescriptor (const std::string& path, SceneDescriptor& out,
     return true;
 }
 
-// ── conversion ─────────────────────────────────────────────────────────────────
+// conversion
 
 bool BuildSceneDescriptorFromMemory (const uint8_t* wisceneBytes, uint64_t size,
                                      const std::string& name,
@@ -676,7 +676,7 @@ bool BuildSceneDescriptorFromMemory (const uint8_t* wisceneBytes, uint64_t size,
     out.blobs.push_back(std::move(ecs));
 
     // The reference list. The engine asks for these by the exact relative path it
-    // stored, which is why the runtime mounts packages so that path resolves — see
+    // stored, which is why the runtime mounts packages so that path resolves - see
     // AssetSystem::Resolve. Recording them here is what lets a load say "13 of 14" and
     // what lets MissingAssetsFor() answer before the world comes up grey.
     for (const EmbeddedResource& r : splitOut.resources) {

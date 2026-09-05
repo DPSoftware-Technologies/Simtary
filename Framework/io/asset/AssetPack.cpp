@@ -54,7 +54,7 @@ bool MagicMatches (const char* got, const char (&want)[8]) {
 
 } // namespace
 
-// ── platform file mapping ──────────────────────────────────────────────────────
+// platform file mapping
 
 bool AssetPack::MapFile (const std::string& path, Mapping& out, std::string* error) {
     out = Mapping{};
@@ -142,7 +142,7 @@ void AssetPack::UnmapFile (Mapping& m) {
     m = Mapping{};
 }
 
-// ── open / close ───────────────────────────────────────────────────────────────
+// open / close
 
 AssetPack::~AssetPack () { Close(); }
 
@@ -279,7 +279,7 @@ void AssetPack::Close () {
     path_.clear();
 }
 
-// ── lookup ─────────────────────────────────────────────────────────────────────
+// lookup
 
 const StrdAsset* AssetPack::Find (uint64_t id) const {
     if (header_ == nullptr || header_->assetCount == 0) return nullptr;
@@ -289,7 +289,7 @@ const StrdAsset* AssetPack::Find (uint64_t id) const {
 
     // Open addressing with linear probing. Load factor is capped at 0.5 by the writer,
     // so the expected probe count is under 1.5 and the worst case is bounded by the
-    // bucket count — hence the hard loop limit rather than a while(true).
+    // bucket count - hence the hard loop limit rather than a while(true).
     for (uint32_t probe = 0; probe <= mask; ++probe) {
         const uint32_t entry = buckets_[slot];
         if (entry == kEmptyBucket) return nullptr;
@@ -364,7 +364,7 @@ const uint8_t* AssetPack::PartBytes (uint32_t partIndex, uint64_t& sizeOut) cons
     return static_cast<const uint8_t*>(partMaps_[partIndex].data);
 }
 
-// ── reading ────────────────────────────────────────────────────────────────────
+// reading
 
 const uint8_t* AssetPack::MappedData (const StrdAsset& a) const {
     if (static_cast<Codec>(a.codec) != Codec::None) return nullptr;
@@ -517,7 +517,7 @@ bool AssetPack::Decode (const StrdAsset& a, const uint8_t* src,
     }
 }
 
-// ── integrity ──────────────────────────────────────────────────────────────────
+// integrity
 
 bool AssetPack::VerifyAsset (const StrdAsset& a, std::string* error) const {
     std::vector<uint8_t> bytes;
@@ -581,7 +581,7 @@ bool AssetPack::VerifyAll (std::string* error,
     return true;
 }
 
-// ── shared helpers ─────────────────────────────────────────────────────────────
+// shared helpers
 
 AssetType ClassifyByExtension (const std::string& path) {
     const std::string e = LowerExtension(path);
@@ -608,7 +608,7 @@ AssetType ClassifyByExtension (const std::string& path) {
 bool IsCompressedContainer (const std::string& path) {
     const std::string e = LowerExtension(path);
     // Formats whose bytes are ALREADY entropy-coded or block-compressed. Running zstd
-    // over one of these typically saves 1-3% and costs a decompress on every read —
+    // over one of these typically saves 1-3% and costs a decompress on every read
     // and, worse, it gives up the zero-copy mapped read that mip and audio streaming
     // depend on. Raw-sample formats (bmp, tga, hdr, exr, psd, wav) are deliberately NOT
     // in this list: they compress like any other buffer.
@@ -623,7 +623,7 @@ Codec DefaultCodecFor (const std::string& path, AssetType type, uint64_t size) {
     if (IsCompressedContainer(path)) return Codec::None;
     if (type == AssetType::Texture || type == AssetType::Image ||
         type == AssetType::Music   || type == AssetType::Video) {
-        // A raw-sample file that landed on one of the "media" types — .bmp, .tga, .hdr,
+        // A raw-sample file that landed on one of the "media" types - .bmp, .tga, .hdr,
         // .wav. Chunked so it stays streamable while still shrinking.
         return size >= kDefaultChunkSize ? Codec::ZstdChunked : Codec::Zstd;
     }
@@ -633,7 +633,7 @@ Codec DefaultCodecFor (const std::string& path, AssetType type, uint64_t size) {
 Codec DefaultCodecFor (AssetType type, uint64_t size) {
     switch (type) {
     // Already-compressed containers. zstd over a .dds or an .ogg typically buys a few
-    // percent and costs a decompress on every single read — and, worse, it takes away
+    // percent and costs a decompress on every single read - and, worse, it takes away
     // the zero-copy mapped path that mip and audio streaming rely on. Stored wins.
     case AssetType::Texture:
     case AssetType::Image:

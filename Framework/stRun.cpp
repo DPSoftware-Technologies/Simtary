@@ -103,7 +103,7 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     // Splash screen. Optional: a project with no splashImage (or a missing file)
     // just gets a blank window until the graphics device comes up.
     if (!config.splashImage.empty()) {
-        // SOFTWARE renderer — Vulkan ain't active yet, use this!
+        // SOFTWARE renderer - Vulkan ain't active yet, use this!
         SDL_Renderer* splashRenderer = SDL_CreateRenderer(window.get(), -1, SDL_RENDERER_SOFTWARE);
         if (splashRenderer) {
             // SDL reads the filesystem directly, so it does not see the asset source
@@ -126,7 +126,7 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
                 SDL_GetWindowSize(window.get(), &winW, &winH);
                 SDL_QueryTexture(splashTexture, NULL, NULL, &imgW, &imgH);
 
-                // CENTER MATH — NO EXCUSES!
+                // CENTER MATH - NO EXCUSES!
                 SDL_Rect dst = {
                     (winW - imgW) / 2,
                     (winH - imgH) / 2,

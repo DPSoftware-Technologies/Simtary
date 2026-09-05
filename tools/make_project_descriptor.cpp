@@ -1,8 +1,8 @@
-// make_project_descriptor — author a Simtary project descriptor (.stpd).
+// make_project_descriptor - author a Simtary project descriptor (.stpd).
 //
 // The descriptor is the project's BUILD-TIME manifest, the equivalent of Unreal's
 // .uproject: who the project is, not how it behaves. It lives at
-// <project>/assets/project.stpd and is read by CMake at configure time — never at
+// <project>/assets/project.stpd and is read by CMake at configure time - never at
 // runtime, and never shipped, which is why it sits in assets/ rather than
 // assets/contents/ (that folder is the built game's content).
 //

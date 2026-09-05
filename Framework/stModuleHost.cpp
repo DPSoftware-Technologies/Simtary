@@ -69,7 +69,7 @@ bool LoadModule (const std::string& name, Module& out, std::string& error) {
 
 #ifdef _WIN32
     // The module imports from the host executable by its file name, so the host has
-    // to already be in memory under that name — which it is, being the process
+    // to already be in memory under that name - which it is, being the process
     // image. Renaming the exe after the build therefore breaks the load with a
     // "specified module could not be found" that is really about the EXE, not the
     // DLL; that is what the hint below is for.

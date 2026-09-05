@@ -1,5 +1,5 @@
 #pragma once
-// Shared plumbing for the model importers. Internal to Framework/io/model — the public
+// Shared plumbing for the model importers. Internal to Framework/io/model - the public
 //	surface is ModelImporter.h.
 //
 //	Both backends face the same three problems, and they are solved once here:
@@ -49,10 +49,10 @@ std::string ExtensionOf (const std::string& path);
 
 // Resolve a texture reference a model file gave us into a name the engine can load.
 //
-//	`reference` is whatever the format stored — usually relative, sometimes an absolute path
+//	`reference` is whatever the format stored - usually relative, sometimes an absolute path
 //	from the exporting machine, sometimes a data: URI the loader already decoded. It is tried
 //	as-is first (so a name the asset package holds wins), then relative to the model's own
-//	folder, then by file name alone in that folder — which is what rescues the very common
+//	folder, then by file name alone in that folder - which is what rescues the very common
 //	case of an FBX pointing at "C:/Users/someone/textures/wall.png".
 //
 //	Returns an empty string when nothing resolves, and the caller should leave the slot empty

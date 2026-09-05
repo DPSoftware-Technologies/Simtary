@@ -40,13 +40,13 @@ void NbtStore::Reload() {
     Load();
 }
 
-// ── setters ─────────────────────────────────────────────────────────────────────
+// setters
 void NbtStore::SetInt(const std::string& key, int v)               { root_.putInt(key, v);    dirty_ = true; }
 void NbtStore::SetFloat(const std::string& key, float v)           { root_.putFloat(key, v);  dirty_ = true; }
 void NbtStore::SetBool(const std::string& key, bool v)             { root_.putBool(key, v);   dirty_ = true; }
 void NbtStore::SetString(const std::string& key, const std::string& v) { root_.putString(key, v); dirty_ = true; }
 
-// ── getters ─────────────────────────────────────────────────────────────────────
+// getters
 int NbtStore::GetInt(const std::string& key, int def) const              { return root_.getInt(key, def); }
 float NbtStore::GetFloat(const std::string& key, float def) const        { return root_.getFloat(key, def); }
 bool NbtStore::GetBool(const std::string& key, bool def) const           { return root_.getBool(key, def); }

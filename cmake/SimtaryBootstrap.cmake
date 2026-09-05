@@ -1,4 +1,4 @@
-# SimtaryBootstrap.cmake — the one line a game's CMakeLists.txt needs.
+# SimtaryBootstrap.cmake - the one line a game's CMakeLists.txt needs.
 #
 #   include(${CMAKE_CURRENT_SOURCE_DIR}/../Simtary/cmake/SimtaryBootstrap.cmake)
 #
@@ -9,7 +9,7 @@
 # The engine is add_subdirectory()'d into this project's build tree under _simtary/.
 # That is deliberate: two independent top-level CMake projects cannot share one
 # configured build directory, so what gets shared is everything *upstream* of the
-# compile — the sources, the fetched dependency clones (Simtary/deps) and the
+# compile - the sources, the fetched dependency clones (Simtary/deps) and the
 # compiled engine shader cache (Simtary/shaders). Each game still owns its own
 # <project>/build/<platform_arch>, which is what makes them independently
 # configurable and separately shippable.

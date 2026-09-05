@@ -3,12 +3,12 @@
 //
 //	Two step kinds, because one size does not fit here:
 //
-//	  Transform  — the common case: a gizmo drag, or a drag on one of the Properties
+//	  Transform  - the common case: a gizmo drag, or a drag on one of the Properties
 //	               transform fields. Stores nothing but the TransformComponent's own
 //	               values, so undoing is a plain write plus SetDirty(). No component is
 //	               destroyed and rebuilt, so nothing else on the entity notices.
 //
-//	  Entity     — structural edits: add/remove a component, attach/detach a native
+//	  Entity     - structural edits: add/remove a component, attach/detach a native
 //	               component, create or delete an entity. Stores a wi::Archive snapshot of
 //	               each affected entity's full component set, taken with
 //	               EntitySerializer::allow_remap = false so the entity handles come back
@@ -17,7 +17,7 @@
 //	An Entity restore clears the entity's components through the ComponentLibrary rather
 //	than through Scene::Entity_Remove: Entity_Remove would also destroy the entity's
 //	NativeComponent instances, and since the restored MetadataComponent carries the same
-//	NCI_ keys the manager would just build them again a frame later — Awake/Start and all.
+//	NCI_ keys the manager would just build them again a frame later - Awake/Start and all.
 //	Clearing at the component-manager level leaves the live instances alone, so undoing a
 //	component edit does not silently restart a game object's script state.
 //
@@ -61,7 +61,7 @@ public:
     // Maximum steps kept. Older ones drop off the bottom.
     static constexpr size_t MAX_STEPS = 128;
 
-    // ── recording ────────────────────────────────────────────────────────────
+    // recording
     // Cheap value-only capture of one entity's transform.
     void BeginTransform(wi::scene::Scene& scene, wi::ecs::Entity entity, const char* label);
     // Archive capture of one entity's whole component set.
@@ -71,12 +71,12 @@ public:
         const char* label);
     // Push a transform step whose "before" the caller already holds. The gizmo captures the
     //	transform on every frame it is NOT dragging, so by the time ImGuizmo reports a drag the
-    //	pre-drag value is already in hand — earlier than any Begin/Commit bracket could open.
+    //	pre-drag value is already in hand - earlier than any Begin/Commit bracket could open.
     void PushTransform(wi::scene::Scene& scene, wi::ecs::Entity entity, const char* label,
         const TransformSnapshot& before);
 
     // Record an entity that has JUST been created. There is no earlier state to capture, so
-    //	"before" is synthesised as "this entity had no components" — undoing the step strips
+    //	"before" is synthesised as "this entity had no components" - undoing the step strips
     //	it back to that, which is what removing it means to every panel here.
     void RecordCreated(wi::scene::Scene& scene, wi::ecs::Entity entity, const char* label);
     // Same, for a batch that appeared together. A model import is the case this exists for:
@@ -93,7 +93,7 @@ public:
     void Abort();
     bool IsRecording() const { return pending_.kind != Step::Kind::None; }
 
-    // ── applying ─────────────────────────────────────────────────────────────
+    // applying
     bool CanUndo() const { return !undo_.empty(); }
     bool CanRedo() const { return !redo_.empty(); }
     // Label of the step Ctrl+Z / Ctrl+Y would apply, for the menu. "" when there is none.
@@ -115,7 +115,7 @@ private:
         wi::vector<TransformSnapshot> transformsBefore;
         wi::vector<TransformSnapshot> transformsAfter;
 
-        // Kind::Entity — one archive per entity, in `entities` order. `existed` records
+        // Kind::Entity - one archive per entity, in `entities` order. `existed` records
         // whether the entity had any components at all, which is how create/delete undo works.
         wi::vector<wi::Archive> archivesBefore;
         wi::vector<wi::Archive> archivesAfter;

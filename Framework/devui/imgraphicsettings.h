@@ -9,18 +9,18 @@
 #include "io/Nbt.h"
 
 // Graphics settings window. Three tabs:
-//   "Display" — the player-facing video options (window mode, monitor, resolution,
+//   "Display" - the player-facing video options (window mode, monitor, resolution,
 //               v-sync, frame cap, render scale). These live in st::DisplaySettings,
 //               a framework module, so a game can render the same panel inside its own
-//               options menu — see st::App::Display().
-//   "Engine"  — every live graphics knob the engine exposes (RenderPath3D +
+//               options menu - see st::App::Display().
+//   "Engine"  - every live graphics knob the engine exposes (RenderPath3D +
 //               renderer globals + Application frame pacing).
-//   "Content" — settings for effects Milistry owns itself, currently the
+//   "Content" - settings for effects Milistry owns itself, currently the
 //               procedural lens flare (st::LensFlare).
 //
 // Engine tab edits go into a `pending_` snapshot; nothing touches the engine until
 // the user clicks Apply. Reset discards unapplied edits (reverts pending_ to
-// applied_). The Content tab is deliberately outside that model — those knobs are
+// applied_). The Content tab is deliberately outside that model - those knobs are
 // plain values read straight off st::LensFlare each frame, so they apply live and
 // Apply/Reset do not affect them.
 class GraphicsSettings {
@@ -32,7 +32,7 @@ public:
                 st::ProjectorSystem& projectors, st::LaserSystem& lasers,
                 st::OpticsSystem& optics);
 
-    // ── persistence (options.stad via SettingsManager) ──────────────────────────
+    // persistence (options.stad via SettingsManager)
     // Serialize the current pending_ snapshot into an NBT compound, and load it back.
     void SaveTo(st::nbt::Tag& out) const;
     void LoadFrom(const st::nbt::Tag& in);
@@ -63,7 +63,7 @@ public:
 
 private:
     struct EngineGfx {
-        // ── Ambient Occlusion / GI ──────────────────────────────────────────
+        // Ambient Occlusion / GI
         int   ao                 = 0;     // 0=Off 1=SSAO 2=HBAO 3=MSAO 4=RTAO
         float aoRange            = 1.0f;
         int   aoSampleCount      = 16;
@@ -81,13 +81,13 @@ private:
         int   rtDiffuseQual      = 1;
         bool  reflections        = true;  // planar reflections
 
-        // ── Shadows ─────────────────────────────────────────────────────────
+        // Shadows
         bool  shadows            = true;
         int   shadowRes          = 2048;  // 1024 / 2048 / 4096
         int   sssSampleCount     = 16;    // screen space (contact) shadows
         float sssRange           = 1.0f;
 
-        // ── Post processing ─────────────────────────────────────────────────
+        // Post processing
         bool  fxaa               = false;
         bool  bloom              = true;
         float bloomThreshold     = 1.0f;
@@ -114,7 +114,7 @@ private:
         float outlineThickness   = 1.0f;
         float outlineColor[4]    = { 0, 0, 0, 1 };
 
-        // ── Color / tonemapping ─────────────────────────────────────────────
+        // Color / tonemapping
         int   tonemap            = 1;     // 0=Reinhard 1=ACES
         bool  colorGrading       = true;
         float exposure           = 1.0f;
@@ -123,7 +123,7 @@ private:
         float contrast           = 1.0f;
         float saturation         = 1.0f;
 
-        // ── Upscaling ───────────────────────────────────────────────────────
+        // Upscaling
         // v-sync / frame cap deliberately absent: they are video options and belong
         // to st::DisplaySettings (the Display tab), which is the single owner.
         int   msaa               = 1;     // 1 / 2 / 4 / 8
@@ -134,13 +134,13 @@ private:
         float fsr2Sharpness      = 0.5f;
         float resolutionScale    = 1.0f;
 
-        // ── Performance / culling ───────────────────────────────────────────
+        // Performance / culling
         bool  occlusionCulling   = true;
         bool  sceneUpdate        = true;
         bool  meshBlend          = true;
         bool  visibilityCompute  = false;
 
-        // ── Frame pacing (Application) ──────────────────────────────────────
+        // Frame pacing (Application)
         bool  frameskip          = true;
 
         bool operator==(const EngineGfx& o) const;

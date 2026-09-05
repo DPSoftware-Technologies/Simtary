@@ -31,7 +31,7 @@ namespace st {
 // (Framework/render/LaserComponent.cpp) instead - the laser will pick up this
 // component's result rather than casting a second time.
 struct RayComponent : wi::scene::NativeComponent {
-	// ── bound from NCA_<localID>_<name> ──────────────────────────────────────────
+	// bound from NCA_<localID>_<name>
 	int forwardAxis = 0;         // 0 +Z, 1 -Z, 2 -Y (spot light), 3 +Y, 4 +X, 5 -X
 	std::string mode = "mesh";   // mesh | physics | both | none
 	float maxDistance = 250.0f;
@@ -40,7 +40,7 @@ struct RayComponent : wi::scene::NativeComponent {
 	bool everyFrame = true;      // false casts only when Cast() is called by hand
 	bool debugDraw = false;      // engine debug line, green on a hit, red on a miss
 
-	// ── results ──────────────────────────────────────────────────────────────────
+	// results
 	const RayHit& Hit() const { return hit_; }
 	const XMFLOAT3& Origin() const { return origin_; }
 	const XMFLOAT3& Direction() const { return direction_; }

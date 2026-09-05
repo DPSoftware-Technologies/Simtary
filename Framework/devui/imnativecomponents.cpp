@@ -245,7 +245,7 @@ void NativeComponentsGUI(wi::scene::Scene& scene)
 						ImGui::TextDisabled("[main thread]");
 
 					ImGui::BeginDisabled(!enabled);
-					// Described parameters first — persisted by this file — then the
+					// Described parameters first - persisted by this file - then the
 					// component's own hand-drawn widgets, which persist only as far as
 					// their DrawDebug() calls SaveBoundParams(). A component may use
 					// either or both.

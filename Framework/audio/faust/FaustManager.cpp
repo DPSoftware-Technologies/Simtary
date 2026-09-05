@@ -45,7 +45,7 @@ namespace st::audio
 
 		if (!stream_.Start(current_.get(), sampleRate))
 		{
-			current_.reset(); // device open failed — don't leave a dangling processor
+			current_.reset(); // device open failed - don't leave a dangling processor
 			return false;
 		}
 

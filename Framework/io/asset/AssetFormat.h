@@ -5,26 +5,26 @@
 // (tools/stpack) and the runtime reader (AssetPack) both include it and nothing else
 // of each other, so a layout change is one edit and both sides move together.
 //
-// ── Why three files and not one ────────────────────────────────────────────────
+// Why three files and not one
 //
-//   .strd        "resource descriptor" — the INDEX. Which asset lives in which
+//   .strd        "resource descriptor" - the INDEX. Which asset lives in which
 //                 part, at what offset, how big, how compressed, what it hashes to.
 //                 Small (about 80 bytes per asset), read once, kept mapped.
-//   .stafp<N>     "asset fragment part N" — the PAYLOAD. Raw asset bytes back to
+//   .stafp<N>     "asset fragment part N" - the PAYLOAD. Raw asset bytes back to
 //                 back. N is a literal decimal counter: foo.stafp1, foo.stafp2, ...
 //                 A part is capped (default 50 MB, hard max 100 MB) so a patch ships
 //                 one part instead of one monolith, and so 32-bit mmap windows and
 //                 FAT32/ExFAT sticks stay viable.
-//   .stsd         "scene descriptor" — one map. NBT metadata for everything a human
+//   .stsd         "scene descriptor" - one map. NBT metadata for everything a human
 //                 or a tool wants to read, plus the engine's entity payload as an
 //                 out-of-band blob (see below).
 //
 // The index is .strd and not .staod because .staod was already taken: it is the
 // animation descriptor Framework/io/Nbt.h writes (assets/animation_descriptor/*.staod).
-// Two unrelated formats behind one extension is a trap — one is NBT, one is a flat
-// binary table — so the newer of the two moved.
+// Two unrelated formats behind one extension is a trap - one is NBT, one is a flat
+// binary table - so the newer of the two moved.
 //
-// ── Why the index is NOT NBT ───────────────────────────────────────────────────
+// Why the index is NOT NBT
 //
 // NBT is a linear, self-describing tree: finding one asset means walking every tag
 // before it and allocating a Tag node for each. That is fine for a 40-key options
@@ -34,11 +34,11 @@
 //
 //      id -> bucket = id & (bucketCount-1) -> linear probe -> assetTable[i]
 //
-// Lookup is O(1), touches two cache lines, allocates nothing, and parses nothing —
+// Lookup is O(1), touches two cache lines, allocates nothing, and parses nothing
 // the mapped bytes ARE the data structure. .stsd keeps NBT for the parts that want
 // to be inspectable and hand-editable, and keeps the megabytes out of it.
 //
-// ── Endianness and packing ─────────────────────────────────────────────────────
+// Endianness and packing
 //
 // Little-endian, explicitly-sized fields, hand-padded so every struct has the same
 // layout on every compiler without #pragma pack. This matches wi::Archive, which is
@@ -46,7 +46,7 @@
 // Framework/io is big-endian because it deliberately follows the classic NBT spec;
 // that does not apply here.
 //
-// ── Compatibility ──────────────────────────────────────────────────────────────
+// Compatibility
 //
 // Every header carries a version. A reader refuses a version it does not know rather
 // than guessing. Fields are append-only into the reserved tail; nothing is ever
@@ -57,7 +57,7 @@
 
 namespace st::asset {
 
-// ── magic values ───────────────────────────────────────────────────────────────
+// magic values
 // 8 bytes so the struct stays 8-aligned and so `file` / a hex editor shows it plainly.
 inline constexpr char kStrdMagic[8] = { 'S','T','R','D','\0','\0','\0','\0' };
 inline constexpr char kStafpMagic[8] = { 'S','T','A','F','P','\0','\0','\0' };
@@ -74,7 +74,7 @@ inline constexpr uint64_t kPartAlignment = 4096;
 
 // Part size policy. `Default` is what the packer targets; `Max` is the ceiling the
 // caller may raise it to. A single asset larger than the cap gets a part to itself
-// and that part exceeds the cap — splitting one asset across two files would cost a
+// and that part exceeds the cap - splitting one asset across two files would cost a
 // second seek on every read of it, which is the one thing this format exists to
 // avoid.
 inline constexpr uint64_t kDefaultPartSize = 50ull  * 1024 * 1024;
@@ -84,19 +84,19 @@ inline constexpr uint64_t kMaxPartSize     = 100ull * 1024 * 1024;
 // one-shot, small enough that a ranged read wastes at most one frame at each end.
 inline constexpr uint32_t kDefaultChunkSize = 256 * 1024;
 
-// ── enums ──────────────────────────────────────────────────────────────────────
+// enums
 
 // What an asset IS. Drives the DevUI explorer's grouping and icons, the packer's
-// default codec choice, and nothing in the read path — the bytes are the bytes.
+// default codec choice, and nothing in the read path - the bytes are the bytes.
 enum class AssetType : uint16_t {
     Unknown   = 0,
-    Texture   = 1,   // dds / ktx / basis — GPU-ready, often streamed by mip
-    Image     = 2,   // png / jpg / tga / bmp — decoded at load
+    Texture   = 1,   // dds / ktx / basis - GPU-ready, often streamed by mip
+    Image     = 2,   // png / jpg / tga / bmp - decoded at load
     Model     = 3,   // .wiscene used as a model
     Mesh      = 4,   // raw mesh blob
     Material  = 5,
-    Sound     = 6,   // wav / ogg — short, fully loaded
-    Music     = 7,   // ogg / mp3 — long, streamed
+    Sound     = 6,   // wav / ogg - short, fully loaded
+    Music     = 7,   // ogg / mp3 - long, streamed
     Video     = 8,   // mp4 / h264
     Script    = 9,   // lua
     Font      = 10,
@@ -116,13 +116,13 @@ enum class Codec : uint16_t {
     None        = 0,  // stored verbatim. The only codec that supports a zero-copy
                       // mapped read, which is what makes texture mip streaming work.
     Zstd        = 1,  // one zstd frame over the whole asset. Smallest, but ANY read
-                      // decompresses the whole thing — not streamable.
+                      // decompresses the whole thing - not streamable.
     ZstdChunked = 2   // fixed-size frames + an offset table. A ranged read touches
                       // only the frames it overlaps, so it is both compressed AND
                       // seekable. Default for anything large and compressible.
 };
 
-// Per-asset flags. Bit values are on-disk state — append only.
+// Per-asset flags. Bit values are on-disk state - append only.
 enum AssetFlags : uint32_t {
     AssetFlag_None       = 0,
     AssetFlag_Streamable = 1u << 0, // engine may read sub-ranges (texture mips, audio)
@@ -143,7 +143,7 @@ enum PackFlags : uint32_t {
     PackFlag_Verified   = 1u << 0, // hashes were computed at build time and are trustworthy
 };
 
-// ── .strd ─────────────────────────────────────────────────────────────────────
+// .strd
 //
 // Layout:
 //   [StrdHeader        ] 128 B at offset 0
@@ -192,7 +192,7 @@ struct StrdPart {                   // 64 bytes
     // XXH64 of the WHOLE part file, header included, with StafpHeader::headerHash
     // zeroed while hashing (that field is computed after the rest of the header, so
     // including it would be self-referential). Verifying a part is one sequential
-    // read — the point is catching a truncated download or a bad sector before the
+    // read - the point is catching a truncated download or a bad sector before the
     // player walks into a level with half a wall in it.
     uint64_t fileHash;
     uint64_t nameOffset;             // file name in the name heap, e.g. "content.stafp1"
@@ -219,7 +219,7 @@ struct StrdAsset {                  // 80 bytes
 };
 static_assert(sizeof(StrdAsset) == 80, "StrdAsset is an on-disk layout");
 
-// ── .stafp<N> ──────────────────────────────────────────────────────────────────
+// .stafp<N>
 //
 // Layout:
 //   [StafpHeader ] 64 B at offset 0
@@ -256,7 +256,7 @@ struct ChunkTableHeader {            // 16 bytes
 };
 static_assert(sizeof(ChunkTableHeader) == 16, "ChunkTableHeader is an on-disk layout");
 
-// ── .stsd ──────────────────────────────────────────────────────────────────────
+// .stsd
 //
 // Layout:
 //   [StsdHeader  ] 96 B at offset 0
@@ -269,7 +269,7 @@ static_assert(sizeof(ChunkTableHeader) == 16, "ChunkTableHeader is an on-disk la
 // native-component metadata) that makes a map greppable without loading the engine.
 //
 // The blob region carries what the ENGINE reads. Blob 0 is a complete, valid
-// wi::Archive `.wiscene` — the original one, with its embedded resource block
+// wi::Archive `.wiscene` - the original one, with its embedded resource block
 // emptied. Keeping it as a whole archive rather than transcribing the ECS into NBT
 // is deliberate:
 //
@@ -279,7 +279,7 @@ static_assert(sizeof(ChunkTableHeader) == 16, "ChunkTableHeader is an on-disk la
 //     maintained serializer; this format's job is to move BYTES, not to duplicate it.
 //   - It makes conversion exactly reversible. Splitting is a header patch plus a
 //     copy, so the .wiscene that comes back out is byte-identical modulo resource
-//     ordering — which is the property that lets a project adopt this and still
+//     ordering - which is the property that lets a project adopt this and still
 //     open the map in the editor.
 //
 // So the NBT is authoritative for metadata, the blob is authoritative for entities,
@@ -328,7 +328,7 @@ struct StsdHeader {                  // 96 bytes
 };
 static_assert(sizeof(StsdHeader) == 96, "StsdHeader is an on-disk layout");
 
-// ── wi::Archive facts the converter relies on ──────────────────────────────────
+// wi::Archive facts the converter relies on
 //
 // Splitting a .wiscene needs three things about the container, and all three are
 // stable and checked at runtime rather than assumed:

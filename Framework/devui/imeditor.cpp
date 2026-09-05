@@ -32,7 +32,7 @@ using wi::ecs::Entity;
 using wi::ecs::INVALID_ENTITY;
 using wi::scene::CameraComponent;
 using wi::scene::HierarchyComponent;
-// NOTE: no `using wi::scene::Scene` here — Framework/stScene.h declares a global `Scene`
+// NOTE: no `using wi::scene::Scene` here - Framework/stScene.h declares a global `Scene`
 // (the game-facing scene base class), and the two names would collide.
 using wi::scene::TransformComponent;
 
@@ -193,7 +193,7 @@ void ApplyEngineDefaults(wi::RenderPath3D& path)
 	path.setMSAASampleCount(1);
 }
 
-// Wireframe frustum for a camera that has no CameraComponent in the scene — the ACTIVE game
+// Wireframe frustum for a camera that has no CameraComponent in the scene - the ACTIVE game
 //	camera is a free-standing wi::scene::GetCamera(), so wi::renderer's own "debug cameras"
 //	pass (which walks scene.cameras) never draws it, and it is the one you most want to see
 //	from the editor viewport.
@@ -442,7 +442,7 @@ void st::EditorUI::EnsureEditorPath()
 	if (editorPath_)
 		return;
 
-	// Open looking at whatever the game camera was looking at, not at the world origin —
+	// Open looking at whatever the game camera was looking at, not at the world origin
 	//	the default (0,3,-8) is usually inside the floor. Only the first time, so toggling
 	//	editor mode off and on again keeps the camera the user left it at.
 	if (!camInitialized_)
@@ -521,7 +521,7 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 	ImGui::Begin(kDockHost, nullptr, flags);
 	ImGui::PopStyleVar(3);
 
-	// ── menu bar ─────────────────────────────────────────────────────────────
+	// menu bar
 	if (ImGui::BeginMenuBar())
 	{
 		if (ImGui::BeginMenu("Scene"))
@@ -559,7 +559,7 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 		if (ImGui::BeginMenu("Create"))
 		{
 			// New objects land in front of the free camera, parented under the selection when
-			//	there is one — the usual "build where I am looking" behaviour.
+			//	there is one - the usual "build where I am looking" behaviour.
 			const Entity created = CreateObjectMenuItems(scene, SpawnPoint(), INVALID_ENTITY, &history_);
 			if (created != INVALID_ENTITY)
 				pendingSelection_ = created;
@@ -702,11 +702,11 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 		ImGui::EndMenuBar();
 	}
 
-	// ── the dockspace ────────────────────────────────────────────────────────
+	// the dockspace
 	const ImGuiID dockspaceID = ImGui::GetID("SimtaryEditorDockSpace");
 
 	// Author the layout only when there is nothing to restore (fresh imgui.ini) or the
-	// user asked for a reset — otherwise their arrangement would be wiped every launch.
+	// user asked for a reset - otherwise their arrangement would be wiped every launch.
 	if (resetLayout_ || (!layoutBuilt_ && ImGui::DockBuilderGetNode(dockspaceID) == nullptr))
 	{
 		BuildDefaultLayout(dockspaceID, vp->WorkSize);
@@ -724,7 +724,7 @@ void st::EditorUI::DrawToolbar()
 
 	// Keyboard shortcuts, Unity-ish. Suppressed while a text field has the keyboard, while
 	// the right mouse button is down (that is the freecam, where W/E are fly keys), and while
-	// the Game Viewport has focus — there W/E/R belong to whatever the game does with them.
+	// the Game Viewport has focus - there W/E/R belong to whatever the game does with them.
 	if (!ImGui::GetIO().WantTextInput && !ImGui::IsMouseDown(ImGuiMouseButton_Right)
 		&& !gameViewFocused_)
 	{
@@ -952,7 +952,7 @@ void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3
 	//	invisible button over the viewport: ImGuizmo::CanActivate() refuses to begin a drag
 	//	while ImGui reports any item hovered or active, so a button covering the image stops
 	//	the gizmo from ever engaging. Ownership of the mouse during a drag is handled after
-	//	Manipulate instead — see the ActiveId claim in DrawGizmo.
+	//	Manipulate instead - see the ActiveId claim in DrawGizmo.
 	const bool hovered = imageDrawn
 		&& ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)
 		&& ImGui::IsMouseHoveringRect(imagePos,
@@ -961,7 +961,7 @@ void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3
 
 	// The Game Viewport is the only panel that hands input back to the game. Click into it
 	//	to play; click anywhere else in the editor and the game stops hearing the keyboard.
-	//	Keyboard follows focus, mouse follows the pointer — so clicking the Hierarchy while
+	//	Keyboard follows focus, mouse follows the pointer - so clicking the Hierarchy while
 	//	the game still has focus does not also click in the game.
 	if (!exactFit)
 	{
@@ -969,13 +969,13 @@ void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3
 		if (hovered) gameViewHovered_ = true;
 	}
 
-	// From here down: editing. The Game Viewport is play-only — no freecam, no gizmo, no
+	// From here down: editing. The Game Viewport is play-only - no freecam, no gizmo, no
 	//	click-to-select. Its clicks belong to the game, and a gizmo living in the same panel
 	//	would be fighting the player for every one of them. Edit in the Editor Viewport.
 	if (!exactFit)
 	{
 		// Say which way input is pointing. Without this "the game ignores my keys" is a
-		//	mystery — the panel looks identical whether it has input or not.
+		//	mystery - the panel looks identical whether it has input or not.
 		if (imageDrawn && !focused && !st::InputSystem::Get().IsMouseCaptured())
 		{
 			ImGui::GetWindowDrawList()->AddText(ImVec2(imagePos.x + 10, imagePos.y + 8),
@@ -996,7 +996,7 @@ void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3
 			FrameSelected(scene, selected);
 	}
 
-	// The gizmo is drawn in EVERY visible viewport, not just the focused one — selecting an
+	// The gizmo is drawn in EVERY visible viewport, not just the focused one - selecting an
 	//	entity from the Hierarchy puts focus on that panel, and a gizmo that disappears the
 	//	moment you pick something is useless. Only one viewport can actually drag it: each
 	//	passes its own ImGuizmo id, and ImGuizmo itself refuses input unless its drawlist's
@@ -1058,7 +1058,7 @@ bool st::EditorUI::DrawGizmo(wi::scene::Scene& scene, Entity selected, const Cam
 		&view._11, &proj._11, gizmoOp_, gizmoMode_, &world._11,
 		nullptr, gizmoSnap_ ? snapValue : nullptr);
 
-	// Read the hover/drag state while this viewport's id is still current — IsUsing()
+	// Read the hover/drag state while this viewport's id is still current - IsUsing()
 	// compares against it, so resetting the id first would always answer false.
 	const bool busy = ImGuizmo::IsOver() || ImGuizmo::IsUsing();
 
@@ -1132,13 +1132,13 @@ bool st::EditorUI::DrawGizmo(wi::scene::Scene& scene, Entity selected, const Cam
 			XMStoreFloat4(&t->rotation_local, r);
 	}
 
-	// Push the local offset back into the 64-bit absolute position — ALWAYS, parented or not.
+	// Push the local offset back into the 64-bit absolute position - ALWAYS, parented or not.
 	//
 	//	For a LARGE_WORLD transform, translation_local is a DERIVED value, not the truth:
 	//	Scene::RunTransformUpdateSystem calls UpdateTransform() on every transform (children
 	//	included), and that rebases translation_local from world_translation_* before
 	//	RunHierarchyUpdateSystem folds in the parent chain. A gizmo drag that only wrote the
-	//	local offset was therefore erased before the next frame was drawn — the object looked
+	//	local offset was therefore erased before the next frame was drawn - the object looked
 	//	locked, and only the World pos (abs) field could move it.
 	//
 	//	And TransformComponent::Serialize sets the flag on EVERY transform it reads (its read
@@ -1199,7 +1199,7 @@ void st::EditorUI::UpdateFreeCam(float dt, bool interactive)
 	{
 		// SDL relative-mouse mode (via InputSystem): the cursor is hidden and the pointer
 		// cannot leave the window, so a long drag never stalls against a screen edge. The
-		// delta has to come from InputSystem too — in relative mode SDL stops moving the
+		// delta has to come from InputSystem too - in relative mode SDL stops moving the
 		// pointer, so ImGui's own io.MouseDelta is zero.
 		const XMFLOAT2 d = st::InputSystem::Get().MouseDelta();
 		camRot_.y += d.x * camSens_;
@@ -1295,7 +1295,7 @@ bool st::EditorUI::SaveSceneDescriptor(wi::scene::Scene& scene, const std::strin
 {
 	// Embedding is turned ON for exactly this serialize, then put back.
 	//
-	// It is not for the bytes — the .stsd deliberately carries none. It is for the LIST:
+	// It is not for the bytes - the .stsd deliberately carries none. It is for the LIST:
 	// the resource block is the only place the engine records which files a scene
 	// actually uses, and without it the .stsd has no reference list, so nothing can
 	// report "13 of 14 assets" during a load or answer MissingAssetsFor() before the
@@ -1323,7 +1323,7 @@ bool st::EditorUI::SaveSceneDescriptor(wi::scene::Scene& scene, const std::strin
 		return false;
 	}
 
-	// Anything the mounted packages already hold needs no copy — the map just references
+	// Anything the mounted packages already hold needs no copy - the map just references
 	// it. Whatever is left is content this session introduced that lives nowhere the next
 	// run would find it, so it goes into a package beside the map and is mounted at once.
 	// Without this the map saves "successfully" and reloads untextured.
@@ -1380,7 +1380,7 @@ bool st::EditorUI::SaveSceneDescriptor(wi::scene::Scene& scene, const std::strin
 	return true;
 }
 
-// ─── import into the scene ─────────────────────────────────────────────────────
+// import into the scene
 // Distinct from the Resource Explorer's import, which adds a file to the asset PACKAGE.
 // This one merges a model into the live scene and puts it where the editor camera is
 // looking, which is the other thing "import" reasonably means in an editor.
@@ -1525,7 +1525,7 @@ wi::ecs::Entity st::EditorUI::ImportModelAtSpawn(wi::scene::Scene& scene, const 
 		return INVALID_ENTITY;
 	}
 
-	// In front of the free camera, same spot the Create menu uses — or at the world origin
+	// In front of the free camera, same spot the Create menu uses - or at the world origin
 	//	when the model was authored around one.
 	PlaceEntityAt(scene, root, importPlaceAtCamera_ ? SpawnPoint() : XMFLOAT3(0, 0, 0),
 		INVALID_ENTITY);
@@ -1550,7 +1550,7 @@ wi::ecs::Entity st::EditorUI::ImportModelAtSpawn(wi::scene::Scene& scene, const 
 	// Put the whole import under the one root, not just the parts that happen to carry a
 	//	transform. A load creates mesh, material and animation-data entities that have no
 	//	TransformComponent and therefore no parent, and the Hierarchy renders anything without
-	//	a parent as a top-level row — which is how importing one character adds two hundred
+	//	a parent as a top-level row - which is how importing one character adds two hundred
 	//	loose rows to the tree. Component_Attach only rebases a transform when BOTH sides have
 	//	one, so attaching a material is exactly the metadata edit it looks like.
 	if (importGroupUnderRoot_)
@@ -1578,7 +1578,7 @@ wi::ecs::Entity st::EditorUI::ImportModelAtSpawn(wi::scene::Scene& scene, const 
 
 std::string st::EditorUI::ImportFilterDescription()
 {
-	// The Win32 dialog shows this string VERBATIM as the filter label — it does not derive
+	// The Win32 dialog shows this string VERBATIM as the filter label - it does not derive
 	//	one from the extension list, so a bare "Model or scene" tells the user nothing about
 	//	what will actually open. Spell the extensions into the label, and build the list from
 	//	the loaders rather than hard-coding it, so it cannot drift from what is compiled in.
@@ -1912,11 +1912,11 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 
 	// Input ownership: the game hears the keyboard and mouse only while its own viewport has
 	//	focus. Everywhere else in the editor, st::Run stops feeding SDL events into wi::input
-	//	entirely — which is what stops WASD typed at the editor viewport from also flying the
+	//	entirely - which is what stops WASD typed at the editor viewport from also flying the
 	//	game camera, including in game code that reads wi::input directly.
 	// A game that has locked the cursor (an FPS look mode, say) has declared itself in
 	//	control, and while it holds the pointer the user CANNOT click the Game Viewport to
-	//	focus it — the cursor is hidden and warped. Treating that as "the game has input"
+	//	focus it - the cursor is hidden and warped. Treating that as "the game has input"
 	//	breaks the deadlock; the game's own ESC handling is what gives it back.
 	const bool gameOwnsCursor = st::InputSystem::Get().IsMouseCaptured();
 	// ...and one exception to the exception: an open popup or menu owns the keyboard and the

@@ -6,7 +6,7 @@
 //      builds PSOs on background job-system threads; ImGui's own shaders were loaded
 //      synchronously in ImguiInit(), so this overlay renders fine while the rest is
 //      still compiling.
-//   2. Whatever LoadingState carries — a scene name and a progress line pushed by
+//   2. Whatever LoadingState carries - a scene name and a progress line pushed by
 //      Scene::ReportProgress().
 //
 // Note what this CANNOT do: Scene::Load() blocks the main thread, so no ImGui frame
@@ -22,7 +22,7 @@ namespace {
 // wi::renderer::IsPipelineCreationActive() sums four job-system contexts, and one of
 // them (object_pso_job_ctx) is Priority::Low. A low-priority job can stay queued
 // behind other work indefinitely, so "N jobs remaining" is NOT a reliable
-// "startup is still going" signal — waiting for it to reach zero can pin this overlay
+// "startup is still going" signal - waiting for it to reach zero can pin this overlay
 // on screen forever. The warm-up notice therefore gets a hard deadline: past this many
 // frames it is dismissed whatever the counter says. The engine keeps compiling in the
 // background either way; only the notice goes away.
@@ -49,7 +49,7 @@ void st::App::RenderLoadingScreen(const st::LoadingState& state) {
             loadingDone_ = true;
     }
 
-    // Nothing to say: no warm-up notice and no scene progress. Draw nothing at all —
+    // Nothing to say: no warm-up notice and no scene progress. Draw nothing at all
     // an empty ImGui window still paints a box.
     const bool showProgress = state.active
         && (!state.scene.empty() || !state.status.empty() || state.percent >= 0);

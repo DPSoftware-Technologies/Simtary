@@ -11,12 +11,12 @@
 //	wi::input is fresh, before the scene update so components read current state).
 //
 //	Querying:
-//		Down/Pressed/Released(action) — digital, treats any bound button (and any
+//		Down/Pressed/Released(action) - digital, treats any bound button (and any
 //		                                bound analog past a threshold) as the trigger.
-//		Axis(action)                  — float in [-1,1]: sum of positive bindings
+//		Axis(action)                  - float in [-1,1]: sum of positive bindings
 //		                                minus negative bindings (digital = 1, analog
 //		                                = value*scale).
-//		MoveVector()/LookVector()     — convenience 2D reads built from the default map.
+//		MoveVector()/LookVector()     - convenience 2D reads built from the default map.
 //
 //	Source gating: keyboard sources are ignored while ImGui owns the keyboard or the
 //	window is unfocused; mouse-button sources are ignored while ImGui owns the mouse.
@@ -63,14 +63,14 @@ public:
 	// Call once per frame (st::App::Update), after wi::Application::Update.
 	void Update(float dt);
 
-	// ── keybinding configuration (re-bindable at runtime) ──────────────────
+	// keybinding configuration (re-bindable at runtime)
 	void LoadDefaults();                                   // Milistry's default keymap
 	void ClearAction(const std::string& action);
 	void BindButton(const std::string& action, wi::input::BUTTON b, bool negative = false);
 	void BindAnalog(const std::string& action, InputBinding::Analog a, float scale = 1.0f, bool negative = false);
 	const InputAction* Find(const std::string& action) const;
 
-	// ── queries ────────────────────────────────────────────────────────────
+	// queries
 	bool  Down(const std::string& action) const;     // any bound source active
 	bool  Pressed(const std::string& action) const;  // a bound button went down this frame
 	bool  Released(const std::string& action) const; // a bound button went up this frame
@@ -79,13 +79,13 @@ public:
 	XMFLOAT2 MoveVector() const; // (MoveX, MoveY) from the default move actions
 	XMFLOAT2 LookVector() const; // (LookX, LookY) analog stick look (mouse handled via MouseDelta)
 
-	// ── FPS mouse look (single owner of SDL relative-mouse mode) ────────────
+	// FPS mouse look (single owner of SDL relative-mouse mode)
 	void     SetMouseCaptured(bool captured);
 	bool     IsMouseCaptured() const { return mouseCaptured_; }
 	XMFLOAT2 MouseDelta() const { return mouseDelta_; } // pixels since last frame (0 when not captured)
 
 	// Developer-tooling override, for a UI that drives a camera with the mouse (the
-	//	editor's free camera — Framework/devui/imeditor.h). While it is on:
+	//	editor's free camera - Framework/devui/imeditor.h). While it is on:
 	//	  - SDL relative-mouse mode is on, so the cursor is hidden and the pointer cannot
 	//	    run off the window or hit a screen edge mid-drag;
 	//	  - MouseDelta() keeps reporting motion, which is what the tool reads;
@@ -103,7 +103,7 @@ public:
 	void SetUIMouseConfined(bool on);
 	bool IsUIMouseConfined() const { return uiMouseConfined_; }
 
-	// ── developer tooling owns input ────────────────────────────────────────
+	// developer tooling owns input
 	// Hard gate for Editor mode: while this is on, the GAME receives no keyboard or mouse
 	//	input at all, whether it reads through this class or straight from wi::input.
 	//

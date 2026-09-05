@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 3.19)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Simtary — shared engine workspace.
+# Simtary - shared engine workspace.
 #
 # Everything more than one game needs lives here: the engine core (Engine/, the
 # Simtary4 repo), the framework layer on top of it (Framework/), the vendored
@@ -9,7 +8,7 @@ cmake_minimum_required(VERSION 3.19)
 # reporter GUI.
 #
 # A game pulls this in through cmake/SimtaryBootstrap.cmake, which add_subdirectory()s
-# it into that game's own build tree — so every project keeps its own
+# it into that game's own build tree - so every project keeps its own
 # <project>/build/<platform_arch> and can be configured on its own. What is genuinely
 # SHARED lives here and is never duplicated per project:
 #
@@ -21,7 +20,6 @@ cmake_minimum_required(VERSION 3.19)
 #
 # Build the engine (and optionally every game beside it) standalone with:
 #   cmake --preset win_x86-64 && cmake --build --preset win_x86-64
-# ══════════════════════════════════════════════════════════════════════════════
 
 # enable "codegen" target if supported by CMake
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.31)
@@ -132,7 +130,7 @@ endif()
 # Use solution folders to organize projects
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
-# ─── Crash reporting: sentry-native (bundles Crashpad), offline / local-only ────
+# Crash reporting: sentry-native (bundles Crashpad), offline / local-only
 # Fetched BEFORE the project-wide exception/RTTI/security flags below, so this
 # third-party code builds with its own (exception-enabled) defaults instead of
 # inheriting the engine's /EHsc- /GR- which would break it.
@@ -141,7 +139,7 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 # GUI is launched on crash. See Framework/crash/ and crashreporter/.
 include(FetchContent)
 
-# ─── Shared dependency source cache ────────────────────────────────────────────
+# Shared dependency source cache
 # sentry-native and openal-soft are fetched from git. Cloning them once per project
 # build tree is the single slowest part of a cold configure, so the clones live in
 # Simtary/deps/ and every project reuses them: FetchContent skips the download when
@@ -180,7 +178,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(sentry)
 
-# ─── ZeroMQ (libzmq): C messaging library — static link, C API only ─────────────
+# ZeroMQ (libzmq): C messaging library - static link, C API only
 # Added BEFORE the project-wide /EHsc- /GR- /_HAS_EXCEPTIONS=0 flags below (same
 # reason as sentry): libzmq is C++ internally and must build with its own
 # exception-enabled defaults instead of inheriting the engine's. Static archive →
@@ -204,7 +202,7 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 add_subdirectory(libs/libzmq)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
-# ─── OpenAL Soft: real-time audio output for the engine's Faust DSP streaming ───
+# OpenAL Soft: real-time audio output for the engine's Faust DSP streaming
 # Added BEFORE the project-wide /EHsc- /GR- /_HAS_EXCEPTIONS=0 flags below (same
 # reason as sentry/libzmq): openal-soft is C++ and uses exceptions/RTTI internally,
 # so it must build with its own defaults instead of inheriting exceptions-off.
@@ -228,7 +226,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(openal)
 
-# ─── Steam Audio: the 3D audio layer (core SDK only) ───────────────────────────
+# Steam Audio: the 3D audio layer (core SDK only)
 # Steam Audio owns everything spatial - HRTF, distance, air absorption, occlusion,
 # transmission, geometry-driven reflections and pathing - while OpenAL Soft above
 # stays the output device and the 2D mixer. Engine/stAudioSpatial.cpp is the only
@@ -304,10 +302,10 @@ else()
     message(STATUS "Simtary: Steam Audio disabled - 3D audio falls back to stereo panning.")
 endif()
 
-# ─── Model importers: tinygltf (glTF/GLB) + ufbx (FBX/OBJ/MTL) ─────────────────
+# Model importers: tinygltf (glTF/GLB) + ufbx (FBX/OBJ/MTL)
 # Both are C, and that is why these two were picked over the obvious alternatives.
 # This workspace builds with /EHsc- /GR- and _HAS_EXCEPTIONS=0 (see the app flags
-# below), so a C++ loader that throws — tinygltf v2 on top of nlohmann/json, say —
+# below), so a C++ loader that throws - tinygltf v2 on top of nlohmann/json, say
 # would either have to be compiled with its own exception settings and marshalled
 # across a C boundary, or run with JSON_NOEXCEPTION, which turns a malformed file
 # into std::abort(). A C parser has neither problem: it reports errors by return
@@ -383,7 +381,7 @@ else()
     add_link_options($<$<CONFIG:Debug>:${SANITIZE_LINK_OPTIONS}>)
 endif()
 
-# ─── Project-wide code-generation contract ─────────────────────────────────────
+# Project-wide code-generation contract
 # Exceptions and RTTI are OFF everywhere from here down. Engine, ImGui and app
 # code must all agree on this, otherwise their objects are not ABI-compatible.
 #
@@ -472,28 +470,28 @@ target_compile_definitions(Simtary_AppFlags INTERFACE ${SIMTARY_APP_DEFINITIONS}
 target_compile_options(Simtary_AppFlags INTERFACE ${SIMTARY_APP_OPTIONS})
 target_compile_features(Simtary_AppFlags INTERFACE cxx_std_17)
 
-# ─── Engine + vendored libraries ───────────────────────────────────────────────
+# Engine + vendored libraries
 add_subdirectory(libs/SDL2)
 add_subdirectory(Engine)        # the Simtary4 engine core; defines the `Simtary` target
 
-# ─── libgfx: Adafruit-GFX-compatible software 2D rasterizer ────────────────────
+# libgfx: Adafruit-GFX-compatible software 2D rasterizer
 # Added AFTER the project-wide /EHsc- /GR- flags (unlike sentry/libzmq/openal): it
 # uses neither exceptions nor RTTI, so inheriting them is correct and keeps its
 # objects ABI-consistent with the rest of the app.
 #
-# Must come after libs/SDL2 so the SDL2::SDL2 target already exists — libgfx picks
+# Must come after libs/SDL2 so the SDL2::SDL2 target already exists - libgfx picks
 # it up instead of running find_package() (see libs/libgfx/CMakeLists.txt).
 #
 # Two entry points, both compiled in:
-#   GFXcanvas — off-screen ARGB8888/RGB565/… surface, no device. This is the one
+#   GFXcanvas - off-screen ARGB8888/RGB565/… surface, no device. This is the one
 #               that composes with game code: draw into it, then upload the buffer.
-#   LinuxGFX  — owns a backend. Under GFXSDL it opens its OWN SDL window, which
+#   LinuxGFX  - owns a backend. Under GFXSDL it opens its OWN SDL window, which
 #               would sit alongside the engine's, so it is not used by games.
 set(GFX_DRM_SUPPORT OFF CACHE BOOL "" FORCE)  # Linux-only backend
 set(GFX_SDL_SUPPORT ON  CACHE BOOL "" FORCE)  # required on Windows; also the GFXcanvas path
 add_subdirectory(libs/libgfx)
 
-# ─── Dear ImGui (+ ImGuizmo) ───────────────────────────────────────────────────
+# Dear ImGui (+ ImGuizmo)
 set(IMGUI_FILES
     libs/ImGui/imconfig.h
     libs/ImGui/imgui.cpp
@@ -538,14 +536,14 @@ target_include_directories(ImGui_Lib PUBLIC
 target_link_libraries(ImGui_Lib PRIVATE SDL2::SDL2)
 set_target_properties(ImGui_Lib PROPERTIES FOLDER "Simtary")
 
-# ─── Crash reporter GUI (separate process, shown after a crash) ────────────────
+# Crash reporter GUI (separate process, shown after a crash)
 # One reporter binary serves every project; simtary_add_app() copies it next to
 # the game executable.
 add_executable(SimtaryCrashReporter crashreporter/main.cpp)
 # stb_image.h (header-only PNG decoder) for the crash window icon/branding.
 target_include_directories(SimtaryCrashReporter PRIVATE ${SIMTARY_ROOT}/Engine/Utility)
 if (WIN32)
-    # Windows uses the native Win32 message box (user32) — no SDL dependency.
+    # Windows uses the native Win32 message box (user32) - no SDL dependency.
     target_link_libraries(SimtaryCrashReporter PRIVATE user32 shell32)
 endif()
 target_link_libraries(SimtaryCrashReporter PRIVATE SDL2::SDL2)
@@ -565,16 +563,16 @@ if (MSVC)
     target_link_options(SimtaryCrashReporter PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
 endif()
 
-# ─── simtary_add_app() ─────────────────────────────────────────────────────────
+# simtary_add_app()
 include(SimtaryApp)
 
-# ─── stpack: the asset packer ──────────────────────────────────────────────────
+# stpack: the asset packer
 # Converts .wiscene maps + loose content into .stsd / .strd / .stafp<N> at BUILD time
 # (simtary_pack_assets in cmake/SimtaryApp.cmake drives it), and inspects or reverses
 # the result by hand.
 #
 # Not inside SIMTARY_BUILD_TESTS: a game configures this workspace with
-# EXCLUDE_FROM_ALL, so nothing here is built unless something depends on it — and a
+# EXCLUDE_FROM_ALL, so nothing here is built unless something depends on it - and a
 # game's pack target does. Gating it on the test option would make the tool vanish for
 # exactly the projects that need it.
 #
@@ -600,7 +598,7 @@ else()
     set_source_files_properties(tools/stpack_zstd.cpp PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 
-# ─── Framework tests + tools ───────────────────────────────────────────────────
+# Framework tests + tools
 # Small console executables exercising self-contained framework modules under the
 # same /EHsc- /GR- flags as a game. Run via the exe or `ctest`.
 option(SIMTARY_BUILD_TESTS "Build the framework test executables" ON)
@@ -652,11 +650,11 @@ if (SIMTARY_BUILD_TESTS)
     set_target_properties(make_project_descriptor PROPERTIES FOLDER "Simtary/Tools")
 endif()
 
-# ─── Games in this workspace ───────────────────────────────────────────────────
+# Games in this workspace
 # Only when Simtary is the top-level project: `cmake --preset win_x86-64` here
 # builds the engine plus every game beside it, which is the fast way to check that
 # a framework change still compiles everywhere. Each game can equally be configured
-# on its own (that is the normal workflow) — see cmake/SimtaryBootstrap.cmake.
+# on its own (that is the normal workflow) - see cmake/SimtaryBootstrap.cmake.
 if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)   # top-level: CMake 3.19 has no PROJECT_IS_TOP_LEVEL
     option(SIMTARY_BUILD_PROJECTS "Also build the sibling game projects" OFF)
     if (SIMTARY_BUILD_PROJECTS)

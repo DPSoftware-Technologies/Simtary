@@ -113,7 +113,7 @@ void AssetExplorer::SetStatus (const std::string& text, bool isError) {
         wi::backlog::post("Resource Explorer: " + text, wi::backlog::LogLevel::Warning);
 }
 
-// ── imports ────────────────────────────────────────────────────────────────────
+// imports
 
 void AssetExplorer::QueueImport (const std::string& path) {
     std::lock_guard<std::mutex> lock(importMutex_);
@@ -150,7 +150,7 @@ void AssetExplorer::ProcessQueuedImports () {
     if (pending.empty()) return;
 
     // Something was dropped with no package open. Start a new one rather than dropping
-    // the files on the floor — that is what the gesture meant.
+    // the files on the floor - that is what the gesture meant.
     if (!editing_) BeginNew();
 
     size_t before = entries_.size();
@@ -158,7 +158,7 @@ void AssetExplorer::ProcessQueuedImports () {
         std::error_code ec;
         if (fs::is_directory(U8Path(path), ec)) {
             // A dropped folder imports its whole tree, keeping the structure as the
-            // logical path — which is what "drop my textures folder in" means.
+            // logical path - which is what "drop my textures folder in" means.
             const fs::path root = U8Path(path);
             for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
                  it != end; it.increment(ec)) {
@@ -257,7 +257,7 @@ void AssetExplorer::AddFromWiscene (const std::string& path) {
         ref.engineFlags = r.engineFlags;
         scene.assets.push_back(ref);
 
-        // Already present — from the package or from an earlier drop — so the map just
+        // Already present - from the package or from an earlier drop - so the map just
         // references it. This is the deduplication that makes two maps sharing a texture
         // cost one copy.
         bool already = false;
@@ -295,7 +295,7 @@ void AssetExplorer::AddFromWiscene (const std::string& path) {
     AddEntry(std::move(map));
 }
 
-// ── working set ────────────────────────────────────────────────────────────────
+// working set
 
 void AssetExplorer::BeginEdit (uint32_t mountIndex) {
     AssetSystem& assets = AssetSystem::Get();
@@ -306,7 +306,7 @@ void AssetExplorer::BeginEdit (uint32_t mountIndex) {
     selection_.clear();
     entries_.reserve(pack->AssetCount());
 
-    // Rows only — no bytes. An untouched row is copied straight from this package into
+    // Rows only - no bytes. An untouched row is copied straight from this package into
     // the new one at Save time, so opening a 40 GB package costs a few hundred KB.
     for (uint32_t i = 0; i < pack->AssetCount(); ++i) {
         const asset::StrdAsset* a = pack->AssetAt(i);
@@ -410,7 +410,7 @@ bool AssetExplorer::ResolveBytes (const Entry& entry, std::vector<uint8_t>& out,
     return false;
 }
 
-// ── save ───────────────────────────────────────────────────────────────────────
+// save
 
 bool AssetExplorer::SaveWorkingSet (const std::string& outDir, const std::string& baseName,
                                     std::string* error) {
@@ -429,7 +429,7 @@ bool AssetExplorer::SaveWorkingSet (const std::string& outDir, const std::string
     options.partSizeTarget   = uint64_t(std::max(1, packPartSizeMB_)) * 1024 * 1024;
     options.compressionLevel = packLevel_;
 
-    // ── 1. write the whole new package into staging ────────────────────────────
+    // 1. write the whole new package into staging
     // Everything is written before anything is destroyed. Untouched rows are read out
     // of the source package, which is still mounted at this point.
     {
@@ -459,7 +459,7 @@ bool AssetExplorer::SaveWorkingSet (const std::string& outDir, const std::string
         }
     }
 
-    // ── 2. unmount whatever currently owns the target files ────────────────────
+    // 2. unmount whatever currently owns the target files
     // A mounted package is memory-mapped, and on Windows that means the file cannot be
     // replaced while it is mapped. Find it by path rather than by assuming it is the
     // one being edited: "Save As" over a different mounted package is legal.
@@ -479,7 +479,7 @@ bool AssetExplorer::SaveWorkingSet (const std::string& outDir, const std::string
         assets.Unmount(mountedPath);
     }
 
-    // ── 3. replace the files ───────────────────────────────────────────────────
+    // 3. replace the files
     // Old parts are deleted by pattern, not by count: the new package may have fewer
     // parts than the old one, and an orphaned .stafpN left beside the new index is a
     // file the reader will refuse the whole set over.
@@ -504,7 +504,7 @@ bool AssetExplorer::SaveWorkingSet (const std::string& outDir, const std::string
     }
     fs::remove_all(U8Path(stageDir), ec);
 
-    // ── 4. remount and rebind the working set to what is now on disk ───────────
+    // 4. remount and rebind the working set to what is now on disk
     if (wasMounted || mountAfterWrite_) {
         std::string mountError;
         if (!assets.Mount(targetIndex, mountPoint.empty() ? "assets/" : mountPoint, &mountError)) {
@@ -546,7 +546,7 @@ bool AssetExplorer::ExtractEntries (const std::vector<uint64_t>& ids, const std:
     return true;
 }
 
-// ── preview ────────────────────────────────────────────────────────────────────
+// preview
 
 void AssetExplorer::RefreshPreview () {
     const uint64_t id = selection_.empty() ? 0 : selection_.back();
@@ -585,7 +585,7 @@ void AssetExplorer::RefreshPreview () {
                         std::min<size_t>(bytes.size(), 8192));
 }
 
-// ── UI ─────────────────────────────────────────────────────────────────────────
+// UI
 
 void AssetExplorer::DrawToolbar () {
     AssetSystem& assets = AssetSystem::Get();
@@ -864,7 +864,7 @@ void AssetExplorer::DrawAssetTable () {
 
         if (ImGui::Selectable(row.path.c_str(), selected,
                               ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick)) {
-            // Ctrl adds to the selection, a plain click replaces it — the convention
+            // Ctrl adds to the selection, a plain click replaces it - the convention
             // every file manager uses, and the reason Extract can act on a set.
             if (ImGui::GetIO().KeyCtrl) {
                 auto it = std::find(selection_.begin(), selection_.end(), row.id);
@@ -917,7 +917,7 @@ void AssetExplorer::DrawAssetTable () {
 
     ImGui::TextDisabled("%zu shown, %zu selected", rows.size(), selection_.size());
 
-    // ── actions on the selection ───────────────────────────────────────────────
+    // actions on the selection
     ImGui::BeginDisabled(selection_.empty());
     if (ImGui::Button("Extract...")) {
         const std::string dir = wi::helper::FolderDialog("Extract selected assets to");

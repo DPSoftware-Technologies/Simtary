@@ -52,7 +52,7 @@ void SubWinStatus::SetStatus(const std::string& text, const std::string& detail)
 }
 
 // ============================================================================
-//  Windows — real Win32 dialog using native Common Controls v6 (themed look)
+//  Windows - real Win32 dialog using native Common Controls v6 (themed look)
 // ============================================================================
 #if defined(_WIN32)
 
@@ -60,7 +60,7 @@ void SubWinStatus::SetStatus(const std::string& text, const std::string& detail)
 #include <commctrl.h>
 #pragma comment(lib, "comctl32.lib")
 // Pull in Common Controls v6 so the progress bar is the themed (Aero) style
-// instead of the legacy gray one. One string literal — do not wrap.
+// instead of the legacy gray one. One string literal - do not wrap.
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 // Control IDs, so WM_CTLCOLORSTATIC can tell the three labels apart without keeping
@@ -227,7 +227,7 @@ void SubWinStatus::ThreadMain() {
 }
 
 // ============================================================================
-//  Linux — Xlib, double-buffered with a backing Pixmap
+//  Linux - Xlib, double-buffered with a backing Pixmap
 //  (True system-native widgets on Linux would need GTK/Qt; this stays
 //   dependency-light and matches the dark loading style.)
 // ============================================================================

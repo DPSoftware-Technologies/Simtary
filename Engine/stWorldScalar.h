@@ -1,7 +1,7 @@
 #pragma once
 // Simtary extension: world-space position precision switch.
 //
-// The engine renders in float and always will — GPUs, the shader interop structs and
+// The engine renders in float and always will - GPUs, the shader interop structs and
 // the whole XMFLOAT3 scene graph are 32-bit. What this switch controls is the CPU-side
 // *absolute* position of a root transform, and therefore how far from the world origin
 // the game can go before float mantissa starts eating centimetres.
@@ -23,13 +23,13 @@
 // Rendering stays float-safe in both modes through the *render origin*: the transform
 // system subtracts a double-precision origin (normally the camera's world position)
 // from each root transform's absolute position, and stores the small difference in
-// TransformComponent::translation_local. Everything downstream of that — matrices,
-// bounds, shaders — sees ordinary camera-local floats.
+// TransformComponent::translation_local. Everything downstream of that - matrices,
+// bounds, shaders - sees ordinary camera-local floats.
 //
 // Large-world positions are opt-in per transform, through TransformComponent::LARGE_WORLD.
 // A transform picks the flag up the first time it is handed an absolute position, and only
-// a flagged transform is ever rebased. Anything that drives translation_local directly —
-// wi::gui widgets do exactly that — therefore keeps stock Wicked behaviour instead of
+// a flagged transform is ever rebased. Anything that drives translation_local directly
+// wi::gui widgets do exactly that - therefore keeps stock Wicked behaviour instead of
 // being dragged back to the origin behind its own back.
 
 namespace wi::scene

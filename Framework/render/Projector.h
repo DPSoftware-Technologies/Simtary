@@ -63,7 +63,7 @@ struct Projector {
 
 	bool enabled = true;
 
-	// ── placement ────────────────────────────────────────────────────────────────
+	// placement
 	// With followEntity set, position/rotation are refreshed from that entity's
 	// world transform every frame and whatever you wrote into them is overwritten.
 	wi::ecs::Entity followEntity = wi::ecs::INVALID_ENTITY;
@@ -71,7 +71,7 @@ struct Projector {
 	XMFLOAT4 rotation = XMFLOAT4(0, 0, 0, 1); // quaternion
 	Forward forward = Forward::PlusZ;
 
-	// ── optics ───────────────────────────────────────────────────────────────────
+	// optics
 	// Throw ratio is how projectors are actually specified: image width = throw
 	// distance / throwRatio. 1.6 is a common lens; 0.5 is short-throw. Set it to 0
 	// to drive the gate from `fov` (vertical, radians) instead.
@@ -89,7 +89,7 @@ struct Projector {
 	float nearClip = 0.05f;
 	float range = 40.0f; // beyond this the projector contributes nothing
 
-	// ── image ────────────────────────────────────────────────────────────────────
+	// image
 	// Anything with an SRV: a loaded texture, a st::gfx::Framebuffer, a video frame,
 	// a CameraComponent::render_to_texture target. Leave invalid for flat colour.
 	wi::graphics::Texture texture;
@@ -122,7 +122,7 @@ struct Projector {
 	float falloff = 1.0f;
 	float focusDistance = 8.0f;
 
-	// ── shadows ──────────────────────────────────────────────────────────────────
+	// shadows
 	// A depth map rendered from the lens, once per frame. This is what stops the
 	// image from passing through a wall and landing on whatever is behind it. It sees
 	// blockers the camera cannot - off screen, or viewed from a completely different
@@ -132,7 +132,7 @@ struct Projector {
 	int shadowResolution = 1024;
 	float shadowBias = 0.002f; // in projector clip depth; raise if surfaces self-shadow
 
-	// ── reflections and lenses ───────────────────────────────────────────────────
+	// reflections and lenses
 	// Let the image bounce off st::Mirror and bend through st::Lens, the same
 	// elements a laser uses (Framework/render/Optics.h).
 	//
@@ -155,7 +155,7 @@ struct Projector {
 	// Elements dimmer than this are not worth a slot or a shadow map.
 	float opticMinThroughput = 0.02f;
 
-	// ── surfaces ─────────────────────────────────────────────────────────────────
+	// surfaces
 	bool lightSurfaces = true;
 	bool lambert = true;   // fall off with the angle between surface and lens
 	// Screen-space shadowing. Only used when `shadows` is off - it is the weaker of
@@ -165,7 +165,7 @@ struct Projector {
 	int occlusionSamples = 12;
 	float occlusionThickness = 1.0f; // metres of assumed blocker depth
 
-	// ── beam ─────────────────────────────────────────────────────────────────────
+	// beam
 	bool beam = true;
 	float beamDensity = 0.05f;   // scattering per metre of air
 	float beamAnisotropy = 0.6f; // 0 isotropic, -> 1 forward scattering (bright head-on)

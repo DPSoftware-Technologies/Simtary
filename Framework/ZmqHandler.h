@@ -12,7 +12,7 @@
 // Owns a zmq context + SUB socket on a dedicated thread. Received message
 // bodies are pushed into a thread-safe queue; the MAIN thread drains them via
 // Drain() (see st::App::Update) and re-publishes through EventBus. This keeps
-// subscriber callbacks — and any Wicked scene/ECS mutation they perform — on
+// subscriber callbacks - and any Wicked scene/ECS mutation they perform - on
 // the main thread, because the Wicked scene is not thread-safe.
 //
 // C API (zmq.h) only: cppzmq is not vendored because it throws and exceptions

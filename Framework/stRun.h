@@ -1,5 +1,5 @@
 #pragma once
-// st::Run — the Simtary main loop.
+// st::Run - the Simtary main loop.
 //
 // The project owns main(); this owns everything after it. A project's
 // src/main.cpp fills an AppConfig with its properties, constructs its App

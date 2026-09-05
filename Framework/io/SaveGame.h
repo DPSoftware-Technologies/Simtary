@@ -1,5 +1,5 @@
 #pragma once
-// Save-game storage — multiple named slots, each its own NBT file under
+// Save-game storage - multiple named slots, each its own NBT file under
 // <userdata>/saves/<slot>.stcd. Separate from game options (options.stad).
 //
 //   st::NbtStore s = st::savegame::Open("slot0");

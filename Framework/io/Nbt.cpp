@@ -7,7 +7,7 @@
 
 namespace st::nbt {
 
-// ── factories ───────────────────────────────────────────────────────────────────
+// factories
 Tag Tag::Byte(int8_t v)   { Tag t; t.type = Type::Byte;   t.i = v; return t; }
 Tag Tag::Short(int16_t v) { Tag t; t.type = Type::Short;  t.i = v; return t; }
 Tag Tag::Int(int32_t v)   { Tag t; t.type = Type::Int;    t.i = v; return t; }
@@ -21,7 +21,7 @@ Tag Tag::Longs(std::vector<int64_t> v) { Tag t; t.type = Type::LongArray; t.long
 Tag Tag::List(Type elementType)        { Tag t; t.type = Type::List;      t.listType = elementType;   return t; }
 Tag Tag::Compound()                    { Tag t; t.type = Type::Compound;                              return t; }
 
-// ── compound access ───────────────────────────────────────────────────────────────
+// compound access
 Tag& Tag::put(const std::string& name, Tag value) {
     // Children are only serialized for a Compound, so putting into a tag of any other
     // type would silently discard the write at save time. Retype instead: the caller
@@ -63,7 +63,7 @@ double  Tag::getDouble(const std::string& n, double  def) const { const Tag* t =
 std::string Tag::getString(const std::string& n, const std::string& def) const { const Tag* t = get(n); return t ? t->asString(def) : def; }
 bool    Tag::getBool  (const std::string& n, bool    def) const { const Tag* t = get(n); return t ? (t->asLong(def ? 1 : 0) != 0) : def; }
 
-// ── list access ─────────────────────────────────────────────────────────────────
+// list access
 Tag& Tag::add(Tag value) {
     if (type != Type::List)        // as with put(): items only round-trip on a List
         *this = List(value.type);
@@ -73,7 +73,7 @@ Tag& Tag::add(Tag value) {
     return items.back();
 }
 
-// ── scalar reads ──────────────────────────────────────────────────────────────────
+// scalar reads
 int64_t Tag::asLong(int64_t def) const {
     switch (type) {
         case Type::Byte: case Type::Short: case Type::Int: case Type::Long: return i;
@@ -92,7 +92,7 @@ std::string Tag::asString(const std::string& def) const {
     return type == Type::String ? str : def;
 }
 
-// ── serialization (big-endian) ──────────────────────────────────────────────────
+// serialization (big-endian)
 namespace {
 
 void w8 (std::vector<uint8_t>& o, uint8_t v)  { o.push_back(v); }
@@ -176,7 +176,7 @@ bool write(const Tag& root, const std::string& rootName, std::vector<uint8_t>& o
     return true;
 }
 
-// ── parsing (bounds-checked, never throws) ────────────────────────────────────────
+// parsing (bounds-checked, never throws)
 namespace {
 
 struct Cur { const uint8_t* p; size_t n; bool ok = true; };
@@ -197,7 +197,7 @@ double b2d(uint64_t b) { double d; std::memcpy(&d, &b, 8); return d; }
 
 // A corrupt/hostile file must not be able to take the process down. Exceptions are
 // disabled project-wide, so an allocation failure or a blown stack is fatal rather than
-// catchable — the parser has to refuse impossible input up front instead.
+// catchable - the parser has to refuse impossible input up front instead.
 //
 // Nested compounds cost only 3 bytes per level on the wire (type id + 2-byte name
 // length), so an unbounded readPayload recursion overflows the default 1 MB stack on a
@@ -232,10 +232,10 @@ void readPayload(Cur& c, Type type, Tag& out, int depth) {
             // for up to 2^32 iterations appending empty tags until the process dies.
             if (et == (uint8_t)Type::End && len > 0) { c.ok = false; break; }
             // Every other element type consumes at least one byte, so a length past the
-            // remaining input is unsatisfiable — reject before reserving for it.
+            // remaining input is unsatisfiable - reject before reserving for it.
             if (len > c.n) { c.ok = false; break; }
             out.listType = (Type)et;
-            // Bounded by input size, but a Tag is far larger than the byte that admits it —
+            // Bounded by input size, but a Tag is far larger than the byte that admits it
             // grow on demand rather than trusting `len` with one big up-front allocation.
             out.items.reserve(len < 4096 ? len : 4096);
             for (uint32_t k = 0; k < len && c.ok; ++k) {
@@ -296,10 +296,10 @@ bool read(const uint8_t* data, size_t size, Tag& outRoot, std::string* outRootNa
     return true;
 }
 
-// ── file helpers ──────────────────────────────────────────────────────────────────
+// file helpers
 // Written atomically: serialize to a sibling temp file, then rename over the target.
 // Writing in place would leave a truncated, unreadable save if the process died (or the
-// disk filled) mid-write — with no copy of the previous contents to fall back on.
+// disk filled) mid-write - with no copy of the previous contents to fall back on.
 bool writeFile(const std::string& path, const Tag& root, const std::string& rootName) {
     std::vector<uint8_t> buf;
     if (!write(root, rootName, buf))
@@ -354,7 +354,7 @@ bool readFile(const std::string& path, Tag& outRoot, std::string* outRootName, s
     return read(buf.data(), buf.size(), outRoot, outRootName, error);
 }
 
-// ── debug dump (SNBT-ish) ───────────────────────────────────────────────────────
+// debug dump (SNBT-ish)
 namespace {
 
 const char* typeName(Type t) {

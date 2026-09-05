@@ -1,9 +1,9 @@
 // glTF 2.0 and GLB, through tinygltf v3.
 //
-//	── Handedness ────────────────────────────────────────────────────────────────
+//	Handedness
 //
 //	glTF is right-handed, Y up, +Z toward the viewer. The engine is left-handed. Unlike the
-//	FBX path — where ufbx converts during load — nothing here does it for us, so the mirror
+//	FBX path - where ufbx converts during load - nothing here does it for us, so the mirror
 //	is applied on the way in, in exactly three places and nowhere else:
 //
 //	  positions / normals / tangents   z = -z
@@ -15,14 +15,14 @@
 //	normal transformation. Baking it into the data leaves a scene with no mirrored transforms
 //	in it at all.
 //
-//	── Accessors ─────────────────────────────────────────────────────────────────
+//	Accessors
 //
 //	Everything geometric in glTF is an accessor over a buffer view: a component type, a count,
 //	an optional stride, and an optional sparse override list. ReadAccessor normalises all of
 //	that into floats (or uint32 for indices) once, so the mesh and animation code below never
 //	sees a byteStride or a normalized short.
 //
-//	── Files ─────────────────────────────────────────────────────────────────────
+//	Files
 //
 //	tinygltf is given filesystem callbacks that go through wi::helper::FileRead, so a .gltf
 //	with an external .bin and loose textures imports from inside an asset package. Image
@@ -57,7 +57,7 @@ std::string Str (const tg3_str& s)
 	return (s.data != nullptr && s.len > 0) ? std::string(s.data, s.len) : std::string();
 }
 
-// ── filesystem callbacks ──────────────────────────────────────────────────────
+// filesystem callbacks
 
 int32_t FsFileExists (const char* path, uint32_t path_len, void* user)
 {
@@ -96,7 +96,7 @@ int32_t FsGetFileSize (uint64_t* out_size, const char* path, uint32_t path_len, 
 	return 1;
 }
 
-// ── accessors ─────────────────────────────────────────────────────────────────
+// accessors
 
 // Where an accessor's raw bytes start, and how far apart consecutive elements are.
 struct AccessorView {
@@ -284,7 +284,7 @@ int32_t FindAttribute (const tg3_primitive& prim, const char* name)
 	return -1;
 }
 
-// ── materials ─────────────────────────────────────────────────────────────────
+// materials
 
 std::string TextureName (ImportContext& ctx, const tg3_model& model, int32_t textureIndex)
 {
@@ -377,7 +377,7 @@ Entity ConvertMaterial (ImportContext& ctx, const tg3_model& model, uint32_t ind
 	return e;
 }
 
-// ── meshes ────────────────────────────────────────────────────────────────────
+// meshes
 
 // A glTF mesh is a list of primitives, each with its own material and its own vertex arrays.
 //	The engine's MeshComponent is one vertex buffer with subsets, so the primitives are
@@ -515,7 +515,7 @@ Entity ConvertMesh (ImportContext& ctx, const tg3_model& model, uint32_t meshInd
 	return meshEntity;
 }
 
-// ── animation ─────────────────────────────────────────────────────────────────
+// animation
 
 void AddChannel (Scene& scene, AnimationComponent& anim, Entity target,
 	AnimationComponent::AnimationChannel::Path path,
@@ -545,7 +545,7 @@ void AddChannel (Scene& scene, AnimationComponent& anim, Entity target,
 
 } // namespace
 
-// ─────────────────────────────────────────────────────────────── the import ───
+// the import
 
 bool ImportGLTF (ImportContext& ctx, Entity root)
 {
@@ -592,12 +592,12 @@ bool ImportGLTF (ImportContext& ctx, Entity root)
 		return false;
 	}
 
-	// ── materials ──
+	// materials
 	std::vector<Entity> materials(model.materials_count, INVALID_ENTITY);
 	for (uint32_t i = 0; i < model.materials_count; ++i)
 		materials[i] = ConvertMaterial(ctx, model, i);
 
-	// ── nodes ──
+	// nodes
 	std::vector<Entity> nodeEntities(model.nodes_count, INVALID_ENTITY);
 	for (uint32_t i = 0; i < model.nodes_count; ++i)
 	{
@@ -660,7 +660,7 @@ bool ImportGLTF (ImportContext& ctx, Entity root)
 		if (!hasParent[i])
 			scene.Component_Attach(nodeEntities[i], root, true);
 
-	// ── skins ──
+	// skins
 	std::vector<Entity>                armatureForSkin(model.skins_count, INVALID_ENTITY);
 	std::vector<std::vector<uint32_t>> jointRemapForSkin(model.skins_count);
 	if (ctx.options.importSkins)
@@ -710,7 +710,7 @@ bool ImportGLTF (ImportContext& ctx, Entity root)
 		}
 	}
 
-	// ── meshes ──
+	// meshes
 	// A glTF mesh instanced by several nodes is converted once per (mesh, skin) pair: the
 	//	skin changes the vertex data, so two nodes with different skins genuinely need two.
 	std::unordered_map<uint64_t, Entity> meshCache;
@@ -740,7 +740,7 @@ bool ImportGLTF (ImportContext& ctx, Entity root)
 		object.meshID = it->second;
 	}
 
-	// ── animations ──
+	// animations
 	if (ctx.options.importAnimations)
 	{
 		std::vector<float> times, values;

@@ -98,7 +98,7 @@ bool ResolveOpticSurface(const wi::scene::Scene& scene, OpticSurface& surface) {
 	XMStoreFloat3(&surface.tangent, tangent);
 	XMStoreFloat3(&surface.bitangent, bitangent);
 
-	// ── fit the plane and the aperture to the mesh ───────────────────────────────
+	// fit the plane and the aperture to the mesh
 	// After the axes, because the extents are measured ALONG them.
 	if (surface.fitToMesh && surface.followEntity != wi::ecs::INVALID_ENTITY) {
 		const wi::scene::ObjectComponent* object = scene.objects.GetComponent(surface.followEntity);

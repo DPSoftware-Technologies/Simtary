@@ -69,9 +69,7 @@ namespace st
 		}
 	}
 
-	// ════════════════════════════════════════════════════════════════════════════
 	// AudioEmitterComponent
-	// ════════════════════════════════════════════════════════════════════════════
 
 	void AudioEmitterComponent::Start()
 	{
@@ -395,7 +393,7 @@ namespace st
 		static const char* kReflections = "3D: reflections and pathing";
 		static const char* kRender = "3D: rendering";
 
-		// ── transport ───────────────────────────────────────────────────────────
+		// transport
 		// Live controls, not settings: none of these are written to metadata, because
 		// where the playhead is and whether it is moving are not scene data. The lambdas
 		// are capture-less so NativeParam stays a plain struct; each casts the base
@@ -537,9 +535,7 @@ namespace st
 		out.push_back(NativeParam::Bool("applyAirAbsorption", &applyAirAbsorption, nullptr, kRender));
 	}
 
-	// ════════════════════════════════════════════════════════════════════════════
 	// AudioCollectorComponent
-	// ════════════════════════════════════════════════════════════════════════════
 
 	void AudioCollectorComponent::Start()
 	{
@@ -655,7 +651,7 @@ namespace st
 	}
 }
 
-// ── registration ────────────────────────────────────────────────────────────────
+// registration
 // Explicit, not ST_REGISTER_NATIVE_COMPONENT, and called from wi::audio::InitializeOpenAL.
 //
 // The macro registers from a static initializer, which works for the framework's

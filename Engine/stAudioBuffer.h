@@ -1,5 +1,5 @@
 #pragma once
-// ─── stAudioBuffer: the sample interchange between the game and the audio thread ──
+// stAudioBuffer: the sample interchange between the game and the audio thread
 //
 // One class, two jobs, picked with Mode:
 //
@@ -85,7 +85,7 @@ namespace st::audio
 			read_.store(write_.load(std::memory_order_relaxed), std::memory_order_release);
 		}
 
-		// ── producer side ────────────────────────────────────────────────────────
+		// producer side
 
 		// Write planar frames. `src` holds GetChannels() pointers (a null plane writes
 		// silence for that channel, which is how a mono source feeds a stereo buffer).
@@ -172,7 +172,7 @@ namespace st::audio
 			return Write(planes, frames);
 		}
 
-		// ── consumer side ────────────────────────────────────────────────────────
+		// consumer side
 
 		// Consume up to `frames` planar frames into `dst` (GetChannels() pointers; a
 		// null plane is skipped). Frames not available are zero-filled so the caller

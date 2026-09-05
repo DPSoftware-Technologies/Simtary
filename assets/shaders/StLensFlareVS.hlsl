@@ -4,7 +4,7 @@
 //
 // No vertex or index buffer is bound: the corners come from SV_VertexID, so the
 // draw is just device->Draw(3, 0, cmd). One oversized triangle is used rather than
-// a two-triangle quad — it covers the viewport without a diagonal seam where the
+// a two-triangle quad - it covers the viewport without a diagonal seam where the
 // two halves meet, and rasterises marginally faster.
 
 [RootSignature(MI_LENSFLARE_ROOTSIG)]

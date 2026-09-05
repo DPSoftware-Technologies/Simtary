@@ -87,7 +87,7 @@ public:
 	uint32_t GetHeight() const { return desc_.height; }
 	Mode GetMode() const { return desc_.mode; }
 
-	// ── CPU drawing ──────────────────────────────────────────────────────────────
+	// CPU drawing
 	// All of these are no-ops on a GPU-mode framebuffer.
 
 	// The full libgfx surface, for anything the shorthand below does not cover
@@ -119,7 +119,7 @@ public:
 	void Present();
 	void Present(wi::graphics::CommandList cmd);
 
-	// ── GPU drawing ──────────────────────────────────────────────────────────────
+	// GPU drawing
 	// No-ops on a CPU-mode framebuffer.
 
 	// Opens a render pass on the framebuffer and returns the command list to draw
@@ -129,7 +129,7 @@ public:
 	void Begin(wi::graphics::CommandList cmd);
 	void End(wi::graphics::CommandList cmd);
 
-	// ── consuming the result ─────────────────────────────────────────────────────
+	// consuming the result
 	const wi::graphics::Texture& GetTexture() const { return texture_; }
 	int GetDescriptorIndex() const;
 

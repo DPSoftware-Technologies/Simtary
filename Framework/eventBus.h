@@ -9,11 +9,11 @@
 //
 // NOT thread-safe: Subscribe and Emit must run on the same thread (the main
 // thread here). Background producers (e.g. ZmqHandler) must hand their data to
-// the main thread, which then Emits — so subscriber callbacks (scenes) never
+// the main thread, which then Emits - so subscriber callbacks (scenes) never
 // run off-thread and can safely touch the Wicked scene.
 //
 // No Unsubscribe: a registered callback lives for the lifetime of the bus
-// (process lifetime). Subscribers that capture `this` MUST outlive the bus —
+// (process lifetime). Subscribers that capture `this` MUST outlive the bus
 // never register a callback from an object that can be destroyed while the bus
 // is alive, or its next Emit dereferences a dangling pointer. Scenes satisfy
 // this because SceneManager keeps every registered Scene alive for the whole

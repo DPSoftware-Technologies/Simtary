@@ -2,7 +2,7 @@
 // Import a standard model file straight into a wi::scene::Scene.
 //
 //	The engine's own wi::scene::LoadModel reads ONE format: .wiscene, which is a wi::Archive
-//	of an already-built scene. That is the right shipping format and the wrong authoring one —
+//	of an already-built scene. That is the right shipping format and the wrong authoring one
 //	nothing exports it. This is the other half: the four interchange formats an art pipeline
 //	actually produces, converted into engine components on load.
 //
@@ -10,7 +10,7 @@
 //	  .fbx           Autodesk FBX (binary and ASCII), via ufbx
 //	  .obj           Wavefront OBJ + its .mtl, also via ufbx
 //
-//	── Why these two libraries ───────────────────────────────────────────────────
+//	Why these two libraries
 //
 //	Both are C. This workspace compiles with /EHsc- /GR- and _HAS_EXCEPTIONS=0, so a C++
 //	loader that throws is not a drop-in: it would have to be built with its own exception
@@ -18,7 +18,7 @@
 //	A C parser reports failure by return code, which is what the rest of Framework/io does.
 //	ufbx reading OBJ as well as FBX is why two libraries cover four extensions.
 //
-//	── Everything goes through the engine's file layer ───────────────────────────
+//	Everything goes through the engine's file layer
 //
 //	Neither library is allowed to open a file itself. The importers read bytes with
 //	wi::helper::FileRead and hand the loaders memory, and both are given callbacks for the
@@ -26,11 +26,11 @@
 //	textures either references). So a model inside a mounted asset package imports exactly
 //	like one on disk, and a texture it names resolves the same way afterwards.
 //
-//	Embedded textures — a .glb with its images inline, an .fbx with its content baked in —
+//	Embedded textures - a .glb with its images inline, an .fbx with its content baked in
 //	are registered with wi::resourcemanager under a synthetic name, and the material points
 //	at that name. Nothing is written to disk.
 //
-//	── What comes across ─────────────────────────────────────────────────────────
+//	What comes across
 //
 //	Node hierarchy, meshes (positions, normals, tangents, two UV sets, vertex colours),
 //	per-face materials as mesh subsets, PBR materials with their texture slots, skins as

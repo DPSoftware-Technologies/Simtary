@@ -1,4 +1,4 @@
-# SimtaryApp.cmake — simtary_add_app(): turn a project directory into a game.
+# SimtaryApp.cmake - simtary_add_app(): turn a project directory into a game.
 #
 # A project's CMakeLists.txt is about ten lines; everything below is what those ten
 # lines expand to. Pulled in through cmake/SimtaryBootstrap.cmake.
@@ -54,15 +54,15 @@ endif()
 set(SIMTARY_COPY_DIR_CMD "${_SIMTARY_COPY_DIR}" CACHE INTERNAL "cmake -E directory copy mode")
 
 # build_number.txt is PROJECT-level: only a build of that project may advance it.
-# Turn this OFF for compile-checks that are not real project builds — the engine-side
+# Turn this OFF for compile-checks that are not real project builds - the engine-side
 # sweep (SIMTARY_BUILD_PROJECTS) and CI both do, so they never inflate the counter.
 # version.h is still generated at configure time either way, so ST_APP_BUILD_NUMBER
 # always resolves.
 option(SIMTARY_BUMP_BUILD_NUMBER "Advance <project>/build_number.txt on every build" ON)
 
-# ── simtary_compile_shader() ──────────────────────────────────────────────────
+# simtary_compile_shader()
 # Compile one HLSL file with dxc into the app's runtime shader folder
-# (<exe>/shaders/hlsl6 on DX12, <exe>/shaders/spirv on Vulkan — the engine appends
+# (<exe>/shaders/hlsl6 on DX12, <exe>/shaders/spirv on Vulkan - the engine appends
 # the backend subfolder itself, see Application::SetWindow).
 #
 #   simtary_compile_shader(TARGET MyGame SOURCE assets/shaders/FooPS.hlsl PROFILE ps_6_0)
@@ -135,7 +135,7 @@ function(simtary_compile_shader)
     )
 endfunction()
 
-# ── dxc lookup (once per configure) ───────────────────────────────────────────
+# dxc lookup (once per configure)
 # The bundled Engine/Utility/dxc only ships headers, so fall back to the copy that
 # comes with the Vulkan SDK or the Windows 10/11 SDK.
 if (NOT DEFINED SIMTARY_DXC)
@@ -168,7 +168,7 @@ if (NOT DEFINED SIMTARY_DXC)
     endif()
 endif()
 
-# ── _simtary_collect_static_libs() ────────────────────────────────────────────
+# _simtary_collect_static_libs()
 # Every static library that ends up on a target's link line, transitively.
 #
 # The direct list is not enough: the engine links Utility, Jolt and LUA as separate
@@ -229,7 +229,7 @@ function(_simtary_collect_static_libs TARGET OUT_VAR)
     set(${OUT_VAR} "${_found}" PARENT_SCOPE)
 endfunction()
 
-# ── simtary_add_app() ─────────────────────────────────────────────────────────
+# simtary_add_app()
 function(simtary_add_app)
     set(_opts NO_SHADER_WARM NO_CRASH_REPORTER PACK_ASSETS PACK_ONLY MODULE)
     set(_one  NAME ORGANIZATION ICON SOURCE_DIR ASSETS_DIR CONTENT_SUBDIR SCENE_SUBDIR
@@ -260,9 +260,9 @@ function(simtary_add_app)
     if (APP_SCENE_SUBDIR AND EXISTS ${APP_ASSETS_DIR}/${APP_SCENE_SUBDIR})
         set(APP_SCENE_DIR ${APP_ASSETS_DIR}/${APP_SCENE_SUBDIR})
     endif()
-    # ── project descriptor ────────────────────────────────────────────────────
+    # project descriptor
     # assets/project.stpd is the build-time manifest (identity, icon, version). It is
-    # read here, at configure time, and never at runtime — which is why it lives in
+    # read here, at configure time, and never at runtime - which is why it lives in
     # assets/ and not assets/contents/, the folder that ships with the game.
     # Explicit simtary_add_app() arguments still win over the file.
     simtary_read_project_descriptor("${CMAKE_CURRENT_SOURCE_DIR}/assets/project.stpd")
@@ -293,7 +293,7 @@ function(simtary_add_app)
 
     set(ST_APP_ORGANIZATION "${APP_ORGANIZATION}")
 
-    # ── sources ───────────────────────────────────────────────────────────────
+    # sources
     # The framework is rebuilt per app on purpose (see the header comment).
     file(GLOB_RECURSE _framework_sources CONFIGURE_DEPENDS
         ${SIMTARY_FRAMEWORK_DIR}/*.cpp
@@ -311,7 +311,7 @@ function(simtary_add_app)
         message(FATAL_ERROR "simtary_add_app(${APP_NAME}): no framework sources under ${SIMTARY_FRAMEWORK_DIR}")
     endif()
 
-    # ── targets ───────────────────────────────────────────────────────────────
+    # targets
     # Default layout: one executable holding engine, framework and game.
     #
     # MODULE layout: the game's own sources move into a separate shared library that
@@ -409,7 +409,7 @@ function(simtary_add_app)
     endif()
     set(ST_APP_VERSION_STRING "${_app_version}")
 
-    # ── build number / versioning ─────────────────────────────────────────────
+    # build number / versioning
     # A persistent per-project counter (build_number.txt, gitignored) is
     # incremented before every build and baked into a generated version.h, which
     # the About window shows. The changing header forces sysui.cpp to recompile so
@@ -465,7 +465,7 @@ function(simtary_add_app)
         message(STATUS "${APP_NAME}: build number frozen (SIMTARY_BUMP_BUILD_NUMBER=OFF)")
     endif()
 
-    # ── Windows resources (icon + version info) ───────────────────────────────
+    # Windows resources (icon + version info)
     if (WIN32)
         string(TIMESTAMP PROJECT_YEAR "%Y")
         set(PROJECT_NAME "${APP_NAME}")           # consumed by app.rc.in
@@ -490,7 +490,7 @@ function(simtary_add_app)
         endif()
     endif()
 
-    # ── include paths + libraries ─────────────────────────────────────────────
+    # include paths + libraries
     # Applied to every target in _compile_targets. For the executable that means a
     # real link; for the MODULE-mode object libraries it means the include paths and
     # compile definitions only, since an OBJECT library takes usage requirements
@@ -548,7 +548,7 @@ function(simtary_add_app)
         )
     endif()
 
-    # ── project module ────────────────────────────────────────────────────────
+    # project module
     if (APP_MODULE)
         # Everything that decides how the shared C++ types are LAID OUT. Host and
         # module compare this string at load time and refuse to run as a mismatched
@@ -577,7 +577,7 @@ function(simtary_add_app)
         set_target_properties(${APP_NAME} PROPERTIES ENABLE_EXPORTS TRUE)
 
         if (MSVC)
-            # ── derived export list ───────────────────────────────────────────
+            # derived export list
             # NOT WINDOWS_EXPORT_ALL_SYMBOLS: the engine archive alone publishes about
             # 64,700 symbols and a PE export table holds 65,535, so exporting the
             # engine wholesale does not fit. cmake/simtary_module_def.ps1 intersects
@@ -689,7 +689,7 @@ function(simtary_add_app)
         message(STATUS "${APP_NAME}: module layout - host ${APP_NAME}, module ${APP_MODULE_NAME}")
     endif()
 
-    # ── crash reporter ────────────────────────────────────────────────────────
+    # crash reporter
     # The reporter GUI and the Crashpad handler must sit next to the game exe;
     # Framework/crash/CrashHandler.cpp looks for them there at runtime.
     if (NOT APP_NO_CRASH_REPORTER)
@@ -704,7 +704,7 @@ function(simtary_add_app)
         )
     endif()
 
-    # ── framework shaders ─────────────────────────────────────────────────────
+    # framework shaders
     # ImGui's backend shaders and the framework's procedural lens flare. Named
     # StLensFlare* rather than LensFlare*: the engine ships its own lensFlareVS/PS
     # and both land in the same output folder, which is case-insensitive on Windows.
@@ -721,7 +721,7 @@ function(simtary_add_app)
     simtary_compile_shader(TARGET ${APP_NAME} PROFILE cs_6_0 ENGINE_ENV
         SOURCE ${SIMTARY_ROOT}/assets/shaders/StLaserCS.hlsl)
 
-    # ── engine shader sources + shared compiled cache ─────────────────────────
+    # engine shader sources + shared compiled cache
     # The engine compiles its ~360 HLSL shaders on first launch and caches the DXIL
     # in "<exe>/shaders/hlsl6/" (Vulkan: "spirv/"). Simtary/shaders/ holds that cache
     # checked in at the engine level, so it is SHARED: every project starts from the
@@ -762,7 +762,7 @@ function(simtary_add_app)
         )
 
         # Opt-in: fold the freshly compiled shaders back into Simtary/shaders so the
-        # next project (and the next clean build) starts warm. Never automatic — it
+        # next project (and the next clean build) starts warm. Never automatic - it
         # writes into the shared engine tree.
         if (NOT TARGET simtary_shadercache_update)
             add_custom_target(simtary_shadercache_update
@@ -776,7 +776,7 @@ function(simtary_add_app)
         endif()
     endif()
 
-    # ── runtime DLLs ──────────────────────────────────────────────────────────
+    # runtime DLLs
     # PRE_LINK, not POST_BUILD, and that ordering is load-bearing. The shader warm
     # step above runs offlineshadercompiler, which links the engine and therefore
     # imports OpenAL32.dll and phonon.dll; it finds them through its WORKING_DIRECTORY,
@@ -810,7 +810,7 @@ function(simtary_add_app)
         )
     endif()
 
-    # ── assets ────────────────────────────────────────────────────────────────
+    # assets
     # Two copies, deliberately:
     #   <build>/assets     the whole project assets tree (source shaders, dsp, ...)
     #   <exe>/assets       just the game content, which is what the running game
@@ -934,7 +934,7 @@ function(simtary_add_app)
         endif()
     endif()
 
-    # ── asset package ─────────────────────────────────────────────────────────
+    # asset package
     if (APP_PACK_ASSETS OR APP_PACK_ONLY)
         if (NOT APP_PACK_NAME)
             set(APP_PACK_NAME "content")
@@ -959,7 +959,7 @@ function(simtary_add_app)
     set_target_properties(${APP_NAME} PROPERTIES FOLDER "${APP_NAME}")
 endfunction()
 
-# ── simtary_pack_assets() ─────────────────────────────────────────────────────
+# simtary_pack_assets()
 # Build a .strd + .stafp<N> package from a content directory and drop it next to the
 # executable, converting every .wiscene it finds into a .stsd on the way.
 #
@@ -976,13 +976,13 @@ endfunction()
 #
 # The maps stay out of the package on purpose. A .stsd is a few KB of NBT metadata in
 # front of a compressed entity blob, so leaving it visible costs nothing and makes a
-# map listable, diffable and hand-swappable without unpacking anything — while the
+# map listable, diffable and hand-swappable without unpacking anything - while the
 # bulk, the textures and meshes every map shares, is the part that belongs in a
 # deduplicated package.
 #
 # SCENE_SRC_DIR is where the .wiscene SOURCES are read from, and it is deliberately a
 # second directory rather than a corner of CONTENT_DIR: everything under CONTENT_DIR
-# becomes a packed resource, and a .wiscene is not a resource — it is the thing a .stsd
+# becomes a packed resource, and a .wiscene is not a resource - it is the thing a .stsd
 # is converted FROM. Keeping the two apart is what lets the content rule stay
 # exception-free and stops a 37 MB map from also shipping loose. Maps left inside
 # CONTENT_DIR are still converted, so an older project layout keeps working.
@@ -1089,10 +1089,10 @@ function(simtary_pack_assets)
     set_target_properties(${PACK_TARGET}_Repack PROPERTIES FOLDER "${PACK_TARGET}/Build")
 endfunction()
 
-# ── simtary_faust_regen() ─────────────────────────────────────────────────────
+# simtary_faust_regen()
 # Optional AOT Faust codegen. The generated instrument C++ is checked in so the
 # build works without the Faust compiler; if `faust` is on PATH this adds a target
-# that regenerates it (mirrors how dxc is found for shaders — a missing compiler is
+# that regenerates it (mirrors how dxc is found for shaders - a missing compiler is
 # a warning, never a hard error).
 #
 #   simtary_faust_regen(NAME organ CLASS OrganDSP

@@ -1,4 +1,4 @@
-# SimtaryProject.cmake — read the .stpd project descriptor at configure time.
+# SimtaryProject.cmake - read the .stpd project descriptor at configure time.
 #
 # The descriptor (<project>/assets/project.stpd) is the project's build-time manifest:
 # display name, organization, copyright, version, icon. It is NBT, so CMake cannot

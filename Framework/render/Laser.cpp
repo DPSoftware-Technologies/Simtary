@@ -538,7 +538,7 @@ void LaserSystem::Update(const wi::scene::Scene& scene, float dt) {
 		return 1.0f - depth * 0.5f * (1.0f - std::cos(time_ * laser.flickerRate * XM_2PI));
 	};
 
-	// ── trace + segments ─────────────────────────────────────────────────────────
+	// trace + segments
 	for (Entry& entry : lasers_) {
 		Laser& laser = entry.laser;
 
@@ -602,7 +602,7 @@ void LaserSystem::Update(const wi::scene::Scene& scene, float dt) {
 		}
 	}
 
-	// ── live impact spots ────────────────────────────────────────────────────────
+	// live impact spots
 	// Emitted before the trails so that under budget pressure it is the tail that is
 	// dropped, never the head. A trail with no head reads as a bug; a head with no
 	// trail just reads as a shorter trail. With an array that matters more, not less:
@@ -636,7 +636,7 @@ void LaserSystem::Update(const wi::scene::Scene& scene, float dt) {
 		}
 	}
 
-	// ── persistence trails ───────────────────────────────────────────────────────
+	// persistence trails
 	for (Entry& entry : lasers_) {
 		const Laser& laser = entry.laser;
 		if (!laser.enabled || !laser.trail) continue;

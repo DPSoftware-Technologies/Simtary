@@ -1,26 +1,26 @@
 #pragma once
-// Editor mode — the DevUI turned into a dockable scene editor.
+// Editor mode - the DevUI turned into a dockable scene editor.
 //
 //	Off by default. "Simtary > Editor > Editor Mode" (or the toggle key) switches it on, and
 //	the DevUI stops being a set of floating debug panels and becomes a docked editor layout:
 //
-//	  ┌───────────────────────────┬──────────────┐
+//	  ┌ ┬ ┐
 //	  │  Editor Viewport (freecam)│  Hierarchy   │
-//	  │  Game Viewport   (tabbed) ├──────────────┤
+//	  │  Game Viewport   (tabbed) ├ ┤
 //	  │                           │  Properties  │
-//	  └───────────────────────────┴──────────────┘
+//	  └ ┴ ┘
 //
 //	Two viewports, two cameras, two RenderPath3D instances:
 //
-//	  Game Viewport   — the game's own path (st::App::renderPath) and its camera, exactly
+//	  Game Viewport   - the game's own path (st::App::renderPath) and its camera, exactly
 //	                    what a player sees. Letterboxed into the panel, so the game's aspect
 //	                    ratio never changes just because the editor layout moved. Its own
-//	                    menu bar sets the RESOLUTION it renders at — "Free Aspect" follows
+//	                    menu bar sets the RESOLUTION it renders at - "Free Aspect" follows
 //	                    the window canvas (the shipping behaviour), or pick a fixed size and
 //	                    the game renders 1920x1080 / 9:16 / 2.39:1 regardless of the window.
 //	                    The override is editor-only: it is cleared the moment editor mode
 //	                    leaves, so nothing a shipping build runs ever sees it.
-//	  Editor Viewport — a SECOND RenderPath3D owned by this class, driven by a free camera
+//	  Editor Viewport - a SECOND RenderPath3D owned by this class, driven by a free camera
 //	                    that lives only in the editor. It is resized to fit its panel
 //	                    exactly (no letterbox), so screen-space picking and the gizmo map
 //	                    1:1. It is created the first time editor mode is entered and freed
@@ -29,7 +29,7 @@
 //	The scene is shared, so an edit made in either viewport shows up in both.
 //
 //	SHOW GAME PREVIEW (on by default, per viewport). The editor's extra paths are bare
-//	RenderPath3D instances — engine defaults, none of the game's AO / bloom / tonemap /
+//	RenderPath3D instances - engine defaults, none of the game's AO / bloom / tonemap /
 //	exposure / colour grading, none of its custom post process passes (st::ProjectorSystem
 //	and st::LaserSystem both ride on that list), and the SRGB colorspace default even on an
 //	HDR10 swapchain. That is why they came out looking nothing like the Game Viewport. With
@@ -40,12 +40,12 @@
 //	ImGuizmo draws the translate/rotate/scale handles over the hovered viewport. It writes
 //	the manipulated WORLD matrix back through the parent transform, so dragging a child of a
 //	rig moves it correctly, and re-syncs the 64-bit large-world absolute position for roots
-//	that use it (see stWorldScalar.h) — otherwise the next UpdateTransform would rebase the
+//	that use it (see stWorldScalar.h) - otherwise the next UpdateTransform would rebase the
 //	object straight back to where it started.
 //
 //	Save / Save As write the LIVE wi::scene::Scene to a .wiscene through wi::Archive. The
 //	native file dialog runs on its own thread, so the chosen path is parked and the actual
-//	serialize happens on the main thread on the next frame — the scene is not thread-safe.
+//	serialize happens on the main thread on the next frame - the scene is not thread-safe.
 
 #include "wiECS.h"
 #include "wiRenderPath3D.h"
@@ -103,7 +103,7 @@ public:
     void MenuItems();
 
     // Give the cursor and the keyboard back to the game. Called when the DevUI is hidden
-    // (F1) while editor mode is still on — Draw() stops running then, so nothing else would
+    // (F1) while editor mode is still on - Draw() stops running then, so nothing else would
     // ever lower the input capture and the game would sit deaf behind a hidden editor.
     void ReleaseInput();
 
@@ -116,10 +116,10 @@ private:
     void DrawDockHost(App& app, wi::scene::Scene& scene);
     void DrawToolbar();
 
-    // ── camera views ─────────────────────────────────────────────────────────
+    // camera views
     // One spawnable, VIEW-ONLY window per camera. Not one panel that follows the
     //	selection: you can have as many open at once as you like, each pinned to its own
-    //	camera and framed at its own resolution and aspect — a 1080p hero shot next to a
+    //	camera and framed at its own resolution and aspect - a 1080p hero shot next to a
     //	9:16 phone crop next to a 2.39:1 letterbox, all live, all from the same scene.
     //
     //	They take no input at all: no gizmo, no picking, no camera control. The Game
@@ -168,7 +168,7 @@ private:
     // Put the free camera exactly where the game camera is looking from. Used once when
     // the editor first opens, and from the Camera menu.
     void SnapCameraToGameCamera();
-    // A point a few metres in front of the free camera — where "Create" drops new objects.
+    // A point a few metres in front of the free camera - where "Create" drops new objects.
     XMFLOAT3 SpawnPoint() const;
     // Label the current gizmo operation goes into the undo list under.
     const char* GizmoLabel() const;
@@ -214,7 +214,7 @@ private:
     bool layoutBuilt_ = false;   // dock layout authored (or restored from imgui.ini)
     bool resetLayout_ = false;   // "Reset Layout" was clicked; rebuild next frame
 
-    // ── gizmo ────────────────────────────────────────────────────────────────
+    // gizmo
     ImGuizmo::OPERATION gizmoOp_   = ImGuizmo::TRANSLATE;
     ImGuizmo::MODE      gizmoMode_ = ImGuizmo::WORLD;
     bool  gizmoSnap_        = false;
@@ -227,13 +227,13 @@ private:
     float snapRotateDeg_    = 15.0f;
     float snapScale_        = 0.1f;
 
-    // ── editor viewport debug draw ───────────────────────────────────────────
+    // editor viewport debug draw
     // wi::renderer's debug draws are GLOBAL switches, so these are applied around the editor
-    // path's render and put back afterwards — the Game Viewport keeps showing the shipping
+    // path's render and put back afterwards - the Game Viewport keeps showing the shipping
     // picture while the editor viewport shows the scaffolding. The game path has already
     // rendered by the time RenderEditorView runs, which is what makes that possible.
     struct DebugDraw {
-        bool cameras       = true;  // wireframe frustum per CameraComponent — on by default
+        bool cameras       = true;  // wireframe frustum per CameraComponent - on by default
         bool gameCamera    = true;  // the ACTIVE game camera, which is not a scene component
         bool colliders     = false;
         bool emitters      = false;
@@ -252,7 +252,7 @@ private:
     // from st::App::Render, and is handed no selection of its own.
     wi::ecs::Entity selectionHighlight_ = wi::ecs::INVALID_ENTITY;
 
-    // ── show game preview ────────────────────────────────────────────────────
+    // show game preview
     // Per viewport, on by default. See the file header for what it buys. The Editor
     // Viewport's flag lives here; each Camera View carries its own (CameraView::
     // showGamePreview), so one window can sit on the shipping look while another shows
@@ -270,11 +270,11 @@ private:
     // and Shutdown can clear the override without an App& to hand.
     ProjectorRenderPath* gameRenderPath_ = nullptr;
     // Bring one editor-owned path in line with the game's renderer, or (preview off) back
-    // to RenderPath3D's own defaults — the path object is reused, not rebuilt, so the
+    // to RenderPath3D's own defaults - the path object is reused, not rebuilt, so the
     // second half has to be spelled out or MirrorTo's writes would simply stick.
     void ApplyViewportRenderer(wi::RenderPath3D& path, bool gamePreview) const;
 
-    // ── game viewport resolution ─────────────────────────────────────────────
+    // game viewport resolution
     // "Free Aspect" (fixed == false) is the shipping behaviour: the game path follows the
     // window canvas. Anything else forces st::ProjectorRenderPath::forcedResolution, and
     // the Game Viewport letterboxes the result into whatever shape the dock gives it.
@@ -288,13 +288,13 @@ private:
     // and once with `false` on the way out of editor mode.
     void ApplyGameViewResolution(bool enabled);
 
-    // ── camera views ─────────────────────────────────────────────────────────
+    // camera views
     //	unique_ptr elements because each view's RenderPath3D points at that view's own
-    //	CameraComponent — the address has to survive the vector growing.
+    //	CameraComponent - the address has to survive the vector growing.
     std::vector<std::unique_ptr<CameraView>> cameraViews_;
     int nextCameraViewID_ = 1;
 
-    // ── editor viewport ──────────────────────────────────────────────────────
+    // editor viewport
     std::unique_ptr<wi::RenderPath3D> editorPath_;
     wi::scene::CameraComponent        editorCamera_;
     XMUINT2 editorViewSize_    = XMUINT2(0, 0); // panel size requested this frame, physical px
@@ -302,20 +302,20 @@ private:
     bool    editorViewLive_    = false;         // panel was visible and non-degenerate this frame
     bool    editorCamActive_   = false;         // freecam may read input this frame
     // Cursor ownership for the free camera, reconciled once per frame in Draw() so the
-    // look is always released — even if the panel stops being drawn mid-drag.
+    // look is always released - even if the panel stops being drawn mid-drag.
     bool    freeCamLookWanted_ = false;
     bool    freeCamLookActive_ = false;
     // Cursor confined to the window for the duration of a gizmo drag (visible cursor, so
     // the free camera's relative-mouse mode does not apply).
     bool    gizmoConfineActive_ = false;
     // Input ownership. The game only gets keyboard/mouse while the Game Viewport panel is
-    // the focused one — click into it to play, click anywhere else and the editor has input.
+    // the focused one - click into it to play, click anywhere else and the editor has input.
     bool    gameViewFocused_    = false;
     bool    gameViewHovered_    = false;
     bool    inputCaptureActive_ = false;
 
     // Free camera state (position + euler), driven only from ImGui input so it keeps
-    // working while ImGui owns the mouse — which it always does over a viewport panel.
+    // working while ImGui owns the mouse - which it always does over a viewport panel.
     XMFLOAT3 camPos_ = XMFLOAT3(0, 3, -8);
     XMFLOAT3 camRot_ = XMFLOAT3(0.25f, 0, 0); // x=pitch, y=yaw, z=roll (radians)
     float camFov_    = 1.0472f;               // 60 degrees
@@ -326,7 +326,7 @@ private:
     float camFar_    = 5000.0f;
     bool  camInitialized_ = false; // snapped to the game camera on first open
 
-    // ── scene save ───────────────────────────────────────────────────────────
+    // scene save
     std::string saveDefaultExt_ = "stsd";  // what Save As appends to a bare name
     std::string scenePath_;        // last saved/chosen path; "" until the first Save As
     std::string lastSaveMessage_;  // shown in the toolbar
@@ -335,7 +335,7 @@ private:
     std::mutex  pendingSaveMutex_;
     std::string pendingSavePath_;
 
-    // ── scene import ─────────────────────────────────────────────────────────
+    // scene import
     // Same contract as the save path: the dialog thread (and the SDL drop handler) only
     // park a path here; the load runs on the main thread, because it builds entities.
     std::string lastImportMessage_;
@@ -359,7 +359,7 @@ private:
     std::string importOptionsPath_;
     bool        importOptionsRequested_ = false;  // open the popup on the next frame
 
-    // ── undo / redo ──────────────────────────────────────────────────────────
+    // undo / redo
     EditorHistory history_;
     // Entity a menu action (create, undo, redo) wants selected. Applied at the end of the
     // frame so the panels above are not handed a selection that changed underneath them.

@@ -41,7 +41,7 @@ namespace wi::audio
 		st::audio::AudioEngine::Get().Update(dt);
 	}
 
-	// ── DSPStream ───────────────────────────────────────────────────────────────
+	// DSPStream
 
 	struct DSPStream::Impl
 	{
