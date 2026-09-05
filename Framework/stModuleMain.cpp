@@ -1,6 +1,6 @@
 // The host executable's entry point in module mode.
 //
-// Everything the process needs — engine, framework, window, crash reporter — is
+// Everything the process needs - engine, framework, window, crash reporter - is
 // linked into this executable. What is NOT here is the game: that lives in the
 // project module beside it, and the three steps below are the whole of the seam.
 //
@@ -17,7 +17,7 @@
 
 int main (int argc, char* argv[]) {
     // --module=<name> overrides the name baked in at build time. Only a development
-    // convenience — a shipped install has exactly one module beside the exe.
+    // convenience - a shipped install has exactly one module beside the exe.
     std::string moduleName = st::ModuleNameFromArgs(argc, argv);
     if (moduleName.empty())
         moduleName = ST_MODULE_NAME;

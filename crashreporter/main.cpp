@@ -50,7 +50,7 @@ static void OpenFolder(const std::string& dir) {
 // Decode crashreportico.png (next to the reporter executable) into an RGBA SDL
 // surface. Returns nullptr if the file is missing or fails to decode. The caller
 // owns both the surface (SDL_FreeSurface) and the pixel buffer (returned in
-// *outPixels, free with stbi_image_free) — stb owns the pixels, SDL only borrows.
+// *outPixels, free with stbi_image_free) - stb owns the pixels, SDL only borrows.
 static SDL_Surface* LoadIconSurface(unsigned char** outPixels) {
     *outPixels = nullptr;
 

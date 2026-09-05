@@ -24,7 +24,7 @@ class NbtStore {
 public:
     explicit NbtStore(std::string path);
 
-    // Read the file into memory. A missing file is NOT an error — the store just
+    // Read the file into memory. A missing file is NOT an error - the store just
     // starts empty. Returns false only on a present-but-corrupt file; the store is empty
     // in that case too, so callers that ignore the result must not then Save() over it.
     bool Load();
@@ -36,7 +36,7 @@ public:
     const std::string& Path() const { return path_; }
     bool Dirty() const { return dirty_; }
 
-    // ── PlayerPrefs-style flat accessors ────────────────────────────────────────
+    // PlayerPrefs-style flat accessors
     void SetInt   (const std::string& key, int         v);
     void SetFloat (const std::string& key, float       v);
     void SetBool  (const std::string& key, bool        v);
@@ -51,7 +51,7 @@ public:
     void DeleteKey(const std::string& key);
     void DeleteAll();
 
-    // Raw compound root — for nested/structured save-game data.
+    // Raw compound root - for nested/structured save-game data.
     nbt::Tag&       Root()       { return root_; }
     const nbt::Tag& Root() const { return root_; }
 

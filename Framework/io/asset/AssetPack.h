@@ -1,5 +1,5 @@
 #pragma once
-// AssetPack — read side of a .strd index plus its .stafp<N> parts.
+// AssetPack - read side of a .strd index plus its .stafp<N> parts.
 //
 // Open() memory-maps the index and every part, then answers lookups straight out of
 // the mapped bytes. Nothing is parsed and nothing is allocated per lookup: the file
@@ -18,7 +18,7 @@
 // safe to call from any number of threads at once, with no internal locking, which
 // matters because wi::helper's asset-source override is called from every loading
 // job at once. That is the reason every part is mapped up front rather than on first
-// touch — a lazy map needs a lock on the read path, and mapping is address space, not
+// touch - a lazy map needs a lock on the read path, and mapping is address space, not
 // memory: pages arrive from the page cache when they are touched and leave under
 // pressure, so mapping a 40 GB pack costs 40 GB of a 128 TB address space and no RAM.
 //
@@ -33,7 +33,7 @@
 
 namespace st::asset {
 
-// A decoded, owning snapshot of one entry — for UI lists and tools that want a plain
+// A decoded, owning snapshot of one entry - for UI lists and tools that want a plain
 // value. The read path uses the raw StrdAsset instead and copies nothing.
 struct AssetInfo {
     uint64_t    id           = 0;
@@ -70,7 +70,7 @@ public:
 
     // Map <strdPath> and every part named in it. Parts are resolved next to the
     // index file. Fails if the index is malformed, if a part is missing, or if a
-    // part's UUID or size disagrees with what the index recorded — a stale part is
+    // part's UUID or size disagrees with what the index recorded - a stale part is
     // caught here rather than as corrupt geometry three loads later.
     //
     // `verifyParts` additionally hashes every part end to end, which is a full
@@ -84,7 +84,7 @@ public:
     uint64_t UuidLo () const { return header_ ? header_->packUuidLo : 0; }
     uint64_t UuidHi () const { return header_ ? header_->packUuidHi : 0; }
 
-    // ── lookup ─────────────────────────────────────────────────────────────────
+    // lookup
     // Both return nullptr when absent. The pointer is into the mapped index and stays
     // valid until Close().
     const StrdAsset* Find (uint64_t id) const;
@@ -97,7 +97,7 @@ public:
     const char* NameData   (const StrdAsset& a) const;
     std::string NameString (const StrdAsset& a) const;
 
-    // ── enumeration (for the DevUI explorer and tools) ──────────────────────────
+    // enumeration (for the DevUI explorer and tools)
     uint32_t          AssetCount () const { return header_ ? header_->assetCount : 0; }
     const StrdAsset* AssetAt    (uint32_t i) const;   // sorted ascending by id
     AssetInfo         InfoAt     (uint32_t i) const;
@@ -109,7 +109,7 @@ public:
     uint64_t TotalPayloadSize () const { return header_ ? header_->totalPayloadSize : 0; }
     uint64_t BuildTimestamp   () const { return header_ ? header_->buildTimestamp : 0; }
 
-    // ── reading ────────────────────────────────────────────────────────────────
+    // reading
 
     // Whole asset, decompressed. `out` is resized to the original size.
     bool Read (const StrdAsset& a, std::vector<uint8_t>& out, std::string* error = nullptr) const;
@@ -130,11 +130,11 @@ public:
 
     // True when `p` points inside one of this pack's mapped part files. The runtime
     // asset source uses it to tell a zero-copy pointer it handed the engine from a
-    // buffer it decompressed and now has to free — the release callback is given only
+    // buffer it decompressed and now has to free - the release callback is given only
     // the pointer, with no way to say which of the two it is.
     bool OwnsMappedPointer (const void* p) const;
 
-    // ── integrity ──────────────────────────────────────────────────────────────
+    // integrity
 
     // Re-hash one asset's bytes and compare against the index. Cheap per asset.
     bool VerifyAsset (const StrdAsset& a, std::string* error = nullptr) const;
@@ -171,7 +171,7 @@ private:
     Mapping              indexMap_;
     std::vector<Mapping> partMaps_;
 
-    // All pointers into indexMap_.data — nothing here owns anything.
+    // All pointers into indexMap_.data - nothing here owns anything.
     const StrdHeader* header_  = nullptr;
     const uint32_t*    buckets_ = nullptr;
     const StrdAsset*  assets_  = nullptr;
@@ -179,7 +179,7 @@ private:
     const char*        names_   = nullptr;
 };
 
-// ── helpers shared with the packer and the DevUI ───────────────────────────────
+// helpers shared with the packer and the DevUI
 
 // Classify by file extension. The packer uses this for its default type and codec,
 // and the explorer uses it for grouping. Unknown extensions land on Binary, which is
@@ -196,7 +196,7 @@ bool          IsCompressedContainer (const std::string& path);
 // Human-readable names, for UI and CLI output.
 const char*   ToString (AssetType t);
 const char*   ToString (Codec c);
-// "12.4 MB" — used by the explorer and `stpack info`.
+// "12.4 MB" - used by the explorer and `stpack info`.
 std::string   FormatBytes (uint64_t bytes);
 // "content.stafp3" from ("content", 3).
 std::string   PartFileName (const std::string& baseName, uint32_t partNumber);

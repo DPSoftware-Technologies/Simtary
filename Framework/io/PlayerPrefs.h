@@ -6,7 +6,7 @@
 //   st::PlayerPrefs::Save();
 //
 // This is a facade over the very same NbtStore *instance* that st::SettingsManager
-// owns — not a second store on the same path. Two independent stores over one file
+// owns - not a second store on the same path. Two independent stores over one file
 // would silently clobber each other on Save(), so both routes must share state.
 // Use st::NbtStore directly when you genuinely want an owned/separate instance.
 
@@ -16,7 +16,7 @@
 
 namespace st::PlayerPrefs {
 
-// The default options store — SettingsManager's, loaded by its constructor on first use.
+// The default options store - SettingsManager's, loaded by its constructor on first use.
 inline NbtStore& Store() { return SettingsManager::Get().Store(); }
 
 inline void SetInt   (const std::string& k, int v)                { Store().SetInt(k, v); }

@@ -1,5 +1,5 @@
 #pragma once
-// ─── stAudioClip: decoded sample data, Unity's AudioClip ─────────────────────────
+// stAudioClip: decoded sample data, Unity's AudioClip
 //
 // A clip is immutable, refcounted and shared: loading "assets/contents/shot.wav"
 // twice hands back the same decoded block. Handing a clip to ten emitters costs ten

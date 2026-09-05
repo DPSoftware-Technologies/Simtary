@@ -41,7 +41,7 @@ public:
 
     const std::string& CurrentName() const { return currentName_; }
 
-    // Registered scene names, sorted — for UI selectors.
+    // Registered scene names, sorted - for UI selectors.
     std::vector<std::string> Names() const;
 
 private:

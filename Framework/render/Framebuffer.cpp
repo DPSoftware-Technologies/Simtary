@@ -99,7 +99,7 @@ int Framebuffer::GetDescriptorIndex() const {
 	return GetDevice()->GetDescriptorIndex(&texture_, SubresourceType::SRV);
 }
 
-// ── CPU drawing ─────────────────────────────────────────────────────────────────
+// CPU drawing
 
 void Framebuffer::Clear(uint32_t color) {
 	if (canvas_ == nullptr) return;
@@ -194,7 +194,7 @@ void Framebuffer::Present(CommandList cmd) {
 	GetDevice()->CopyTexture(&texture_, 0, 0, 0, 0, 0, &staging_, 0, 0, cmd);
 }
 
-// ── GPU drawing ─────────────────────────────────────────────────────────────────
+// GPU drawing
 
 CommandList Framebuffer::Begin() {
 	CommandList cmd = GetDevice()->BeginCommandList();
@@ -233,7 +233,7 @@ void Framebuffer::End(CommandList cmd) {
 	GetDevice()->RenderPassEnd(cmd);
 }
 
-// ── consuming the result ────────────────────────────────────────────────────────
+// consuming the result
 
 bool Framebuffer::BindToMaterial(
 	wi::scene::Scene& scene, wi::ecs::Entity entity, wi::scene::MaterialComponent::TEXTURESLOT slot) {

@@ -94,10 +94,10 @@ int main() {
     Tag t2;
     CHECK(!read(buf.data(), buf.size() / 2, t2, nullptr, nullptr), "truncated should fail");
 
-    // ── malformed input must be rejected, not merely survived ────────────────────
+    // malformed input must be rejected, not merely survived
     // Exceptions are off, so an over-allocation or a blown stack terminates the process:
     // each of these used to do exactly that. If the parser regresses, this test crashes
-    // rather than reporting a failure — that is the intended signal.
+    // rather than reporting a failure - that is the intended signal.
 
     // A list claiming 2^32-1 End-typed elements. End has no payload, so nothing in the
     // element loop can consume input and stop it.

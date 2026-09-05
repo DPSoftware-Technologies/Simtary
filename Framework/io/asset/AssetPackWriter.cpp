@@ -81,7 +81,7 @@ std::string LowerExtNoDot (const fs::path& p) {
 
 } // namespace
 
-// ── lifetime ───────────────────────────────────────────────────────────────────
+// lifetime
 
 AssetPackWriter::~AssetPackWriter () {
     if (open_) Abort();
@@ -145,7 +145,7 @@ void AssetPackWriter::Abort () {
     open_           = false;
 }
 
-// ── parts ──────────────────────────────────────────────────────────────────────
+// parts
 
 bool AssetPackWriter::StartPart (std::string* error) {
     (void)error;
@@ -161,7 +161,7 @@ bool AssetPackWriter::StartPart (std::string* error) {
 }
 
 bool AssetPackWriter::FlushPart (std::string* error) {
-    // Nothing but the reserved header means no asset ever landed here — do not emit an
+    // Nothing but the reserved header means no asset ever landed here - do not emit an
     // empty part file, and do not burn a part number on it either.
     if (partAssetCount_ == 0) {
         --partNumber_;
@@ -211,7 +211,7 @@ bool AssetPackWriter::FlushPart (std::string* error) {
     return true;
 }
 
-// ── payload encoding ───────────────────────────────────────────────────────────
+// payload encoding
 
 bool AssetPackWriter::EncodePayload (const uint8_t* src, uint64_t size, Codec& codec,
                                      uint32_t chunkSize, std::vector<uint8_t>& out,
@@ -287,7 +287,7 @@ bool AssetPackWriter::EncodePayload (const uint8_t* src, uint64_t size, Codec& c
     }
 
     // If the "compressed" form is within 3% of the original there is nothing to gain,
-    // and storing it keeps AssetPack::MappedData() — the zero-copy path — available.
+    // and storing it keeps AssetPack::MappedData() - the zero-copy path - available.
     if (out.size() >= static_cast<size_t>(double(size) * 0.97)) {
         codec = Codec::None;
         out.assign(src, src + size);
@@ -295,7 +295,7 @@ bool AssetPackWriter::EncodePayload (const uint8_t* src, uint64_t size, Codec& c
     return true;
 }
 
-// ── adding ─────────────────────────────────────────────────────────────────────
+// adding
 
 bool AssetPackWriter::Contains (const std::string& logicalPath) const {
     const uint64_t id = AssetIdFromPath(logicalPath);
@@ -328,7 +328,7 @@ bool AssetPackWriter::Add (const std::string& logicalPath, const uint8_t* data, 
         } else {
             // 64-bit collision between two different paths. Astronomically unlikely,
             // and silently shipping it would mean one asset shadowing another at
-            // runtime with no way to tell — so it stops the build and names both.
+            // runtime with no way to tell - so it stops the build and names both.
             SetError(error, "asset ID collision between \"" + a.name + "\" and \"" +
                             stored + "\" — rename one of them");
         }
@@ -342,7 +342,7 @@ bool AssetPackWriter::Add (const std::string& logicalPath, const uint8_t* data, 
     if (!EncodePayload(data, size, chosen, options_.chunkSize, payload, error)) return false;
 
     // Part placement. Start a new part when this asset would push the current one past
-    // the target, unless the current part is still empty — in which case the asset is
+    // the target, unless the current part is still empty - in which case the asset is
     // simply bigger than the cap and gets a part to itself. Splitting an asset across
     // two files would cost a second seek on every read of it, which is the one thing
     // this format exists to avoid.
@@ -397,7 +397,7 @@ bool AssetPackWriter::AddFile (const std::string& logicalPath, const std::string
     return AddAuto(logicalPath, bytes.data(), bytes.size(), flags, error);
 }
 
-// ── index ──────────────────────────────────────────────────────────────────────
+// index
 
 bool AssetPackWriter::WriteIndex (std::string* error) {
     // Sorted by ID so the table is deterministic (two builds of the same content
@@ -532,7 +532,7 @@ bool AssetPackWriter::Finish (std::string* error) {
     return true;
 }
 
-// ── directory sweep ────────────────────────────────────────────────────────────
+// directory sweep
 
 bool PackDirectory (const std::string& contentDir,
                     const std::string& outDir,
@@ -552,7 +552,7 @@ bool PackDirectory (const std::string& contentDir,
     if (!writer.Begin(outDir, baseName, options, error)) return false;
 
     // Collected and sorted before adding, so the pack is byte-identical between two
-    // builds of the same tree — directory iteration order is not guaranteed, and an
+    // builds of the same tree - directory iteration order is not guaranteed, and an
     // index that shuffles every build defeats incremental patching.
     std::vector<std::string> files;
     for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;

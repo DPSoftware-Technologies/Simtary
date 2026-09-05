@@ -1,5 +1,5 @@
 #pragma once
-// ─── stAudioEngine: the audio system ─────────────────────────────────────────────
+// stAudioEngine: the audio system
 //
 // Two backends, one job each, and the split is the whole design:
 //
@@ -15,7 +15,7 @@
 // Nothing is spatialized twice, and neither library is asked to do the thing it is
 // worse at.
 //
-// ── the object model ───────────────────────────────────────────────────────────
+// the object model
 //
 //	Emitter    a speaker. Has a position, a sound (a clip, or samples you push), and
 //	           the full set of Steam Audio source options. Its Input() buffer takes
@@ -31,7 +31,7 @@
 // stAudioComponents.h bolt them onto scene entities and drive the transforms; game
 // code that is not entity-shaped can create them directly.
 //
-// ── threading ──────────────────────────────────────────────────────────────────
+// threading
 //
 //	game thread   creates and destroys emitters/collectors, sets parameters, pushes
 //	              procedural samples, reads Output() taps. Never blocks on audio.
@@ -55,7 +55,7 @@
 
 namespace st::audio
 {
-	// ── mixer routing ───────────────────────────────────────────────────────────
+	// mixer routing
 	// A submix is a volume group. Independent of 2D/3D: a footstep is a SoundEffect
 	// whether it is spatialized or not.
 	enum class Submix : uint32_t
@@ -83,13 +83,13 @@ namespace st::audio
 		SimulationSettings simulation;
 	};
 
-	// ── Emitter ─────────────────────────────────────────────────────────────────
+	// Emitter
 	class Emitter
 	{
 	public:
 		~Emitter();
 
-		// ── source ──────────────────────────────────────────────────────────────
+		// source
 		// A clip and a pushed buffer are mutually exclusive: setting a clip discards
 		// whatever is in Input(), and the first Write() to Input() takes over from the
 		// clip. An emitter is either playing an asset or being fed.
@@ -108,7 +108,7 @@ namespace st::audio
 		const AudioBuffer& Output() const;
 		AudioBuffer& Output();
 
-		// ── transport ───────────────────────────────────────────────────────────
+		// transport
 		void Play();
 		void PlayDelayed(float seconds);
 		void Pause();
@@ -127,7 +127,7 @@ namespace st::audio
 		// the default and the common case.
 		void SetLoopRegion(float beginSeconds, float lengthSeconds = 0.0f);
 
-		// ── mixing ──────────────────────────────────────────────────────────────
+		// mixing
 		void  SetVolume(float volume01);
 		float GetVolume() const;
 		// 1 = unmodified. Resamples the clip on the fly, so it shifts pitch AND speed,
@@ -148,7 +148,7 @@ namespace st::audio
 		// PlayClipAtPoint uses; off by default for emitters you own.
 		void SetAutoDestroy(bool value);
 
-		// ── 3D ──────────────────────────────────────────────────────────────────
+		// 3D
 		// Every Steam Audio source option. Assign the struct, or poke one field and
 		// call ApplySpatialSettings(); either way it takes effect on the next frame.
 		EmitterSpatialSettings& SpatialSettings();
@@ -167,7 +167,7 @@ namespace st::audio
 		// hears.
 		SpatialResult GetSpatialResult() const;
 
-		// ── identity ────────────────────────────────────────────────────────────
+		// identity
 		void SetName(const std::string& name);
 		const std::string& GetName() const;
 
@@ -179,7 +179,7 @@ namespace st::audio
 	};
 	using EmitterRef = std::shared_ptr<Emitter>;
 
-	// ── Collector ───────────────────────────────────────────────────────────────
+	// Collector
 	class Collector
 	{
 	public:
@@ -230,7 +230,7 @@ namespace st::audio
 	};
 	using CollectorRef = std::shared_ptr<Collector>;
 
-	// ── engine ──────────────────────────────────────────────────────────────────
+	// engine
 	class AudioEngine
 	{
 	public:
@@ -252,7 +252,7 @@ namespace st::audio
 		// paces the reflection/pathing job. Does no DSP.
 		void Update(float dt);
 
-		// ── factories ───────────────────────────────────────────────────────────
+		// factories
 		// The engine keeps a reference of its own, so an emitter stays alive and
 		// audible after the caller drops the handle - until Destroy() or auto-destroy.
 		EmitterRef CreateEmitter(const std::string& name = "emitter");
@@ -264,7 +264,7 @@ namespace st::audio
 		void GetEmitters(std::vector<EmitterRef>& out) const;
 		void GetCollectors(std::vector<CollectorRef>& out) const;
 
-		// ── volumes ─────────────────────────────────────────────────────────────
+		// volumes
 		void  SetMasterVolume(float volume01);
 		float GetMasterVolume() const;
 		void  SetSubmixVolume(Submix submix, float volume01);
@@ -274,7 +274,7 @@ namespace st::audio
 		void SetPaused(bool paused);
 		bool IsPaused() const;
 
-		// ── diagnostics ─────────────────────────────────────────────────────────
+		// diagnostics
 		struct Stats
 		{
 			int activeEmitters = 0;       // emitters that produced signal last block
@@ -304,7 +304,7 @@ namespace st::audio
 		friend void StopAll();
 	};
 
-	// ── the easy API ────────────────────────────────────────────────────────────
+	// the easy API
 	// Unity's static AudioSource helpers, for the ninety per cent of calls that do not
 	// want an object: fire and forget.
 

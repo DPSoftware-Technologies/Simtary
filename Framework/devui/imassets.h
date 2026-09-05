@@ -1,12 +1,12 @@
 #pragma once
-// Resource Explorer — the DevUI window for the asset packages.
+// Resource Explorer - the DevUI window for the asset packages.
 //
 // Developer tooling, like everything else in devui/: drawn only while DevUI is visible,
 // and never the game's own UI.
 //
 // Two jobs, and the second is why this is more than a listing:
 //
-//   INSPECT   see what is actually IN a package — which .stafp part each asset landed
+//   INSPECT   see what is actually IN a package - which .stafp part each asset landed
 //             in, at what offset, under which codec, what it hashes to, whether it is
 //             streamable. A package is otherwise opaque, and "why is this build 4 GB"
 //             is not a question a directory listing can answer.
@@ -16,9 +16,9 @@
 //             assets/contents/ and rebuild the whole package from CMake, which is the
 //             wrong loop for "swap this and look at it".
 //
-// ── The working set ────────────────────────────────────────────────────────────
+// The working set
 //
-// Editing is not done against the mounted package — it is memory-mapped and, on
+// Editing is not done against the mounted package - it is memory-mapped and, on
 // Windows, locked. Instead "Edit" loads a WORKING SET: one row per asset, each row
 // remembering only WHERE its bytes come from (still in the source package, a file on
 // disk, or a buffer this window built). Nothing is copied until Save.
@@ -56,7 +56,7 @@ inline constexpr const char* SIMTARY_ASSET_PAYLOAD = "SIMTARY_ASSET";
 // know nothing about the Resource Explorer's working set to use a dropped asset: a material
 // texture slot takes `path` verbatim, because a mounted package resolves its own logical
 // paths ("textures/wall.dds") through the asset-source override exactly as the engine
-// stored them. Fixed size, trivially copyable — ImGui copies payloads by value.
+// stored them. Fixed size, trivially copyable - ImGui copies payloads by value.
 struct AssetPayload {
     uint64_t         id   = 0;
     asset::AssetType type = asset::AssetType::Unknown;
@@ -75,7 +75,7 @@ struct AssetPayload {
 
 class AssetExplorer {
 public:
-    // Content only — no Begin/End — so an editor layout can dock the same panel.
+    // Content only - no Begin/End - so an editor layout can dock the same panel.
     void GUI ();
     // Window wrapper. `p_open` is the caller's visibility flag.
     void Draw (bool* p_open);
@@ -94,7 +94,7 @@ public:
     bool HasPendingImports () const;
 
 private:
-    // ── one row of the working set ─────────────────────────────────────────────
+    // one row of the working set
     struct Entry {
         // Where the bytes live. Nothing is materialised until Save, except Memory
         // entries, which are the ones this window produced itself (a .wiscene split
@@ -108,7 +108,7 @@ private:
         uint32_t             flags     = 0;
 
         Origin               origin    = Origin::Package;
-        uint64_t             sourceId  = 0;    // Origin::Package — id in the source pack
+        uint64_t             sourceId  = 0;    // Origin::Package - id in the source pack
         std::string          filePath;         // Origin::File
         std::vector<uint8_t> bytes;            // Origin::Memory
 
@@ -123,14 +123,14 @@ private:
         std::string          note;             // provenance, or why it failed
     };
 
-    // ── panels ─────────────────────────────────────────────────────────────────
+    // panels
     void DrawToolbar ();
     void DrawPackages ();
     void DrawAssetTable ();
     void DrawInspector ();
     void DrawFooter ();
 
-    // ── working set ────────────────────────────────────────────────────────────
+    // working set
     void BeginEdit (uint32_t mountIndex);
     void BeginNew ();
     void DiscardEdit ();
@@ -158,7 +158,7 @@ private:
     void RefreshPreview ();
     void SetStatus (const std::string& text, bool isError);
 
-    // ── state ──────────────────────────────────────────────────────────────────
+    // state
     mutable std::mutex       importMutex_;
     std::vector<std::string> queuedImports_;
     std::vector<std::string> queuedMounts_;

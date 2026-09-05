@@ -1,4 +1,4 @@
-/* faust_arch.h — Faust architecture template for AOT code generation.
+/* faust_arch.h - Faust architecture template for AOT code generation.
  *
  * `faust -a assets/signal_descriptors/faust_arch.h` substitutes the generated DSP
  * into the <<includeclass>> placeholder below, emitting a self-contained header

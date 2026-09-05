@@ -1,5 +1,5 @@
 #pragma once
-// AssetPackWriter — build side of a .strd index and its .stafp<N> parts.
+// AssetPackWriter - build side of a .strd index and its .stafp<N> parts.
 //
 // Used by tools/stpack during the build. Nothing at runtime writes a pack: a shipped
 // game reads packs and writes save data, and keeping the writer out of the runtime is
@@ -80,12 +80,12 @@ public:
                 const PackOptions& options, std::string* error = nullptr);
 
     // Add one asset from memory. `logicalPath` is what the game will ask for at
-    // runtime — the same string it passes to wi::resourcemanager::Load today, e.g.
+    // runtime - the same string it passes to wi::resourcemanager::Load today, e.g.
     // "textures/wall_basecolor.dds". It is canonicalised (lower case, forward
     // slashes) before hashing, so authoring on Windows and shipping from Linux agree.
     //
     // Pass AssetType::Unknown to classify by extension, and Codec count (any value
-    // outside the enum) is not accepted — use AddAuto() to let the packer choose.
+    // outside the enum) is not accepted - use AddAuto() to let the packer choose.
     bool Add (const std::string& logicalPath, const uint8_t* data, uint64_t size,
               AssetType type, Codec codec, uint32_t flags, std::string* error = nullptr);
 
@@ -161,10 +161,10 @@ private:
     bool                 partOversized_ = false;
 };
 
-// ── one-call convenience used by the CLI ───────────────────────────────────────
+// one-call convenience used by the CLI
 
 // Recursively pack every file under `contentDir`, keeping the directory structure as
-// the logical path. `skipExtensions` (lower case, no dot) are left out — the packer
+// the logical path. `skipExtensions` (lower case, no dot) are left out - the packer
 // uses it to skip the .wiscene sources it has already converted.
 bool PackDirectory (const std::string& contentDir,
                     const std::string& outDir,

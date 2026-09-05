@@ -132,7 +132,7 @@ void WriteSummary(EXCEPTION_POINTERS ep)
 }
 #endif // _WIN32
 
-// sentry on_crash hook — runs in the crashing process before the dump is finalized.
+// sentry on_crash hook - runs in the crashing process before the dump is finalized.
 sentry_value_t OnCrash(const sentry_ucontext_t* uctx, sentry_value_t event, void* /*closure*/)
 {
 #if defined(_WIN32)

@@ -1,16 +1,16 @@
 #pragma once
-// st::AssetSystem — the runtime side: mount packs, serve the engine out of them, and
+// st::AssetSystem - the runtime side: mount packs, serve the engine out of them, and
 // load a .stsd map into a wi::scene::Scene.
 //
 // This is the only file in Framework/io/asset that knows the engine exists. Everything
 // under it (AssetPack, AssetPackWriter, SceneDescriptor) is plain C++ so the build-time
 // packer can link it without pulling in a graphics device.
 //
-// ── How the engine ends up reading from a pack ─────────────────────────────────
+// How the engine ends up reading from a pack
 //
 // It does not have to be told. `wi::helper::SetAssetSourceOverride` is a seam the
 // engine already routes every FileRead and FileExists through, so installing one
-// override redirects the whole engine — resource manager, streaming, video, scripts —
+// override redirects the whole engine - resource manager, streaming, video, scripts
 // at once. A path the packs do not have falls through to the real filesystem, which is
 // what keeps shader caches, save data and loose development assets working next to a
 // packed game.
@@ -23,7 +23,7 @@
 // verbatim: a ranged read of a stored asset is a ranged read of a mapped page, no
 // decompression and no copy of the parts nobody asked for.
 //
-// ── Mount points ───────────────────────────────────────────────────────────────
+// Mount points
 //
 // A pack's logical paths are relative to the content root ("scenes/s1map.stsd",
 // "textures/wall.dds"), while a running game asks for "assets/scenes/s1map.stsd",
@@ -32,7 +32,7 @@
 // side has to change. Resources lifted out of a .wiscene keep the relative names the
 // engine stored, so they land in the same namespace with no prefix at all.
 //
-// ── Order ──────────────────────────────────────────────────────────────────────
+// Order
 //
 // Later mounts win. That is what makes a patch pack work: ship content.strd once,
 // then mount patch1.strd over it and every asset it redefines shadows the original,
@@ -60,7 +60,7 @@ namespace st {
 // progress per COMPONENT MANAGER while it deserialises ("Loading materials", "Loading
 // meshes"), and then, between the last of those and "Processing assets", it waits for
 // every texture the scene referenced to finish loading. That wait is most of the load
-// on a big map, and nothing reports during it — the bar sits still and the player has
+// on a big map, and nothing reports during it - the bar sits still and the player has
 // no idea whether the game is working or hung.
 //
 // Every one of those texture loads is a read through this class, so this is the one
@@ -78,7 +78,7 @@ class AssetSystem {
 public:
     static AssetSystem& Get ();
 
-    // ── mounting ───────────────────────────────────────────────────────────────
+    // mounting
 
     // Open a .strd (and its parts) and add it to the search order. Mount before
     // wi::initializer runs if the engine will read from it during start-up.
@@ -92,7 +92,7 @@ public:
 
     uint32_t MountCount () const { return static_cast<uint32_t>(mounts_.size()); }
 
-    // ── engine hook ────────────────────────────────────────────────────────────
+    // engine hook
 
     // Route wi::helper::FileRead / FileExists through the mounted packs. Idempotent.
     // Uninstall() restores plain filesystem behaviour, which the DevUI explorer uses
@@ -101,7 +101,7 @@ public:
     void Uninstall ();
     bool IsInstalled () const { return installed_; }
 
-    // ── direct access ──────────────────────────────────────────────────────────
+    // direct access
 
     // Search every mount, last first. `outPack` receives the pack that answered.
     const asset::StrdAsset* Find (const std::string& logicalPath,
@@ -111,14 +111,14 @@ public:
     bool Read   (const std::string& logicalPath, std::vector<uint8_t>& out,
                  std::string* error = nullptr) const;
 
-    // ── scenes ─────────────────────────────────────────────────────────────────
+    // scenes
 
     // Load a .stsd into `scene`, mirroring wi::scene::LoadModel: returns the root
     // entity when `attached` is true, INVALID_ENTITY otherwise. `stsdPath` is looked up
     // in the mounted packs first and on disk second, so a map can be iterated as a
     // loose file during development and shipped inside a pack with no code change.
     //
-    // The map's own resources are NOT embedded in the .stsd — they are in the pack, and
+    // The map's own resources are NOT embedded in the .stsd - they are in the pack, and
     // the engine pulls them through the installed override while deserialising. Loading
     // a .stsd with no pack mounted therefore gives geometry and no textures, which is
     // why this reports that case rather than half-loading in silence.
@@ -129,7 +129,7 @@ public:
                                wi::scene::LoadModelProgressCallback progress = nullptr,
                                std::string* error = nullptr);
 
-    // Read a map's metadata without touching its entity payload — name, source, the
+    // Read a map's metadata without touching its entity payload - name, source, the
     // asset list. A few KB of a file whose blob may be 30 MB.
     bool ReadSceneInfo (const std::string& stsdPath, asset::SceneDescriptor& out,
                         std::string* error = nullptr) const;
@@ -138,12 +138,12 @@ public:
     // load complete. This is the check worth running at the top of a loading screen.
     std::vector<std::string> MissingAssetsFor (const asset::SceneDescriptor& scene) const;
 
-    // Is there a .stsd at this path at all — in a mounted pack, or as a loose file?
+    // Is there a .stsd at this path at all - in a mounted pack, or as a loose file?
     // The question a scene asks before deciding between the packed map and the .wiscene
     // it was converted from.
     bool CanLoadScene (const std::string& stsdPath) const;
 
-    // ── load progress ──────────────────────────────────────────────────────────
+    // load progress
 
     // Snapshot of what the packs are serving. Safe from any thread.
     AssetLoadProgress LoadProgress () const;
@@ -153,7 +153,7 @@ public:
     // CALLED FROM MANY THREADS AT ONCE. The engine loads a scene's resources on
     // job-system workers while the main thread is blocked inside Scene::Serialize, so
     // this callback must not touch the scene, ImGui, or anything else that assumes the
-    // main thread. SubWinStatus — the native loading window — is explicitly thread safe
+    // main thread. SubWinStatus - the native loading window - is explicitly thread safe
     // and is what st::App routes this to.
     //
     // A plain function pointer rather than a std::function, matching
@@ -168,7 +168,7 @@ public:
     void BeginLoadTracking (uint32_t expectedAssets);
     void EndLoadTracking ();
 
-    // ── enumeration (DevUI) ────────────────────────────────────────────────────
+    // enumeration (DevUI)
 
     struct MountInfo {
         std::string path;
@@ -210,7 +210,7 @@ private:
     std::vector<MountEntry> mounts_;
     bool                    installed_ = false;
 
-    // ── progress, written from loading threads ─────────────────────────────────
+    // progress, written from loading threads
     // The counters are atomic so the hot path never takes a lock; only the name does,
     // and a short string assign under a mutex is nothing next to the read that
     // produced it.

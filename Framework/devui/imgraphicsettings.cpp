@@ -272,7 +272,7 @@ void GraphicsSettings::MirrorTo(wi::RenderPath3D& path, bool stableExposure) con
     path.setEyeAdaptionKey(g.eyeAdaptionKey);
     path.setEyeAdaptionRate(g.eyeAdaptionRate);
 
-    // Color / tonemapping — the half that decides whether two views agree on colour at all.
+    // Color / tonemapping - the half that decides whether two views agree on colour at all.
     path.setTonemap((wi::renderer::Tonemap)g.tonemap);
     path.setColorGradingEnabled(g.colorGrading);
     path.setExposure(g.exposure);
@@ -602,7 +602,7 @@ void GraphicsSettings::drawDisplayTab(st::DisplaySettings& display, wi::Applicat
 
 void GraphicsSettings::drawContentTab(st::LensFlare& lensFlare, st::ProjectorSystem& projectors,
                                       st::LaserSystem& lasers, st::OpticsSystem& optics) {
-    // Applies live — Apply/Reset at the bottom of the window only govern the Engine
+    // Applies live - Apply/Reset at the bottom of the window only govern the Engine
     // tab's snapshot, so say so rather than let the buttons imply otherwise.
     ImGui::TextDisabled("Applies immediately (Apply/Reset only affect the Engine tab).");
     ImGui::Spacing();

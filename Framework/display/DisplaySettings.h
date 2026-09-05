@@ -1,5 +1,5 @@
 #pragma once
-// Window / video settings — the options a PLAYER expects: window mode, monitor,
+// Window / video settings - the options a PLAYER expects: window mode, monitor,
 // resolution, refresh rate, v-sync, frame cap and render scale.
 //
 // Deliberately NOT part of DevUI. Video options belong in a game's own settings menu,
@@ -19,7 +19,7 @@
 //
 // Window mode maps onto SDL like this:
 //   Windowed    plain resizable window at `resolution`
-//   Borderless  SDL_WINDOW_FULLSCREEN_DESKTOP — native desktop resolution, alt-tabs
+//   Borderless  SDL_WINDOW_FULLSCREEN_DESKTOP - native desktop resolution, alt-tabs
 //               instantly. Use renderScale/SetRenderResolution to render smaller.
 //   Fullscreen  SDL_WINDOW_FULLSCREEN with an exclusive display mode (the only mode
 //               where `resolution` and `refreshRate` change the actual signal)
@@ -61,7 +61,7 @@ public:
     // Re-enumerate monitors and modes (a display was plugged in or unplugged).
     void Refresh();
 
-    // ── pending state, edited by GUI() ─────────────────────────────────────────
+    // pending state, edited by GUI()
     WindowMode  windowMode   = WindowMode::Windowed;
     int         displayIndex = 0;
     DisplayMode resolution;                 // window size, or the exclusive mode
@@ -72,12 +72,12 @@ public:
     // 1.0 = native. Drives wi::Application::SetRenderResolution.
     float       renderScale  = 1.0f;
 
-    // ── standby frame rate ─────────────────────────────────────────────────────
+    // standby frame rate
     // Drop the frame cap when nobody is watching: the window lost focus, or the
     // player has not touched anything for a while. Saves power and GPU on a machine
     // that is alt-tabbed or left sitting on a menu.
     //
-    // Unlike the rest of this class these apply LIVE — UpdateStandby() reads them
+    // Unlike the rest of this class these apply LIVE - UpdateStandby() reads them
     // every frame, so no Apply is needed and they are not part of Dirty().
     bool  standbyOnUnfocus = true;    // window does not have input focus
     int   unfocusedFps     = 30;
@@ -88,7 +88,7 @@ public:
     // Per-frame standby check. st::App::Update calls this; it caps the frame rate
     // while unfocused or idle and restores the player's own cap when they come back.
     void UpdateStandby(wi::Application& app, float dt);
-    // Real user input arrived — resets the idle timer. st::Run calls this from the
+    // Real user input arrived - resets the idle timer. st::Run calls this from the
     // SDL event loop.
     void NotifyActivity() { idleTimer_ = 0.0f; }
     // Whether a standby cap is in force right now (for HUD / debug readouts).
@@ -101,7 +101,7 @@ public:
     // True while the pending state differs from what was last applied.
     bool Dirty() const;
 
-    // ── persistence (options.stad, "display" compound) ─────────────────────────
+    // persistence (options.stad, "display" compound)
     void SaveTo(nbt::Tag& out) const;
     void LoadFrom(const nbt::Tag& in);
     // LoadFrom + Apply, for startup.

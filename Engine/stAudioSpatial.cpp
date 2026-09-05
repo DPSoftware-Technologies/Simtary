@@ -33,9 +33,7 @@ namespace st::audio
 
 #ifdef SIMTARY_HAS_STEAMAUDIO
 
-	// ════════════════════════════════════════════════════════════════════════════
 	// Steam Audio path
-	// ════════════════════════════════════════════════════════════════════════════
 	namespace
 	{
 		inline IPLVector3 ToIPL(const XMFLOAT3& v) { return IPLVector3{ v.x, v.y, v.z }; }
@@ -411,7 +409,7 @@ namespace st::audio
 		if (s.sim.pathing)     iplSimulatorRunPathing(s.simulator);
 	}
 
-	// ── SpatialSource ───────────────────────────────────────────────────────────
+	// SpatialSource
 
 	struct SpatialSource::Impl
 	{
@@ -586,7 +584,7 @@ namespace st::audio
 		return impl_->result;
 	}
 
-	// ── SpatialRenderer ─────────────────────────────────────────────────────────
+	// SpatialRenderer
 
 	struct SpatialRenderer::Impl
 	{
@@ -901,7 +899,6 @@ namespace st::audio
 
 #else // !SIMTARY_HAS_STEAMAUDIO
 
-	// ════════════════════════════════════════════════════════════════════════════
 	// Fallback path - no Steam Audio SDK in this build.
 	//
 	// Inverse-distance attenuation plus constant-power panning. No HRTF, no occlusion,
@@ -909,7 +906,6 @@ namespace st::audio
 	// option is still accepted and stored; the ones that need ray tracing are simply
 	// inert. This exists so the engine builds and makes noise on a machine that never
 	// fetched the SDK, not as a shipping configuration.
-	// ════════════════════════════════════════════════════════════════════════════
 
 	struct Spatializer::Impl
 	{

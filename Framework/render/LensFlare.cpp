@@ -72,7 +72,7 @@ void LensFlare::Update(const wi::scene::Scene& scene, const wi::scene::CameraCom
 		sunColor = sun->color;
 	}
 
-	// Project the sun. It is directional — infinitely far away — so transform it as a
+	// Project the sun. It is directional - infinitely far away - so transform it as a
 	// point at infinity (w = 0) rather than picking an arbitrary large distance: the
 	// result is exact and can never be clipped by the far plane.
 	const XMVECTOR clip = XMVector4Transform(
@@ -89,7 +89,7 @@ void LensFlare::Update(const wi::scene::Scene& scene, const wi::scene::CameraCom
 	const float ndcY = XMVectorGetY(clip) / w;
 	const XMFLOAT2 sunUV(ndcX * 0.5f + 0.5f, -ndcY * 0.5f + 0.5f);
 
-	// ── Fades ───────────────────────────────────────────────────────────────────
+	// Fades
 	// Off the edge of the frame: distance from the [0,1] UV box. Ghosts linger a
 	// little past the edge in a real lens, hence the soft ramp rather than a cut.
 	const float outX = std::max(0.0f, std::max(-sunUV.x, sunUV.x - 1.0f));
@@ -103,7 +103,7 @@ void LensFlare::Update(const wi::scene::Scene& scene, const wi::scene::CameraCom
 	const float occlusion = edgeFade * horizonFade;
 	if (occlusion <= 0.001f) return;
 
-	// ── Pack the constant buffer ────────────────────────────────────────────────
+	// Pack the constant buffer
 	const float height = std::max(1.0f, camera.height);
 
 	constants_.sunUV = sunUV;
@@ -172,7 +172,7 @@ void LensFlare::SaveTo(st::nbt::Tag& out) const {
 	out.putFloat("horizonFadeLow", s.horizonFadeLow);
 	out.putFloat("horizonFadeHigh", s.horizonFadeHigh);
 	out.putFloat("offscreenFade", s.offscreenFade);
-	// Manual sun direction — only meaningful with followSun off, but harmless to keep.
+	// Manual sun direction - only meaningful with followSun off, but harmless to keep.
 	out.putFloat("sunDirX", sunDirection.x);
 	out.putFloat("sunDirY", sunDirection.y);
 	out.putFloat("sunDirZ", sunDirection.z);

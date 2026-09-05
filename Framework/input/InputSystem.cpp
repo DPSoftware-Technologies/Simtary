@@ -15,7 +15,7 @@ InputSystem& InputSystem::Get() {
 	return instance;
 }
 
-// ── source classification (for gating) ─────────────────────────────────────
+// source classification (for gating)
 namespace {
 	bool IsMouseButton(BUTTON b) {
 		return b >= wi::input::MOUSE_BUTTON_LEFT && b <= wi::input::MOUSE_SCROLL_AS_BUTTON_DOWN;
@@ -34,7 +34,7 @@ bool InputSystem::gated(const InputBinding& b) const {
 	return keyboardSuspended_;              // keyboard: gated while ImGui owns kb / unfocused
 }
 
-// ── analog reads ────────────────────────────────────────────────────────────
+// analog reads
 float InputSystem::analogValue(InputBinding::Analog a) const {
 	using A = InputBinding::Analog;
 	switch (a) {
@@ -48,7 +48,7 @@ float InputSystem::analogValue(InputBinding::Analog a) const {
 	}
 }
 
-// ── digital reads (gated) ────────────────────────────────────────────────────
+// digital reads (gated)
 bool InputSystem::buttonActive(const InputBinding& b) const {
 	if (gated(b))
 		return false;
@@ -74,12 +74,12 @@ float InputSystem::bindingAxis(const InputBinding& b) const {
 	return wi::input::Down(b.button) ? b.scale : 0.0f;
 }
 
-// ── per-frame update ─────────────────────────────────────────────────────────
+// per-frame update
 void InputSystem::Update(float /*dt*/) {
 	// Source gating from ImGui + window focus. GetIO() is valid here because this is
 	// called after ImguiUpdate() (NewFrame) in st::App::Update.
 	//	While the cursor is captured (FPS mode) the player is driving the game, not typing
-	//	into ImGui, so keyboard/mouse go to the game regardless of WantCapture* — otherwise
+	//	into ImGui, so keyboard/mouse go to the game regardless of WantCapture* - otherwise
 	//	an open debug window (ImGui keyboard nav) would silently eat WASD. Focus is still
 	//	required so we don't read keys while another OS window is active.
 	const ImGuiIO& io = ImGui::GetIO();
@@ -136,7 +136,7 @@ void InputSystem::Update(float /*dt*/) {
 	}
 }
 
-// ── mouse capture (single owner of SDL relative mode) ────────────────────────
+// mouse capture (single owner of SDL relative mode)
 void InputSystem::SetMouseCaptured(bool captured) {
 	if (uiMouseLook_) {
 		// Developer tooling owns the cursor. Remember what the game wanted so releasing the
@@ -213,7 +213,7 @@ void InputSystem::SetUIMouseConfined(bool on) {
 	}
 }
 
-// ── keybinding configuration ──────────────────────────────────────────────────
+// keybinding configuration
 void InputSystem::ClearAction(const std::string& action) {
 	actions_.erase(action);
 }
@@ -257,7 +257,7 @@ void InputSystem::LoadDefaults() {
 	BindButton("LookDrag", wi::input::MOUSE_BUTTON_RIGHT);
 }
 
-// ── queries ────────────────────────────────────────────────────────────────────
+// queries
 bool InputSystem::Down(const std::string& action) const {
 	const InputAction* a = Find(action);
 	if (a == nullptr) return false;

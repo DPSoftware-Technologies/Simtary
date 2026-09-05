@@ -5,8 +5,8 @@
 // drawn by mi::LensFlare (src/render/LensFlare.cpp).
 //
 // This pass deliberately does NOT include the engine's globals.hlsli. It needs no
-// bindless resources and no scene data — the whole flare is generated from maths
-// around a single screen-space sun position — so it declares its own root signature
+// bindless resources and no scene data - the whole flare is generated from maths
+// around a single screen-space sun position - so it declares its own root signature
 // and stays independent of the engine's shader interop headers.
 
 // VS and PS must declare an identical root signature (DX12 builds one root signature
@@ -22,7 +22,7 @@
 	"RootConstants(num32BitConstants=22, b999), " \
 	"CBV(b0)"
 
-// Mirrors mi::LensFlare::Constants in src/render/LensFlare.cpp — keep both in sync.
+// Mirrors mi::LensFlare::Constants in src/render/LensFlare.cpp - keep both in sync.
 // Laid out as four tight 16-byte rows so the C++ struct maps 1:1 with no implicit
 // HLSL padding.
 cbuffer LensFlareCB : register(b0)

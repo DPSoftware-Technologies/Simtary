@@ -1,4 +1,4 @@
-// ─── stAudioLegacy: wi::audio implemented on top of st::audio ────────────────────
+// stAudioLegacy: wi::audio implemented on top of st::audio
 //
 // This file REPLACES Engine/wiAudio.cpp. It provides the whole wi::audio public API
 // (Sound / SoundInstance / 3D / submixes / reverb) backed by the OpenAL + Steam Audio

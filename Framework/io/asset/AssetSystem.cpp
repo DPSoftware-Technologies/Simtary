@@ -56,7 +56,7 @@ AssetSystem::~AssetSystem () {
     mounts_.clear();
 }
 
-// ── mounting ───────────────────────────────────────────────────────────────────
+// mounting
 
 bool AssetSystem::Mount (const std::string& strdPath, const std::string& mountPoint,
                          std::string* error, bool verify) {
@@ -87,7 +87,7 @@ void AssetSystem::UnmountAll () {
     mounts_.clear();
 }
 
-// ── engine hook ────────────────────────────────────────────────────────────────
+// engine hook
 
 void AssetSystem::Install () {
     if (installed_) return;
@@ -166,7 +166,7 @@ bool AssetSystem::SourceRead (const std::string& fileName, const uint8_t** data,
 
     // Stored asset: hand back a pointer straight into the mapped part. No allocation,
     // no copy, and the engine's own offset/length slicing turns this into real
-    // streaming — which is exactly why the packer leaves dds/png/ogg/mp4 uncompressed.
+    // streaming - which is exactly why the packer leaves dds/png/ogg/mp4 uncompressed.
     if (const uint8_t* mapped = pack->MappedData(*a)) {
         *data = mapped;
         *size = static_cast<size_t>(a->originalSize);
@@ -216,13 +216,13 @@ bool AssetSystem::SourceStat (const std::string& fileName, uint64_t* size, uint6
     if (size) *size = a->originalSize;
     // Deliberately 0, not the pack's build time. A mounted package is immutable for the
     // life of the process, and wi::resourcemanager reloads a resource whenever the
-    // timestamp it sees is NEWER than the one it cached — a value that never rises is
+    // timestamp it sees is NEWER than the one it cached - a value that never rises is
     // exactly the "this can never go stale" answer.
     if (timestamp) *timestamp = 0;
     return true;
 }
 
-// ── load progress ──────────────────────────────────────────────────────────────
+// load progress
 
 void AssetSystem::SetLoadProgressCallback (LoadProgressCallback callback, void* userdata) {
     std::lock_guard<std::mutex> lock(progressMutex_);
@@ -288,7 +288,7 @@ void AssetSystem::NoteAssetServed (const asset::AssetPack& pack, const asset::St
     callback(snapshot, userdata);
 }
 
-// ── scenes ─────────────────────────────────────────────────────────────────────
+// scenes
 
 bool AssetSystem::ReadSceneInfo (const std::string& stsdPath, asset::SceneDescriptor& out,
                                  std::string* error) const {
@@ -325,7 +325,7 @@ Entity AssetSystem::LoadScene (Scene& scene, const std::string& stsdPath,
     // development and shipped inside a pack with no code change on either side.
     //
     // Inflating the entity blob is the first thing in this function that takes real
-    // time — tens of megabytes of zstd — so it reports per compression frame into the
+    // time - tens of megabytes of zstd - so it reports per compression frame into the
     // [0.02, 0.12] slice rather than leaving the bar parked on the line above.
     BlobDecodeContext decodeContext;
     decodeContext.progress = &progress;
@@ -358,7 +358,7 @@ Entity AssetSystem::LoadScene (Scene& scene, const std::string& stsdPath,
         return INVALID_ENTITY;
     }
 
-    // A map whose resources are not mounted still deserialises — it just comes up
+    // A map whose resources are not mounted still deserialises - it just comes up
     // untextured. Saying so here beats the alternative, which is a grey world and no
     // clue why.
     const std::vector<std::string> missing = MissingAssetsFor(descriptor);
@@ -379,7 +379,7 @@ Entity AssetSystem::LoadScene (Scene& scene, const std::string& stsdPath,
 
     // From here this mirrors wi::scene::LoadModel2, with a memory archive instead of a
     // file one. The archive has no source directory, which is what keeps the resource
-    // names inside it relative — and relative is exactly how the packer stored them.
+    // names inside it relative - and relative is exactly how the packer stored them.
     Entity rootEntity = attached ? CreateEntity() : INVALID_ENTITY;
 
     {
@@ -398,7 +398,7 @@ Entity AssetSystem::LoadScene (Scene& scene, const std::string& stsdPath,
         // This only fires when the engine calls back, so it does not cover the stretch
         // where the engine is waiting on resource jobs and reporting nothing. That
         // stretch is covered from the other side, by SetLoadProgressCallback firing on
-        // the loading threads themselves — see st::App.
+        // the loading threads themselves - see st::App.
         wi::scene::LoadModelProgressCallback wrapped =
             [this, &progress, expectedAssets](float fraction, const std::string& status) {
                 if (!progress) return;
@@ -437,7 +437,7 @@ Entity AssetSystem::LoadScene (Scene& scene, const std::string& stsdPath,
     scene.Update(0);
 
     if (createdRoot) {
-        // Nothing asked for a handle to it, so flatten it back out — the same choice
+        // Nothing asked for a handle to it, so flatten it back out - the same choice
         // LoadModel makes, and for the same reason: a stray root deepens every
         // hierarchy walk for the life of the scene.
         scene.Component_DetachChildren(rootEntity);
@@ -450,7 +450,7 @@ Entity AssetSystem::LoadScene (Scene& scene, const std::string& stsdPath,
     return rootEntity;
 }
 
-// ── enumeration ────────────────────────────────────────────────────────────────
+// enumeration
 
 AssetSystem::MountInfo AssetSystem::MountAt (uint32_t i) const {
     MountInfo info;

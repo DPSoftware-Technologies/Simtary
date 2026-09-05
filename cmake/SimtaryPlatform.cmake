@@ -1,4 +1,4 @@
-# SimtaryPlatform.cmake — the "<os>_<arch>" tag every build directory is keyed by.
+# SimtaryPlatform.cmake - the "<os>_<arch>" tag every build directory is keyed by.
 #
 # Produces SIMTARY_PLATFORM_ARCH, e.g. win_x86-64 / linux_x86-64 / linux_arm64 /
 # macos_arm64. Build trees live at <project>/build/${SIMTARY_PLATFORM_ARCH}, and the

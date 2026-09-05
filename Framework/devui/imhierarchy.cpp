@@ -104,7 +104,7 @@ static void HierarchyRowInteract(Scene& scene, Entity e, Entity& selected,
 	}
 
 	// Drop target: only opened when the drop would actually be legal, so an illegal target
-	//	(itself, or one of its own descendants) simply does not highlight — which reads as
+	//	(itself, or one of its own descendants) simply does not highlight - which reads as
 	//	"not here" without needing a separate rejection cue.
 	const Entity dragged = CurrentDragEntity();
 	if (dragged != INVALID_ENTITY && CanReparent(scene, dragged, e) &&
@@ -455,7 +455,7 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 	}
 
 	// The other half of re-parenting: a strip under the tree that detaches whatever is dropped
-	//	on it. Without it there is no way back OUT of a parent by dragging — the rows can only
+	//	on it. Without it there is no way back OUT of a parent by dragging - the rows can only
 	//	ever make something a child of something else.
 	//
 	//	It is only drawn while a row is actually being carried, so the panel does not carry a
@@ -535,10 +535,10 @@ static void DrawTransform(Scene& scene, Entity e, st::EditorHistory* history)
 		else if (ImGui::IsItemDeactivated())     history->Abort();
 	};
 
-	// ── is something else driving this transform? ────────────────────────────────
+	// is something else driving this transform?
 	//	An animation, a physics body or a native component that writes translation_local
 	//	every frame owns this transform, and a gizmo drag into the same field is overwritten
-	//	before the next frame is drawn — which looks exactly like the object being locked.
+	//	before the next frame is drawn - which looks exactly like the object being locked.
 	//	Watch the value while nobody is editing it: if it moves on its own, say so.
 	static Entity   driftEntity = INVALID_ENTITY;
 	static XMFLOAT3 driftLast   = XMFLOAT3(0, 0, 0);
@@ -643,7 +643,7 @@ static void DrawNativeComponents(Scene& scene, Entity e, st::EditorHistory* hist
 
 		// Detach only erases the NCI_/NCA_/NCE_ metadata keys. The instance's OnDisable()
 		//	and Destroy() run in the next NativeComponentManager::RunUpdate, so `inst` stays
-		//	valid for the rest of this frame — but its widgets would be editing something
+		//	valid for the rest of this frame - but its widgets would be editing something
 		//	already on its way out, so stop drawing it here.
 		ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::GetFrameHeight());
 		const bool detached = ImGui::SmallButton("x");
@@ -719,7 +719,7 @@ void PropertiesGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 
 	// Completeness: list any engine component present that this build has no editor for. All
 	//	38 of the Scene managers are covered, so anything showing up here is a component type
-	//	that was added to the engine and not to the inspector table — which is worth seeing
+	//	that was added to the engine and not to the inspector table - which is worth seeing
 	//	rather than silently dropping.
 	std::vector<std::string> others;
 	for (auto& kv : scene.componentLibrary.entries)

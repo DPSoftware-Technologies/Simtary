@@ -3,16 +3,16 @@
 //
 //	Two families sit behind one menu, exactly as the user thinks about them:
 //
-//	  Engine components  — the wi::scene::Scene component managers (Transform, Light,
+//	  Engine components  - the wi::scene::Scene component managers (Transform, Light,
 //	                       Object, Material, ... 38 of them). Added/removed by calling
 //	                       Create()/Remove() on the matching manager. This is live scene
 //	                       state; it is written to disk only when the scene is saved.
 //
-//	  Native components  — the project's own C++ classes registered with
+//	  Native components  - the project's own C++ classes registered with
 //	                       ST_REGISTER_NATIVE_COMPONENT. Added/removed by writing the
 //	                       NCI_/NCA_/NCE_ metadata keys (AttachNativeComponent /
 //	                       DetachNativeComponent in Engine/stNativeComponent.h), which the
-//	                       NativeComponentManager reconciles on the next frame — so attach
+//	                       NativeComponentManager reconciles on the next frame - so attach
 //	                       and detach are genuinely realtime, and they persist with the scene.
 //
 //	The engine table is hand-written rather than derived from Scene::componentLibrary
@@ -52,7 +52,7 @@ bool AddComponentButton(wi::scene::Scene& scene, wi::ecs::Entity entity,
 	st::EditorHistory* history = nullptr);
 
 // Small "x" button that detaches an engine component. Draw it on the same line as the
-//	component's header. Returns true on the frame it removed the component — the caller must
+//	component's header. Returns true on the frame it removed the component - the caller must
 //	stop touching that component's pointer for the rest of the frame.
 bool RemoveEngineComponentButton(wi::scene::Scene& scene, wi::ecs::Entity entity,
 	const EngineComponentType& type, st::EditorHistory* history = nullptr);
@@ -65,7 +65,7 @@ bool RemoveEngineComponentButton(wi::scene::Scene& scene, wi::ecs::Entity entity
 //
 //	Writes the 64-bit ABSOLUTE position as well as the local one. That is the field
 //	TransformComponent::Serialize round-trips, so an entity placed only in local space comes
-//	back at the world origin after a save/load — or after an undo/redo.
+//	back at the world origin after a save/load - or after an undo/redo.
 void PlaceEntityAt(wi::scene::Scene& scene, wi::ecs::Entity e, const XMFLOAT3& position,
 	wi::ecs::Entity parent = wi::ecs::INVALID_ENTITY);
 
@@ -75,8 +75,8 @@ void PlaceEntityAt(wi::scene::Scene& scene, wi::ecs::Entity e, const XMFLOAT3& p
 //
 //	spawnPosition : where the new object lands, in origin-relative float space. The editor
 //	                passes a point in front of its free camera.
-//	parent        : optional — the new entity is attached under it (Scene::Component_Attach).
-//	history       : optional — the create becomes one undo step.
+//	parent        : optional - the new entity is attached under it (Scene::Component_Attach).
+//	history       : optional - the create becomes one undo step.
 //
 //	Returns the new entity, or INVALID_ENTITY when nothing was picked this frame.
 wi::ecs::Entity CreateObjectMenuItems(wi::scene::Scene& scene, const XMFLOAT3& spawnPosition,

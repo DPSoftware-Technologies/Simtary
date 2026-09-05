@@ -35,9 +35,7 @@ namespace st::audio
 		}
 	}
 
-	// ════════════════════════════════════════════════════════════════════════════
 	// Emitter
-	// ════════════════════════════════════════════════════════════════════════════
 
 	struct Emitter::Impl
 	{
@@ -297,9 +295,7 @@ namespace st::audio
 	void Emitter::SetName(const std::string& name) { impl_->name = name; }
 	const std::string& Emitter::GetName() const { return impl_->name; }
 
-	// ════════════════════════════════════════════════════════════════════════════
 	// Collector
-	// ════════════════════════════════════════════════════════════════════════════
 
 	struct Collector::Impl
 	{
@@ -356,9 +352,7 @@ namespace st::audio
 	void Collector::SetName(const std::string& name) { impl_->name = name; }
 	const std::string& Collector::GetName() const { return impl_->name; }
 
-	// ════════════════════════════════════════════════════════════════════════════
 	// AudioEngine
-	// ════════════════════════════════════════════════════════════════════════════
 
 	struct AudioEngine::Impl
 	{
@@ -416,7 +410,7 @@ namespace st::audio
 
 		EmitterRef music;
 
-		// ── audio thread ────────────────────────────────────────────────────────
+		// audio thread
 
 		void RefreshLists()
 		{
@@ -702,7 +696,7 @@ namespace st::audio
 			}
 		}
 
-		// ── 2D voice pool ───────────────────────────────────────────────────────
+		// 2D voice pool
 
 		// Upload a clip into an AL buffer once and keep it. Cached by ClipData
 		// address; the cache holds no reference, so it is swept when clips are freed.
@@ -1228,7 +1222,7 @@ namespace st::audio
 		return impl_->stats;
 	}
 
-	// ── the easy API ────────────────────────────────────────────────────────────
+	// the easy API
 
 	int GetMixSampleRate()
 	{

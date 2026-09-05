@@ -21,7 +21,7 @@ namespace st::audio
 {
 	namespace
 	{
-		// ── little-endian readers ────────────────────────────────────────────────
+		// little-endian readers
 		// RIFF is little-endian on every platform, so the bytes are assembled by hand
 		// rather than memcpy'd into a native integer.
 		inline uint16_t rd16(const uint8_t* p) { return (uint16_t)(p[0] | (p[1] << 8)); }
@@ -194,7 +194,7 @@ namespace st::audio
 			}
 		}
 
-		// ── cache ────────────────────────────────────────────────────────────────
+		// cache
 		// Weak: the cache never keeps a clip alive on its own, so a level's sounds are
 		// freed when the last emitter referencing them goes away, with no eviction
 		// policy to tune. TrimClipCache() only sweeps the dead entries.

@@ -4,7 +4,7 @@
 //	normalised scene graph: by the time this file sees a model it no longer matters whether
 //	the exporter was Maya, Blender or a text editor.
 //
-//	── What ufbx is asked to do before we look at anything ───────────────────────
+//	What ufbx is asked to do before we look at anything
 //
 //	  target_axes / target_unit_meters   convert into the engine's left-handed Y-up metres,
 //	                                     geometry and transforms together, so nothing here
@@ -14,14 +14,14 @@
 //	                                     wi::helper::FileRead, so a model inside an asset
 //	                                     package finds its own dependencies
 //
-//	── Skinning ──────────────────────────────────────────────────────────────────
+//	Skinning
 //
 //	FBX stores a skin as clusters, each naming one bone and the matrix that takes geometry
-//	into that bone's space — which is the inverse bind matrix the engine wants, so the two
+//	into that bone's space - which is the inverse bind matrix the engine wants, so the two
 //	line up directly. Weights arrive sorted by influence, so taking the first four and
 //	renormalising is a principled truncation rather than an arbitrary one.
 //
-//	── Animation ─────────────────────────────────────────────────────────────────
+//	Animation
 //
 //	Baked with ufbx_bake_anim rather than read as curves. FBX animation is not a set of TRS
 //	curves: it is curves plus pre/post-rotation, rotation order, pivots and limits, and
@@ -77,7 +77,7 @@ XMFLOAT4X4 Matrix (const ufbx_matrix& m)
 	return out;
 }
 
-// ── file access ───────────────────────────────────────────────────────────────
+// file access
 // ufbx opens side files through this and nothing else (the build defines UFBX_NO_STDIO), so
 //	an .mtl or a texture is fetched exactly the way the engine fetches everything: mounted
 //	asset packages first, real files second.
@@ -140,7 +140,7 @@ bool OpenFile (void* user, ufbx_stream* stream, const char* path, size_t path_le
 	return true;
 }
 
-// ── materials ─────────────────────────────────────────────────────────────────
+// materials
 
 // A texture reference becomes a name the engine can load: embedded content is registered
 //	with the resource manager, a file name is resolved against the model's folder.
@@ -229,7 +229,7 @@ Entity ConvertMaterial (ImportContext& ctx, const ufbx_material* src)
 	return e;
 }
 
-// ── meshes ────────────────────────────────────────────────────────────────────
+// meshes
 
 struct BoneMapping {
 	std::unordered_map<const ufbx_node*, uint32_t> boneIndex; // node -> index in boneCollection
@@ -374,7 +374,7 @@ Entity ConvertMesh (ImportContext& ctx, const ufbx_mesh* src,
 	return meshEntity;
 }
 
-// ── animation ─────────────────────────────────────────────────────────────────
+// animation
 
 // Append one baked channel as an AnimationDataComponent + sampler + channel.
 void AddChannel (Scene& scene, AnimationComponent& anim, Entity target,
@@ -483,7 +483,7 @@ void ConvertAnimations (ImportContext& ctx, const ufbx_scene* fbx, Entity root,
 
 } // namespace
 
-// ─────────────────────────────────────────────────────────────── the import ───
+// the import
 
 bool ImportUFBX (ImportContext& ctx, Entity root)
 {
@@ -524,12 +524,12 @@ bool ImportUFBX (ImportContext& ctx, Entity root)
 		return false;
 	}
 
-	// ── materials ──
+	// materials
 	std::vector<Entity> materials(fbx->materials.count, INVALID_ENTITY);
 	for (size_t i = 0; i < fbx->materials.count; ++i)
 		materials[i] = ConvertMaterial(ctx, fbx->materials.data[i]);
 
-	// ── nodes ──
+	// nodes
 	// Every node becomes an entity first, so a parent always exists before its children and
 	//	a skin cluster can name a bone that has not been visited yet.
 	std::unordered_map<const ufbx_node*, Entity> nodeEntities;
@@ -569,7 +569,7 @@ bool ImportUFBX (ImportContext& ctx, Entity root)
 		scene.Component_Attach(kv.second, parent, true);
 	}
 
-	// ── skins ──
+	// skins
 	// One armature per skin deformer, built before meshes so a mesh can point at it.
 	std::unordered_map<const ufbx_skin_deformer*, BoneMapping> skins;
 	if (ctx.options.importSkins)
@@ -600,7 +600,7 @@ bool ImportUFBX (ImportContext& ctx, Entity root)
 		}
 	}
 
-	// ── meshes ──
+	// meshes
 	// Converted once per ufbx_mesh and shared by every node instancing it, which is what
 	//	keeps a scene of 500 identical crates at one mesh rather than 500.
 	std::unordered_map<const ufbx_mesh*, Entity> meshEntities;
@@ -639,7 +639,7 @@ bool ImportUFBX (ImportContext& ctx, Entity root)
 		object.meshID = meshIt->second;
 	}
 
-	// ── lights ──
+	// lights
 	if (ctx.options.importLights)
 	{
 		for (auto& kv : nodeEntities)
@@ -659,7 +659,7 @@ bool ImportUFBX (ImportContext& ctx, Entity root)
 		}
 	}
 
-	// ── cameras ──
+	// cameras
 	if (ctx.options.importCameras)
 	{
 		for (auto& kv : nodeEntities)
@@ -674,7 +674,7 @@ bool ImportUFBX (ImportContext& ctx, Entity root)
 		}
 	}
 
-	// ── animation ──
+	// animation
 	if (ctx.options.importAnimations)
 		ConvertAnimations(ctx, fbx, root, nodeEntities);
 

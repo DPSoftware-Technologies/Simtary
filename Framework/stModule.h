@@ -1,5 +1,5 @@
 #pragma once
-// st module ABI — the seam between the host executable and the project module.
+// st module ABI - the seam between the host executable and the project module.
 //
 // In module mode a project ships as two files instead of one:
 //
@@ -17,7 +17,7 @@
 //
 // This is a MATCHED-VERSION boundary, not a stable ABI. Host and module share C++
 // types (st::App, st::AppConfig) and must be built from the same source, the same
-// compiler and the same layout-affecting options — SIMTARY_LARGE_WORLD above all,
+// compiler and the same layout-affecting options - SIMTARY_LARGE_WORLD above all,
 // which changes sizeof(TransformComponent). ST_ENGINE_BUILD_ID encodes exactly
 // that set and is checked at load time, so a mismatched pair refuses to start
 // instead of reading a scene at the wrong stride.
@@ -83,7 +83,7 @@ typedef const stModuleDesc* (*stModuleEntryFn)(void);
 
 } // extern "C"
 
-// ── ST_APP_ENTRY ──────────────────────────────────────────────────────────────
+// ST_APP_ENTRY
 // The project's entry point, written once and valid in both build modes:
 //
 //     static void ConfigureApp (st::AppConfig& config) {

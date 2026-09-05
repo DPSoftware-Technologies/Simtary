@@ -30,13 +30,13 @@ void Configure(std::string organization, std::string application);
 // call. Returns an empty-ish local path only if the platform lookup fails (very rare).
 const std::string& BaseDir();
 
-// <BaseDir>/options.stad — the single game-options file.
+// <BaseDir>/options.stad - the single game-options file.
 std::string OptionsFile();
 
 // <BaseDir>/saves/  (trailing slash). Resolved once and created on first call.
 const std::string& SavesDir();
 
-// <BaseDir>/saves/<slot>.stcd — one file per named save slot.
+// <BaseDir>/saves/<slot>.stcd - one file per named save slot.
 std::string SavePath(const std::string& slot);
 
 } // namespace st::userdata

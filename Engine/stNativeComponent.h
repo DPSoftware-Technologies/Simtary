@@ -176,12 +176,12 @@ namespace wi::scene
 
 		// Debug/inspector UI (override in your subclass): draw ImGui widgets bound to this
 		//	instance's live members. Called by the scene debug UI (see imnativecomponents.h)
-		//	while an ImGui window is already active — do NOT Begin()/End() here. Editing a member
+		//	while an ImGui window is already active - do NOT Begin()/End() here. Editing a member
 		//	takes effect on the next Update().
 		//
 		//	It is NOT persisted on its own: a widget writes the member and nothing else, so the
 		//	edit is gone on the next load unless the override says so. Track whether anything
-		//	changed and call SaveBoundParams() when it did — that writes every Bind()ed field
+		//	changed and call SaveBoundParams() when it did - that writes every Bind()ed field
 		//	back to its NCA_ key, which is what the framework's own components do:
 		//
 		//		bool dirty = false;
@@ -335,7 +335,7 @@ namespace wi::scene
 		//	Editor; the GUID (not the name) makes it survive renames and duplicate names.
 		//
 		//	GetEntityRef : resolve the stored GUID to a live Entity (INVALID_ENTITY if unset /
-		//	               the target is gone). Cheap-ish (scans metadata) — cache the result.
+		//	               the target is gone). Cheap-ish (scans metadata) - cache the result.
 		//	SetEntityRef : point the field at 'target'; ensures the target has a GUID and writes
 		//	               the GUID into this instance's metadata arg (persisted, editor-visible).
 		//	               Pass INVALID_ENTITY to clear the field.
@@ -378,7 +378,7 @@ namespace wi::scene
 		//	frame. Like the Set*() calls it is built from, it defers itself to the main thread.
 		void SaveBoundParams();
 
-		// GetComponent<T>() — Unity-style lookup on the SAME entity:
+		// GetComponent<T>() - Unity-style lookup on the SAME entity:
 		//	- if T is an engine component (TransformComponent, MeshComponent, ...) returns it (or nullptr)
 		//	- if T derives from NativeComponent returns the first native instance of that type (or nullptr)
 		template<typename T> T* GetComponent();
@@ -430,8 +430,8 @@ namespace wi::scene
 
 	// ------------------------------------------------------------------
 	// Editor-side attach / detach.
-	//	Both work purely on the entity's MetadataComponent — the same NCI_/NCA_/NCE_ keys the
-	//	system already reconciles in NativeComponentManager::RunUpdate — so a change takes
+	//	Both work purely on the entity's MetadataComponent - the same NCI_/NCA_/NCE_ keys the
+	//	system already reconciles in NativeComponentManager::RunUpdate - so a change takes
 	//	effect on the next frame, needs no engine restart, and is saved with the scene.
 	//
 	//	AttachNativeComponent : writes NCI_<LocalID> = name using the lowest free LocalID on

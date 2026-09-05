@@ -1,5 +1,5 @@
 #pragma once
-// st::App — the Simtary application framework.
+// st::App - the Simtary application framework.
 //
 // Everything a project shares lives here: the ImGui backend + system UI (backlog,
 // graphics settings, hierarchy/properties, scene manager), the render path, the
@@ -51,10 +51,10 @@ namespace st {
 
 // How much of the framework's developer tooling a build exposes. DevUI is the menu
 // bar, backlog, graphics settings, hierarchy/properties, scene manager and Faust
-// panel — tooling, not game UI. A game's own UI (App::RenderUI, Scene::OnGUI) is
+// panel - tooling, not game UI. A game's own UI (App::RenderUI, Scene::OnGUI) is
 // never affected by this.
 enum class DevUIMode {
-    Visible,   // starts open — the development default
+    Visible,   // starts open - the development default
     Hidden,    // compiled in but starts closed; AppConfig::devUIToggleKey opens it
     Disabled,  // never drawn; RenderDevUI() and Scene::OnDevGUI() are not called
 };
@@ -95,8 +95,8 @@ struct AppConfig {
     // the "zmq.message" event. Empty = do not start the bridge.
     std::string zmqEndpoint = "tcp://127.0.0.1:5556";
 
-    // ── asset packages ─────────────────────────────────────────────────────────
-    // .strd indexes to mount before anything loads, in order — a later pack shadows
+    // asset packages
+    // .strd indexes to mount before anything loads, in order - a later pack shadows
     // an earlier one, which is how a patch pack works. Paths are relative to the
     // working directory (the exe folder), so "assets/content.strd" is the one
     // simtary_add_app(PACK_ASSETS) produces.
@@ -175,10 +175,10 @@ public:
     // The config st::Run was given. Valid from Run() onwards.
     static const AppConfig& Config();
 
-    // ── developer tooling ──────────────────────────────────────────────────────
+    // developer tooling
     // Whether the framework's dev panels are on screen. Always false when the
     // config says DevUIMode::Disabled, and SetDevUIVisible(true) cannot override
-    // that — a shipped build stays shut.
+    // that - a shipped build stays shut.
     bool IsDevUIVisible() const { return devUIVisible_; }
     void SetDevUIVisible(bool visible);
     void ToggleDevUI() { SetDevUIVisible(!devUIVisible_); }
@@ -191,34 +191,34 @@ public:
     void SetEditorMode(bool on) { editor_.SetEnabled(on); }
     void ToggleEditorMode() { editor_.Toggle(); }
 
-    // ── display ────────────────────────────────────────────────────────────────
+    // display
     // Window mode, monitor, resolution, v-sync, frame cap and render scale. Render
     // its panel from the game's own options menu:
     //     ImGui::Begin("Options"); Display().GUI(*this); ImGui::End();
     // Applied settings persist to options.stad and come back on the next launch.
     DisplaySettings& Display() { return displaySettings_; }
 
-    // ── graphics ───────────────────────────────────────────────────────────────
+    // graphics
     // The engine graphics options (AO, shadows, post processing, tonemapping,
     // upscaling). Editor mode reads these to render its extra viewports through the
-    // same renderer the game uses — see GraphicsSettings::MirrorTo.
+    // same renderer the game uses - see GraphicsSettings::MirrorTo.
     GraphicsSettings& Graphics() { return graphicsSettings; }
 
-    // ── assets ─────────────────────────────────────────────────────────────────
+    // assets
     // Mounted asset packages. Mount more at runtime (DLC, a patch pack), look an asset
     // up, or load a .stsd map:
     //     Assets().LoadScene(mapScene, "assets/scenes/s1map.stsd");
     // AppConfig::assetPacks is mounted for you before the engine starts.
     st::AssetSystem& Assets() { return st::AssetSystem::Get(); }
 
-    // ── resources ──────────────────────────────────────────────────────────────
+    // resources
     // The Resource Explorer's state. It has no window of its own: Editor mode owns the
     // window and calls Resources().GUI() into it. Public because EditorUI is a separate
     // class that needs to reach it, and because a project may want to drive an import
     // from its own tooling.
     AssetExplorer& Resources() { return assetExplorer_; }
 
-    // ── loading ────────────────────────────────────────────────────────────────
+    // loading
     // What is loading right now. Driven by SceneManager transitions and by scenes
     // calling Scene::ReportProgress().
     const LoadingState& Loading() const { return loading_; }
@@ -238,7 +238,7 @@ public:
     virtual void HandleDroppedFile(const std::string& path);
 
 protected:
-    // ── project hooks ──────────────────────────────────────────────────────────
+    // project hooks
     // Register the project's scenes. Called once during Initialize(), before
     // AppConfig::startupScene is loaded.
     virtual void RegisterScenes(SceneManager& /*scenes*/) {}
@@ -246,10 +246,10 @@ protected:
     virtual void OnInitialize() {}
     // Once per frame, after the scene manager has updated.
     virtual void OnUpdate(float /*dt*/) {}
-    // Engine fixed tick (wi::Application::FixedUpdate) — physics-rate game logic.
+    // Engine fixed tick (wi::Application::FixedUpdate) - physics-rate game logic.
     virtual void OnFixedUpdate() {}
 
-    // ── UI ─────────────────────────────────────────────────────────────────────
+    // UI
     // The game's own ImGui UI. Drawn every frame regardless of DevUIMode.
     virtual void RenderUI() {}
     // Extra developer panels. Only called while DevUI is visible.
@@ -260,18 +260,18 @@ protected:
     // framework's status/progress overlay; override for custom loading art.
     virtual void RenderLoadingScreen(const LoadingState& state);
 
-    // ── render ─────────────────────────────────────────────────────────────────
+    // render
     // After the render path is created and loaded, before it is activated. Set
     // render-path options here, or activate a path of your own instead.
     virtual void OnRenderPathSetup(wi::RenderPath3D& /*path*/) {}
     // The game's own GPU work, after the engine has rendered the frame.
     virtual void OnRender() {}
-    // Under the composed 3D frame — a backdrop drawn before everything else.
+    // Under the composed 3D frame - a backdrop drawn before everything else.
     virtual void OnPreCompose(wi::graphics::CommandList /*cmd*/) {}
     // Additively over the composed 3D frame, before the UI is drawn.
     virtual void OnCompose(wi::graphics::CommandList /*cmd*/) {}
 
-    // ── scenes ─────────────────────────────────────────────────────────────────
+    // scenes
     // Fired by SceneManager around a deferred transition (Reload() fires both).
     virtual void OnSceneLoaded(const std::string& /*name*/) {}
     virtual void OnSceneUnloaded(const std::string& /*name*/) {}
@@ -329,7 +329,7 @@ private:
     void DevUIHierarchy();      // Hierarchy (Explorer) + Properties (Inspector) windows
 
     // Per-asset load progress out of st::AssetSystem. Static because the callback is a
-    // plain function pointer, and called from loading worker threads — see the
+    // plain function pointer, and called from loading worker threads - see the
     // definition for what that means it may touch.
     static void OnAssetLoadProgress(const st::AssetLoadProgress& progress, void* userdata);
 

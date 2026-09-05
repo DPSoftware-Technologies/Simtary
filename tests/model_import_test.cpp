@@ -1,10 +1,10 @@
-// model_import_test — the third-party half of Framework/io/model.
+// model_import_test - the third-party half of Framework/io/model.
 //
 //	Links tinygltf and ufbx and nothing else: no engine, no graphics device. That is a
 //	deliberate split. The engine-facing half of the importers (components, skinning,
 //	handedness) cannot run without a device, but the half that actually breaks when a
-//	dependency is updated is this one — the API shapes, the parse options, the accessor
-//	layout — and that half needs no device at all.
+//	dependency is updated is this one - the API shapes, the parse options, the accessor
+//	layout - and that half needs no device at all.
 //
 //	Each case writes a small model to a temp directory, parses it back, and checks the
 //	numbers that the importers depend on being right.
@@ -65,7 +65,7 @@ std::vector<uint8_t> ReadAll (const fs::path& path)
     return bytes;
 }
 
-// ── OBJ, through ufbx ─────────────────────────────────────────────────────────
+// OBJ, through ufbx
 // One quad with a material, which is enough to exercise the path the OBJ importer
 //	depends on: faces that are NOT triangles, a UV set, and an .mtl found beside the .obj.
 
@@ -133,7 +133,7 @@ void TestOBJ (const fs::path& dir)
     ufbx_free_scene(scene);
 }
 
-// ── glTF, through tinygltf v3 ─────────────────────────────────────────────────
+// glTF, through tinygltf v3
 // A single triangle with an EXTERNAL .bin, which is the case that proves the filesystem
 //	callbacks are wired: without them the buffer never loads and every accessor reads zero.
 

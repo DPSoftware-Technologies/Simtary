@@ -7,7 +7,7 @@
 #include <thread>
 
 // A small borderless loading window that runs on its OWN thread using the native
-// windowing API of each platform — Win32 + GDI on Windows, Xlib on Linux. No SDL.
+// windowing API of each platform - Win32 + GDI on Windows, Xlib on Linux. No SDL.
 //
 // Why native instead of SDL: SDL's video/windowing/event subsystem is global and
 // main-thread-only; driving a second SDL window from a worker thread deadlocks.
@@ -16,7 +16,7 @@
 // animating independently while the main thread is blocked initializing the
 // engine. Call Show() before the blocking work, Hide() after.
 //
-// ── Two lines, because two different things report ─────────────────────────────
+// Two lines, because two different things report
 //
 //   status   the PHASE: "Loading materials", "Applying transform". Changes slowly,
 //            pushed from the main thread through st::App::SetLoadingStatus.
@@ -37,7 +37,7 @@ public:
     SubWinStatus(const std::string& title, int width, int height);
     ~SubWinStatus();
 
-    // Window title. Only has an effect before Show() — the window is created once, on
+    // Window title. Only has an effect before Show() - the window is created once, on
     // its own thread, and is not renamed afterwards.
     void SetTitle(const std::string& title);
 

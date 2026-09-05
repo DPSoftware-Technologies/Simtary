@@ -1,5 +1,5 @@
 #pragma once
-// .stsd — the scene (map) descriptor — plus the .wiscene split/merge that produces it.
+// .stsd - the scene (map) descriptor - plus the .wiscene split/merge that produces it.
 //
 // A .wiscene is one wi::Archive holding two unrelated things glued together: the
 // entity/component payload, and a block of embedded resource FILES (every texture,
@@ -9,13 +9,13 @@
 //
 // Splitting undoes exactly that glue and nothing else:
 //
-//     s1map.wiscene  ──>  s1map.stsd          entities + metadata, small
-//                    └──>  content.stafp1..N   the resources, deduplicated, shared
+//     s1map.wiscene >  s1map.stsd          entities + metadata, small
+//                    └ >  content.stafp1..N   the resources, deduplicated, shared
 //
 // and merging puts it back, which is what makes the conversion safe to adopt: the
 // map can always be turned back into a .wiscene the editor opens.
 //
-// ── What is in a .stsd ─────────────────────────────────────────────────────────
+// What is in a .stsd
 //
 //   NBT block   metadata a person or a tool reads: name, source, engine archive
 //               version, the list of asset IDs the map needs, and an entity index.
@@ -40,7 +40,7 @@
 
 namespace st::asset {
 
-// ── .wiscene surgery ───────────────────────────────────────────────────────────
+// .wiscene surgery
 
 // One entry of a .wiscene's embedded resource block.
 struct EmbeddedResource {
@@ -74,7 +74,7 @@ struct WisceneSplit {
 
 // Take a .wiscene apart. `data`/`size` is the whole file. Fails on an archive older
 // than kMinSupportedArchiveVersion, because before version 90 there is no jump pair
-// and the resource block cannot be found without deserializing the scene — which
+// and the resource block cannot be found without deserializing the scene - which
 // would mean linking the engine into a build tool.
 bool SplitWiscene (const uint8_t* data, uint64_t size, WisceneSplit& out, std::string* error = nullptr);
 
@@ -93,12 +93,12 @@ bool MergeWiscene (const uint8_t* ecsArchive, uint64_t ecsSize,
                    const std::vector<ResourceToEmbed>& resources,
                    std::vector<uint8_t>& out, std::string* error = nullptr);
 
-// ── .stsd ──────────────────────────────────────────────────────────────────────
+// .stsd
 
 struct SceneAssetRef {
     uint64_t    id    = 0;
     std::string path;
-    uint32_t    flags = 0;          // AssetFlags — how the pack stores it
+    uint32_t    flags = 0;          // AssetFlags - how the pack stores it
 
     // The wi::resourcemanager::Flags the .wiscene recorded for this resource
     // (IMPORT_NORMALMAP, IMPORT_BLOCK_COMPRESSED, IMPORT_RETAIN_FILEDATA, ...). Carried
@@ -112,14 +112,14 @@ struct SceneAssetRef {
 struct SceneBlob {
     StsdBlobKind         kind  = StsdBlobKind::Unknown;
     Codec                codec = Codec::None;
-    std::vector<uint8_t> data;   // uncompressed, always — the codec applies on disk only
+    std::vector<uint8_t> data;   // uncompressed, always - the codec applies on disk only
 };
 
 struct SceneDescriptor {
     std::string name;         // "s1map"
     std::string sourceFile;   // "scenes/s1map.wiscene", for provenance
     // The package build this map's resources were written alongside. ZERO means the map
-    // is not bound to any particular build — an editor save whose resources were all
+    // is not bound to any particular build - an editor save whose resources were all
     // already mounted has nothing to bind to, and a UUID check against it is not a
     // mismatch, it is "no opinion".
     uint64_t    packUuidLo    = 0;
@@ -135,7 +135,7 @@ struct SceneDescriptor {
     // Blob 0 is the ECS archive; the rest are optional (thumbnail, baked data).
     std::vector<SceneBlob> blobs;
 
-    // Anything the project wants to carry along — spawn points, gameplay bounds,
+    // Anything the project wants to carry along - spawn points, gameplay bounds,
     // level rules. Written into the NBT under "project" and handed back untouched.
     nbt::Tag project = nbt::Tag::Compound();
 
@@ -143,7 +143,7 @@ struct SceneDescriptor {
 };
 
 // Progress out of a read that can take a visible amount of time. The only one that
-// does is inflating the entity blob — 36 MB of zstd is a pause the player sees, and
+// does is inflating the entity blob - 36 MB of zstd is a pause the player sees, and
 // without this the loading window sits frozen on the line before it.
 //
 // `report` is called from whatever thread is doing the read, which for
@@ -172,19 +172,19 @@ bool WriteSceneDescriptor (const std::string& path, const SceneDescriptor& scene
                            std::string* error = nullptr);
 
 // `loadBlobs == false` reads the header and the NBT only. That is the cheap call the
-// DevUI scene list and the pack verifier make — it touches a few KB of a file whose
+// DevUI scene list and the pack verifier make - it touches a few KB of a file whose
 // blob may be 30 MB.
 bool ReadSceneDescriptor (const std::string& path, SceneDescriptor& out,
                           bool loadBlobs = true, std::string* error = nullptr,
                           const ReadProgress& progress = ReadProgress{});
 
-// Same, from memory — this is the runtime path, where the .stsd itself came out of a
+// Same, from memory - this is the runtime path, where the .stsd itself came out of a
 // pack and was never a file.
 bool ParseSceneDescriptor (const uint8_t* data, uint64_t size, SceneDescriptor& out,
                            bool loadBlobs = true, std::string* error = nullptr,
                            const ReadProgress& progress = ReadProgress{});
 
-// ── conversion ─────────────────────────────────────────────────────────────────
+// conversion
 
 // Convert one .wiscene: write `<outDir>/<name>.stsd` and hand every embedded resource
 // to `writer` under `resourcePrefix + <its name>`. A resource already in the writer is
@@ -192,11 +192,11 @@ bool ParseSceneDescriptor (const uint8_t* data, uint64_t size, SceneDescriptor& 
 // one copy instead of two.
 //
 // `writer` may be null, in which case the resources are dropped and only the entity
-// payload is written — useful for inspecting a map, useless for running one.
+// payload is written - useful for inspecting a map, useless for running one.
 class AssetPackWriter;
 
 // Split one .wiscene and build its SceneDescriptor, handing every embedded resource to
-// `writer`. Does not write anything itself — the caller decides whether the .stsd
+// `writer`. Does not write anything itself - the caller decides whether the .stsd
 // becomes a file or a pack entry.
 bool BuildSceneDescriptor (const std::string& wiscenePath,
                            const std::string& resourcePrefix,
@@ -204,7 +204,7 @@ bool BuildSceneDescriptor (const std::string& wiscenePath,
                            SceneDescriptor&   out,
                            std::string* error = nullptr);
 
-// Same, from a .wiscene that is already in memory — which is what the in-game editor
+// Same, from a .wiscene that is already in memory - which is what the in-game editor
 // has after wi::scene::Scene::Serialize, with no file in between.
 //
 // `splitOut` keeps the resource BYTES alive and reachable: the descriptor only records
@@ -228,7 +228,7 @@ bool ConvertWiscene (const std::string& wiscenePath,
                      std::string* error = nullptr);
 
 // The reverse: rebuild a .wiscene from a descriptor plus a pack to pull its resources
-// out of. `pack` may be null, which produces a scene with no embedded resources — valid,
+// out of. `pack` may be null, which produces a scene with no embedded resources - valid,
 // loadable, and untextured.
 class AssetPack;
 bool RebuildWiscene (const SceneDescriptor& scene,

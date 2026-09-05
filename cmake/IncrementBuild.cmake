@@ -1,4 +1,4 @@
-# IncrementBuild.cmake — persistent build counter + version.h generator.
+# IncrementBuild.cmake - persistent build counter + version.h generator.
 #
 # Invoked in CMake script mode (cmake -P) from CMakeLists.txt. Reads an integer
 # from COUNTER_FILE, optionally increments it (default), writes it back, then

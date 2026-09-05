@@ -19,7 +19,7 @@ std::string DisplayMode::Label() const {
     return buf;
 }
 
-// ── enumeration ─────────────────────────────────────────────────────────────────
+// enumeration
 void DisplaySettings::Refresh() {
     displayNames_.clear();
 
@@ -68,7 +68,7 @@ void DisplaySettings::EnumerateModes() {
     modesForDisplay_ = displayIndex;
 }
 
-// ── live state ──────────────────────────────────────────────────────────────────
+// live state
 void DisplaySettings::ReadFromWindow(wi::Application& app) {
     SDL_Window* win = app.window;
     if (win == nullptr)
@@ -78,7 +78,7 @@ void DisplaySettings::ReadFromWindow(wi::Application& app) {
     if (displayIndex < 0) displayIndex = 0;
 
     // SDL_WINDOW_FULLSCREEN_DESKTOP is FULLSCREEN plus one extra bit, so test the
-    // desktop flag in full FIRST — a plain `& SDL_WINDOW_FULLSCREEN` matches both.
+    // desktop flag in full FIRST - a plain `& SDL_WINDOW_FULLSCREEN` matches both.
     const Uint32 flags = SDL_GetWindowFlags(win);
     if ((flags & SDL_WINDOW_FULLSCREEN_DESKTOP) == SDL_WINDOW_FULLSCREEN_DESKTOP)
         windowMode = WindowMode::Borderless;
@@ -173,7 +173,7 @@ void DisplaySettings::UpdateStandby(wi::Application& app, float dt) {
     }
 }
 
-// ── apply ───────────────────────────────────────────────────────────────────────
+// apply
 void DisplaySettings::Apply(wi::Application& app) {
     SDL_Window* win = app.window;
     if (win == nullptr)
@@ -193,7 +193,7 @@ void DisplaySettings::Apply(wi::Application& app) {
         break;
 
     case WindowMode::Borderless:
-        // Move to the target display first — FULLSCREEN_DESKTOP takes over whichever
+        // Move to the target display first - FULLSCREEN_DESKTOP takes over whichever
         // display the window is currently on.
         SDL_SetWindowPosition(win, centered, centered);
         SDL_SetWindowFullscreen(win, SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -249,7 +249,7 @@ void DisplaySettings::Apply(wi::Application& app) {
     appliedScale_      = renderScale;
 }
 
-// ── persistence ─────────────────────────────────────────────────────────────────
+// persistence
 void DisplaySettings::SaveTo(nbt::Tag& out) const {
     out.putInt  ("windowMode",      (int)appliedMode_);
     out.putInt  ("display",         appliedDisplay_);
@@ -300,19 +300,19 @@ void DisplaySettings::LoadAndApply(const nbt::Tag& in, wi::Application& app) {
     Apply(app);
 }
 
-// ── GUI ─────────────────────────────────────────────────────────────────────────
+// GUI
 void DisplaySettings::GUI(wi::Application& app) {
     EnumerateModes();
 
     ImGui::PushID("st_display");
 
-    // ── Window mode ────────────────────────────────────────────────────────────
+    // Window mode
     const char* modeNames[] = { "Windowed", "Borderless Fullscreen", "Fullscreen" };
     int modeIdx = (int)windowMode;
     if (ImGui::Combo("Window Mode", &modeIdx, modeNames, IM_ARRAYSIZE(modeNames)))
         windowMode = (WindowMode)modeIdx;
 
-    // ── Monitor ────────────────────────────────────────────────────────────────
+    // Monitor
     if (displayNames_.size() > 1) {
         if (ImGui::BeginCombo("Monitor", displayNames_[displayIndex].c_str())) {
             for (int i = 0; i < (int)displayNames_.size(); ++i) {
@@ -325,7 +325,7 @@ void DisplaySettings::GUI(wi::Application& app) {
         }
     }
 
-    // ── Resolution ─────────────────────────────────────────────────────────────
+    // Resolution
     // Borderless always takes the desktop resolution, so the dropdown would be a lie.
     ImGui::BeginDisabled(windowMode == WindowMode::Borderless);
     if (ImGui::BeginCombo("Resolution", resolution.Label().c_str())) {
@@ -397,7 +397,7 @@ void DisplaySettings::GUI(wi::Application& app) {
     ImGui::Spacing();
     ImGui::Separator();
 
-    // Nothing above takes effect until Apply — a player changing resolution should
+    // Nothing above takes effect until Apply - a player changing resolution should
     // never have the window jump around while they scroll the dropdown.
     ImGui::BeginDisabled(!Dirty());
     if (ImGui::Button("Apply"))

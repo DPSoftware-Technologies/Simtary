@@ -256,7 +256,7 @@ void st::EditorHistory::ApplyState(wi::scene::Scene& scene, Step& step, bool use
 		ClearEntityComponents(scene, e);
 
 		if (i >= existed.size() || existed[i] == 0)
-			continue; // the entity did not exist in this state — leaving it bare removes it
+			continue; // the entity did not exist in this state - leaving it bare removes it
 
 		wi::ecs::EntitySerializer seri;
 		seri.allow_remap = false;

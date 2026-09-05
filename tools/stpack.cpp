@@ -1,8 +1,8 @@
-// stpack — build and inspect Simtary asset packages.
+// stpack - build and inspect Simtary asset packages.
 //
 // Runs during the CMake build (see simtary_pack_assets in cmake/SimtaryApp.cmake) and
 // by hand. Links Framework/io/asset + Framework/io/Nbt.cpp + the vendored zstd, and
-// nothing else — no engine, no graphics device — which is what lets it be a build step
+// nothing else - no engine, no graphics device - which is what lets it be a build step
 // rather than something the game has to be running to do.
 //
 //   stpack pack   <contentDir> --out <dir> [--scene-dir <dir>] [--scene-src <dir>]
@@ -88,7 +88,7 @@ bool ReadWholeFile (const std::string& path, std::vector<uint8_t>& out, std::str
     return true;
 }
 
-// ── argument parsing ───────────────────────────────────────────────────────────
+// argument parsing
 
 struct Args {
     std::string              command;
@@ -170,7 +170,7 @@ void PrintUsage () {
         "  -q            print nothing but errors\n");
 }
 
-// ── pack ───────────────────────────────────────────────────────────────────────
+// pack
 
 int CommandPack (const Args& args) {
     if (args.positional.empty()) { PrintUsage(); return Fail("pack needs a content directory"); }
@@ -275,7 +275,7 @@ int CommandPack (const Args& args) {
             // listed and hand-swapped without unpacking anything.
             //
             // A leading "scenes/" is stripped because the scene directory already IS the
-            // scenes folder — without this, contents/scenes/x.wiscene would land in
+            // scenes folder - without this, contents/scenes/x.wiscene would land in
             // <scene-dir>/scenes/x.stsd. Anything deeper is preserved. A --scene-src root
             // IS the scenes folder, so its files have no prefix to strip to begin with.
             std::string sub = relDir;
@@ -292,7 +292,7 @@ int CommandPack (const Args& args) {
         ++sceneCount;
     }
 
-    // Then everything else. The .wiscene sources are skipped — they have been converted,
+    // Then everything else. The .wiscene sources are skipped - they have been converted,
     // and shipping both would double the size for no gain.
     uint32_t fileCount = 0;
     for (const fs::path& p : files) {
@@ -319,7 +319,7 @@ int CommandPack (const Args& args) {
     return 0;
 }
 
-// ── unpack ─────────────────────────────────────────────────────────────────────
+// unpack
 
 int CommandUnpack (const Args& args) {
     if (args.positional.empty()) { PrintUsage(); return Fail("unpack needs an index file"); }
@@ -373,7 +373,7 @@ int CommandUnpack (const Args& args) {
     return 0;
 }
 
-// ── scene (single-map reverse) ─────────────────────────────────────────────────
+// scene (single-map reverse)
 
 int CommandScene (const Args& args) {
     if (args.positional.empty()) { PrintUsage(); return Fail("scene needs a .stsd file"); }
@@ -393,7 +393,7 @@ int CommandScene (const Args& args) {
         packPtr = &pack;
         const bool bound = scene.packUuidLo != 0 || scene.packUuidHi != 0;
         if (bound && (scene.packUuidLo != pack.UuidLo() || scene.packUuidHi != pack.UuidHi())) {
-            // Not fatal — the assets may still all be there — but it is the single most
+            // Not fatal - the assets may still all be there - but it is the single most
             // likely reason a rebuild comes out missing textures, so it gets said.
             Say("stpack: warning: " + stsdPath + " was converted against a different pack build");
         }
@@ -414,7 +414,7 @@ int CommandScene (const Args& args) {
     return 0;
 }
 
-// ── info ───────────────────────────────────────────────────────────────────────
+// info
 
 int InfoScene (const std::string& path, const Args&) {
     std::string error;
@@ -499,7 +499,7 @@ int CommandInfo (const Args& args) {
     return 0;
 }
 
-// ── verify ─────────────────────────────────────────────────────────────────────
+// verify
 
 int CommandVerify (const Args& args) {
     if (args.positional.empty()) { PrintUsage(); return Fail("verify needs an index file"); }
@@ -509,7 +509,7 @@ int CommandVerify (const Args& args) {
     AssetPack pack;
     if (!pack.Open(path, &error)) return Fail(error);
 
-    // Part hashes first — one sequential read each, and a bad part explains every asset
+    // Part hashes first - one sequential read each, and a bad part explains every asset
     // failure that would follow it.
     for (uint32_t i = 0; i < pack.PartCount(); ++i) {
         if (!pack.VerifyPart(i, &error)) return Fail(error);

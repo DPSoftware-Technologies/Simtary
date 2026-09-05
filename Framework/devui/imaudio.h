@@ -1,5 +1,5 @@
 #pragma once
-// ─── Audio Mixer: the DevUI window for the audio system ─────────────────────────
+// Audio Mixer: the DevUI window for the audio system
 //
 // One panel over both halves of the engine's audio stack, because they are two
 // libraries doing two jobs on one signal and a problem in either shows up as

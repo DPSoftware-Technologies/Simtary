@@ -21,7 +21,7 @@ const st::AppConfig& st::App::Config() {
 }
 
 // 300x75 fitted one short line. The loading window now carries a phase, a percentage
-// and an asset path on its own row, and a path is long — at 300 wide every one of them
+// and an asset path on its own row, and a path is long - at 300 wide every one of them
 // elided down to nothing useful.
 st::App::App() : m_loadingScreen("Starting up", 470, 124) {}
 
@@ -40,7 +40,7 @@ void st::App::SetLoadingStatus(std::string status, int percent) {
     loading_.status  = std::move(status);
     loading_.percent = percent;
     // While the native window is up (startup, scene transitions) it is the only
-    // thing that can paint — the main thread is blocked inside Scene::Load().
+    // thing that can paint - the main thread is blocked inside Scene::Load().
     m_loadingScreen.SetStatusText(loading_.status);
     if (percent >= 0) m_loadingScreen.SetProgress(percent);
 }
@@ -52,7 +52,7 @@ void st::App::OnAssetLoadProgress(const st::AssetLoadProgress& progress, void* u
     // OFF THE MAIN THREAD, and several of these run at once. That rules out loading_
     // (a std::string the main thread reads), the EventBus (documented main-thread
     // only), ImGui, and the scene. SubWinStatus is the one sink built for exactly this:
-    // its own thread, its own window, thread-safe setters — and while a scene loads it
+    // its own thread, its own window, thread-safe setters - and while a scene loads it
     // is the only thing on screen that can paint anyway, because the main thread is
     // blocked inside Scene::Load().
     //
@@ -104,7 +104,7 @@ void st::App::Initialize() {
     // Per-asset progress out of the mounted packages. This covers the stretch the
     // callback above cannot: while the engine waits for a scene's textures to finish
     // loading it reports nothing at all, and on a big map that wait IS the load. Those
-    // reads happen on job-system workers, so this callback lands off the main thread —
+    // reads happen on job-system workers, so this callback lands off the main thread
     // see OnAssetLoadProgress for what that rules out.
     st::AssetSystem::Get().SetLoadProgressCallback(&st::App::OnAssetLoadProgress, this);
 
@@ -139,7 +139,7 @@ void st::App::Initialize() {
     renderPath.init(canvas);
     renderPath.Load();
 
-    // Scenes own wi::scene::Scene::Update(dt) — they run it from sceneManager.Update(),
+    // Scenes own wi::scene::Scene::Update(dt) - they run it from sceneManager.Update(),
     // after st::InputSystem refresh, which native components read. RenderPath3D::Update()
     // would update the scene a second time (and too early). A second update per frame
     // swaps MeshComponent's so_pos/so_pre streamout views twice, which cancels out: GPU
@@ -169,7 +169,7 @@ void st::App::Initialize() {
 
     // Push saved graphics options to the engine now, so the first frame reflects them.
     // Get() constructs the manager on first call and its constructor already reads
-    // options.stad (in AppData/LocalLow/PlatoonLabs/Milistry) — no explicit Load() needed.
+    // options.stad (in AppData/LocalLow/PlatoonLabs/Milistry) - no explicit Load() needed.
     graphicsSettings.loadAndApply(st::SettingsManager::Get().GraphicsTag(), renderPath, *this);
     // lensFlare.Init() already ran above; this just fills its settings from disk.
     lensFlare.LoadFrom(st::SettingsManager::Get().SubCompound("lensflare"));
@@ -242,7 +242,7 @@ void st::App::Update(float dt) {
 
     // Scene::Load() blocks this thread, so no ImGui frame can be drawn while a
     // transition runs. The native loading window lives on its own thread and keeps
-    // painting, which is the only thing that works here — same reason startup uses it.
+    // painting, which is the only thing that works here - same reason startup uses it.
     const bool transitioning = sceneManager.HasPendingLoad();
     if (transitioning) {
         loading_.active  = true;
@@ -313,7 +313,7 @@ void st::App::Render() {
 
     // The editor's second viewport has its own RenderPath3D and its own camera. The
     // engine only ever renders wi::Application::activePath, so it is stepped by hand
-    // here — after the game path, against the scene both of them share.
+    // here - after the game path, against the scene both of them share.
     editor_.RenderEditorView(lastDt_);
     editor_.RenderCameraViews(lastDt_);
 

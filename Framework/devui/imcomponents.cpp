@@ -226,7 +226,7 @@ void PlaceEntityAt(Scene& scene, Entity e, const XMFLOAT3& position, Entity pare
 		// Write the 64-bit ABSOLUTE position too, not just the origin-relative float. That
 		//	is the field TransformComponent::Serialize round-trips (it calls SetWorldPosition
 		//	on read and rebuilds translation_local from it), so an object placed only in local
-		//	space comes back at the world origin after a save/load — or after an undo/redo.
+		//	space comes back at the world origin after a save/load - or after an undo/redo.
 		t->SyncWorldFromLocal(wi::scene::GetRenderOrigin());
 		t->SetDirty();
 		t->UpdateTransform();
@@ -337,7 +337,7 @@ Entity CreateObjectMenuItems(Scene& scene, const XMFLOAT3& spawnPosition, Entity
 	}
 	if (ImGui::MenuItem("Decal"))
 	{
-		// No texture yet — the inspector's Material/Decal fields are where one gets set.
+		// No texture yet - the inspector's Material/Decal fields are where one gets set.
 		created = scene.Entity_CreateDecal(UniqueName(scene, "Decal"), "");
 		label = "Create Decal";
 	}

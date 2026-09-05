@@ -54,7 +54,7 @@ void st::App::ImGui_CreateDeviceObjects() {
 
     // Guard: if the shaders failed to load (e.g. shaders/ImGuiVS.cso missing next to
     // the executable), CreatePipelineState would dereference a null internal shader
-    // state and crash with an access violation. Skip PSO creation instead — ImGui
+    // state and crash with an access violation. Skip PSO creation instead - ImGui
     // simply won't render, but the app stays alive.
     if (!imguiVS.IsValid() || !imguiPS.IsValid()) {
         wi::backlog::post(
@@ -99,7 +99,7 @@ void st::App::ImguiInit(SDL_Window *window) {
 
     // Docking: what Editor mode's layout is built on (devui/imeditor.h), and what lets any
     // DevUI panel be dragged into a tab group. libs/ImGui is pinned to the v1.91.9b-docking
-    // tag for exactly this — same ImGui version as the master tag, plus the docking branch.
+    // tag for exactly this - same ImGui version as the master tag, plus the docking branch.
     //
     // Multi-viewport (ImGuiConfigFlags_ViewportsEnable) is deliberately NOT enabled: it
     // needs the RENDERER backend to create a swapchain per platform window, and the backend
@@ -193,7 +193,7 @@ void st::App::ImguiInit(SDL_Window *window) {
 }
 
 void st::App::ImguiCompose(wi::graphics::CommandList cmd) {
-    // ImGui::Render() was already called in Update() — just retrieve the data.
+    // ImGui::Render() was already called in Update() - just retrieve the data.
     auto* drawData = ImGui::GetDrawData();
     if (!drawData || drawData->TotalVtxCount == 0) return;
 

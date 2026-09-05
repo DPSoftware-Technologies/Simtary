@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-// FaustManager — loads/unloads AOT Faust processors and plays the active one
+// FaustManager - loads/unloads AOT Faust processors and plays the active one
 // through the engine's OpenAL DSPStream. Processors are registered by name with
 // a factory; Load(name) stops whatever is playing and starts the new one. Only
 // one processor plays at a time (single output stream).

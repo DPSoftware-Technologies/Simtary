@@ -94,7 +94,7 @@ ImportResult Import (Scene& scene, const std::string& path, const ImportOptions&
 
 namespace st::model::detail {
 
-// ─────────────────────────────────────────────────────────────────── paths ───
+// paths
 
 std::string DirectoryOf (const std::string& path)
 {
@@ -134,7 +134,7 @@ bool ReadFile (const std::string& path, std::vector<uint8_t>& out)
 	return true;
 }
 
-// ──────────────────────────────────────────────────────────────── textures ───
+// textures
 
 std::string ResolveTexturePath (ImportContext& ctx, const std::string& reference)
 {
@@ -186,7 +186,7 @@ std::string RegisterEmbeddedTexture (ImportContext& ctx, const uint8_t* data, si
 	if (it != ctx.embeddedTextures.end())
 		return it->second;
 
-	// The name never touches the filesystem — it is a resource-manager key. Prefixed so it is
+	// The name never touches the filesystem - it is a resource-manager key. Prefixed so it is
 	//	obvious in the Resource Explorer where it came from, and hashed so two models with a
 	//	"texture0" each do not collide.
 	char suffix[32];
@@ -200,7 +200,7 @@ std::string RegisterEmbeddedTexture (ImportContext& ctx, const uint8_t* data, si
 	return name;
 }
 
-// ──────────────────────────────────────────────────────────────────── mesh ───
+// mesh
 
 void FinalizeMesh (ImportContext& ctx, Entity meshEntity, bool flipWinding)
 {

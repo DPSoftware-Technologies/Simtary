@@ -2,17 +2,17 @@
 
 // Procedural screen-space lens flare.
 //
-// Everything is generated from the sun's screen position — no scene colour or depth
+// Everything is generated from the sun's screen position - no scene colour or depth
 // is sampled, so the pass costs one fullscreen triangle and reads no textures. It is
 // blended additively over the composed frame (BSTYPE_ADDITIVE = SRC_ALPHA/ONE, so the
 // shader returns alpha = 1 to contribute fully).
 //
 // The flare is built from five layers, each modelling a different real lens artifact:
-//   1. glow      — light scattering in the lens right at the source
-//   2. streak    — anamorphic horizontal smear
-//   3. starburst — diffraction spikes off the aperture blades
-//   4. ghosts    — internal reflections, mirrored through the lens axis
-//   5. halo      — a wide chromatic ring centred on the optical axis
+//   1. glow      - light scattering in the lens right at the source
+//   2. streak    - anamorphic horizontal smear
+//   3. starburst - diffraction spikes off the aperture blades
+//   4. ghosts    - internal reflections, mirrored through the lens axis
+//   5. halo      - a wide chromatic ring centred on the optical axis
 
 // Bounds the dynamic ghost loop so a bad constant can't stall the GPU.
 #define MI_LENSFLARE_MAX_GHOSTS 16
@@ -67,19 +67,19 @@ float4 main(VertexOutput input) : SV_TARGET
 
 	float3 col = float3(0.0, 0.0, 0.0);
 
-	// ── 1. Glow ─────────────────────────────────────────────────────────────────
+	// 1. Glow
 	// A tight core for the disc of the sun itself, plus a much wider, dimmer bloom
 	// for the light scattered across the whole lens. Only the core is allowed to
-	// clip to white — the bloom stays low so it tints the frame instead of erasing it.
+	// clip to white - the bloom stays low so it tints the frame instead of erasing it.
 	col += tint * glowIntensity * (exp(-dSun * dSun * 300.0) * 1.0 +
 	                               exp(-dSun * 9.0) * 0.12);
 
-	// ── 2. Anamorphic streak ────────────────────────────────────────────────────
+	// 2. Anamorphic streak
 	// Wide in x, razor thin in y.
 	col += tint * streakIntensity *
 	       exp(-abs(toSun.x) * 5.0) * exp(-abs(toSun.y) * 220.0);
 
-	// ── 3. Starburst ────────────────────────────────────────────────────────────
+	// 3. Starburst
 	// Two spike sets at different frequencies so the count looks irregular. Rotating
 	// slowly on `time` keeps it alive instead of looking like a decal.
 	float angle = atan2(toSun.y, toSun.x) + time * 0.05;
@@ -87,7 +87,7 @@ float4 main(VertexOutput input) : SV_TARGET
 	               0.6 * pow(abs(cos(angle * 9.0 + 1.7)), 24.0);
 	col += tint * starburstIntensity * spikes * exp(-dSun * 9.0);
 
-	// ── 4. Ghosts ───────────────────────────────────────────────────────────────
+	// 4. Ghosts
 	// Internal reflections land on the line through the sun and the optical axis
 	// (the screen centre), so march along that vector and drop an iris at each step.
 	float2 axis  = screenCentre - sunUV;
@@ -108,9 +108,9 @@ float4 main(VertexOutput input) : SV_TARGET
 		col += ghostTint * Ghost(uv, centre, radius, axisN) * weight * 0.5;
 	}
 
-	// ── 5. Halo ─────────────────────────────────────────────────────────────────
+	// 5. Halo
 	// Centred on the optical axis, not on the sun, and only visible when the sun is
-	// near the middle of the frame — which is exactly when a real one blooms.
+	// near the middle of the frame - which is exactly when a real one blooms.
 	float dCentre = length(AspectCorrect(uv - screenCentre));
 	float3 halo = float3(
 		Ring(dCentre, haloWidth + chromaOffset),

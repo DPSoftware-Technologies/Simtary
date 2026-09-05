@@ -1,7 +1,7 @@
 #pragma once
 #include <memory>
 
-// ─── stAudio: engine audio entry points and the procedural DSP bridge ────────────
+// stAudio: engine audio entry points and the procedural DSP bridge
 //
 // The audio system proper lives in stAudioEngine.h (device + 2D via OpenAL Soft,
 // 3D via Steam Audio), stAudioSpatial.h (the Steam Audio layer), stAudioBuffer.h
