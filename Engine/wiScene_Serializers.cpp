@@ -877,6 +877,86 @@ namespace wi::scene
 				archive >> character.maxSlopeAngle;
 				archive >> character.gravityFactor;
 			}
+
+			if (seri.GetVersion() >= 7)
+			{
+				archive >> (uint32_t&)mesh_source;
+				archive >> collision_mesh_file;
+				SerializeEntity(archive, collision_mesh_entity, seri);
+
+				uint32_t wheel_count = 0;
+				archive >> wheel_count;
+				vehicle.wheels.resize(wheel_count);
+				for (auto& w : vehicle.wheels)
+				{
+					archive >> w.position;
+					archive >> w.radius;
+					archive >> w.width;
+					archive >> w.suspension_min_length;
+					archive >> w.suspension_max_length;
+					archive >> w.suspension_frequency;
+					archive >> w.suspension_damping;
+					archive >> w.suspension_preload_length;
+					archive >> w.suspension_forward_angle;
+					archive >> w.suspension_sideways_angle;
+					archive >> w.caster_angle;
+					archive >> w.kingpin_angle;
+					archive >> w.camber;
+					archive >> w.toe;
+					archive >> w.max_steer_angle;
+					archive >> w.max_brake_torque;
+					archive >> w.max_hand_brake_torque;
+					archive >> w.inertia;
+					archive >> w.angular_damping;
+					archive >> w.mirror_x;
+					SerializeEntity(archive, w.entity, seri);
+				}
+
+				uint32_t differential_count = 0;
+				archive >> differential_count;
+				vehicle.differentials.resize(differential_count);
+				for (auto& d : vehicle.differentials)
+				{
+					archive >> d.left_wheel;
+					archive >> d.right_wheel;
+					archive >> d.differential_ratio;
+					archive >> d.left_right_split;
+					archive >> d.limited_slip_ratio;
+					archive >> d.engine_torque_ratio;
+				}
+
+				uint32_t anti_roll_bar_count = 0;
+				archive >> anti_roll_bar_count;
+				vehicle.anti_roll_bars.resize(anti_roll_bar_count);
+				for (auto& b : vehicle.anti_roll_bars)
+				{
+					archive >> b.left_wheel;
+					archive >> b.right_wheel;
+					archive >> b.stiffness;
+				}
+
+				archive >> vehicle.engine_min_rpm;
+				archive >> vehicle.engine_max_rpm;
+				archive >> vehicle.engine_inertia;
+				archive >> vehicle.engine_angular_damping;
+
+				archive >> vehicle.auto_transmission;
+				archive >> vehicle.gear_ratios;
+				archive >> vehicle.reverse_gear_ratios;
+				archive >> vehicle.transmission_switch_time;
+				archive >> vehicle.transmission_clutch_release_time;
+				archive >> vehicle.transmission_switch_latency;
+				archive >> vehicle.transmission_shift_up_rpm;
+				archive >> vehicle.transmission_shift_down_rpm;
+
+				archive >> vehicle.longitudinal_impulse_scale;
+			}
+			else
+			{
+				// Scene predates the wheel array: rebuild the four-wheel (or two-wheel) layout
+				//	it described so it drives exactly as it did before.
+				vehicle.MigrateLegacyWheels();
+			}
 		}
 		else
 		{
@@ -955,6 +1035,74 @@ namespace wi::scene
 			{
 				archive << character.maxSlopeAngle;
 				archive << character.gravityFactor;
+			}
+
+			if (seri.GetVersion() >= 7)
+			{
+				archive << (uint32_t&)mesh_source;
+				archive << collision_mesh_file;
+				SerializeEntity(archive, collision_mesh_entity, seri);
+
+				archive << (uint32_t)vehicle.wheels.size();
+				for (auto& w : vehicle.wheels)
+				{
+					archive << w.position;
+					archive << w.radius;
+					archive << w.width;
+					archive << w.suspension_min_length;
+					archive << w.suspension_max_length;
+					archive << w.suspension_frequency;
+					archive << w.suspension_damping;
+					archive << w.suspension_preload_length;
+					archive << w.suspension_forward_angle;
+					archive << w.suspension_sideways_angle;
+					archive << w.caster_angle;
+					archive << w.kingpin_angle;
+					archive << w.camber;
+					archive << w.toe;
+					archive << w.max_steer_angle;
+					archive << w.max_brake_torque;
+					archive << w.max_hand_brake_torque;
+					archive << w.inertia;
+					archive << w.angular_damping;
+					archive << w.mirror_x;
+					SerializeEntity(archive, w.entity, seri);
+				}
+
+				archive << (uint32_t)vehicle.differentials.size();
+				for (auto& d : vehicle.differentials)
+				{
+					archive << d.left_wheel;
+					archive << d.right_wheel;
+					archive << d.differential_ratio;
+					archive << d.left_right_split;
+					archive << d.limited_slip_ratio;
+					archive << d.engine_torque_ratio;
+				}
+
+				archive << (uint32_t)vehicle.anti_roll_bars.size();
+				for (auto& b : vehicle.anti_roll_bars)
+				{
+					archive << b.left_wheel;
+					archive << b.right_wheel;
+					archive << b.stiffness;
+				}
+
+				archive << vehicle.engine_min_rpm;
+				archive << vehicle.engine_max_rpm;
+				archive << vehicle.engine_inertia;
+				archive << vehicle.engine_angular_damping;
+
+				archive << vehicle.auto_transmission;
+				archive << vehicle.gear_ratios;
+				archive << vehicle.reverse_gear_ratios;
+				archive << vehicle.transmission_switch_time;
+				archive << vehicle.transmission_clutch_release_time;
+				archive << vehicle.transmission_switch_latency;
+				archive << vehicle.transmission_shift_up_rpm;
+				archive << vehicle.transmission_shift_down_rpm;
+
+				archive << vehicle.longitudinal_impulse_scale;
 			}
 		}
 	}

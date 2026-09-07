@@ -270,4 +270,4 @@ public:
 	}
 };
 
-ST_REGISTER_NATIVE_COMPONENT_AS(StProjectorComponent, "sticProjector")
+ST_REGISTER_FRAMEWORK_COMPONENT_AS(StProjectorComponent, "sticProjector", "Optical")

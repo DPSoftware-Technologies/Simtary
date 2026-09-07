@@ -25,9 +25,27 @@ namespace wi::scene
 
 	void RegisterNativeComponent(const std::string& name, NativeComponentFactory factory, NativeTypeID typeID)
 	{
+		RegisterNativeComponent(name, std::move(factory), typeID, nullptr, nullptr);
+	}
+
+	void RegisterNativeComponent(const std::string& name, NativeComponentFactory factory, NativeTypeID typeID,
+		const char* group, const char* tag)
+	{
+		RegisterNativeComponent(name, std::move(factory), typeID, group, tag, nullptr);
+	}
+
+	void RegisterNativeComponent(const std::string& name, NativeComponentFactory factory, NativeTypeID typeID,
+		const char* group, const char* tag, const char* category)
+	{
 		NativeComponentRegistration& reg = GetRegistry()[name];
 		reg.factory = std::move(factory);
 		reg.typeID = typeID;
+		reg.category = (category != nullptr) ? category : "";
+		// A re-registration under the plain 3-argument form must not silently demote a
+		// component out of its section, but the name is the identity here and the last
+		// registration wins for the factory too - so group follows the same rule.
+		reg.group = (group != nullptr && group[0] != 0) ? group : NATIVE_COMPONENT_DEFAULT_GROUP;
+		reg.tag = (tag != nullptr) ? tag : "";
 	}
 
 	const NativeComponentRegistration* FindNativeComponentRegistration(const std::string& name)
@@ -47,6 +65,68 @@ namespace wi::scene
 		for (auto& kv : registry)
 			out.push_back(kv.first);
 		std::sort(out.begin(), out.end());
+	}
+
+	void GetRegisteredNativeComponentGroups(wi::vector<NativeComponentGroup>& out)
+	{
+		auto& registry = GetRegistry();
+		out.clear();
+		for (auto& kv : registry)
+		{
+			const std::string& group = kv.second.group.empty()
+				? std::string(NATIVE_COMPONENT_DEFAULT_GROUP) : kv.second.group;
+
+			NativeComponentGroup* bucket = nullptr;
+			for (NativeComponentGroup& g : out)
+			{
+				if (g.name == group) { bucket = &g; break; }
+			}
+			if (bucket == nullptr)
+			{
+				out.push_back(NativeComponentGroup{});
+				bucket = &out.back();
+				bucket->name = group;
+				bucket->tag = kv.second.tag;
+			}
+			bucket->components.push_back(kv.first);
+
+			NativeComponentCategory* category = nullptr;
+			for (NativeComponentCategory& c : bucket->categories)
+			{
+				if (c.name == kv.second.category) { category = &c; break; }
+			}
+			if (category == nullptr)
+			{
+				bucket->categories.push_back(NativeComponentCategory{});
+				category = &bucket->categories.back();
+				category->name = kv.second.category;
+			}
+			category->components.push_back(kv.first);
+		}
+
+		// "Project" first - a game author reaches for their own components far more often
+		// than for the engine's - then every other section alphabetically.
+		std::sort(out.begin(), out.end(), [](const NativeComponentGroup& a, const NativeComponentGroup& b) {
+			const bool aFirst = a.name == NATIVE_COMPONENT_DEFAULT_GROUP;
+			const bool bFirst = b.name == NATIVE_COMPONENT_DEFAULT_GROUP;
+			if (aFirst != bFirst)
+				return aFirst;
+			return a.name < b.name;
+		});
+		for (NativeComponentGroup& g : out)
+		{
+			std::sort(g.components.begin(), g.components.end());
+			// Uncategorized first - it is the "everything else" bucket and reads wrong under
+			// a heading - then the named categories alphabetically.
+			std::sort(g.categories.begin(), g.categories.end(),
+				[](const NativeComponentCategory& a, const NativeComponentCategory& b) {
+					if (a.name.empty() != b.name.empty())
+						return a.name.empty();
+					return a.name < b.name;
+				});
+			for (NativeComponentCategory& c : g.categories)
+				std::sort(c.components.begin(), c.components.end());
+		}
 	}
 
 	// ------------------------------------------------------------------

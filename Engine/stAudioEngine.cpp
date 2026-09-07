@@ -1,4 +1,5 @@
 #include "stAudioEngine.h"
+#include "stAudioStream.h"
 #include "wiBacklog.h"
 
 #include <AL/al.h>
@@ -409,6 +410,9 @@ namespace st::audio
 		Stats stats;
 
 		EmitterRef music;
+		// Set only when the music is STREAMED. It owns the emitter in `music`, so the
+		// two are cleared together and the stream is always closed first.
+		std::shared_ptr<StreamPlayer> musicStream;
 
 		// audio thread
 
@@ -1020,6 +1024,11 @@ namespace st::audio
 		}
 		s.activeEmitters.clear();
 		s.activeCollectors.clear();
+		if (s.musicStream)
+		{
+			s.musicStream->Close();
+			s.musicStream.reset();
+		}
 		s.music.reset();
 
 		Spatializer::Get().Shutdown();
@@ -1266,12 +1275,35 @@ namespace st::audio
 		return PlayClipAtPoint(LoadClip(filename), position, volume, submix);
 	}
 
-	EmitterRef PlayMusic(const std::string& filename, float volume, bool loop)
+	EmitterRef PlayMusic(const std::string& filename, float volume, bool loop, bool stream)
 	{
 		AudioEngine& engine = AudioEngine::Get();
 		StopMusic();
 		if (filename.empty())
 			return {};
+
+		if (stream)
+		{
+			StreamPlayer::Config config;
+			config.loop = loop;
+			config.volume = volume;
+			config.submix = Submix::Music;
+			config.spatial = false;   // music is not in the world
+			config.name = "music";
+
+			auto player = std::make_shared<StreamPlayer>();
+			if (player->Open(filename, config))
+			{
+				engine.impl_->musicStream = player;
+				engine.impl_->music = player->GetEmitter();
+				return engine.impl_->music;
+			}
+			// Fall through: a format the streamer cannot open may still decode whole,
+			// and a track that plays with a memory cost beats one that does not play.
+			wilog_warning("stAudioEngine: could not stream \"%s\"; falling back to a full decode.",
+				filename.c_str());
+		}
+
 		AudioClip clip = LoadClip(filename);
 		if (!clip)
 			return {};
@@ -1289,11 +1321,25 @@ namespace st::audio
 	void StopMusic()
 	{
 		AudioEngine& engine = AudioEngine::Get();
+		if (engine.impl_->musicStream)
+		{
+			// The stream owns the emitter: closing it joins the decode worker and
+			// destroys the emitter, so nothing else may touch `music` afterwards.
+			engine.impl_->musicStream->Close();
+			engine.impl_->musicStream.reset();
+			engine.impl_->music.reset();
+			return;
+		}
 		if (engine.impl_->music)
 		{
 			engine.Destroy(engine.impl_->music);
 			engine.impl_->music.reset();
 		}
+	}
+
+	std::shared_ptr<StreamPlayer> GetMusicStream()
+	{
+		return AudioEngine::Get().impl_->musicStream;
 	}
 
 	void StopAll()
@@ -1303,6 +1349,11 @@ namespace st::audio
 		engine.GetEmitters(emitters);
 		for (auto& emitter : emitters)
 			emitter->Stop();
+		if (engine.impl_->musicStream)
+		{
+			engine.impl_->musicStream->Close();
+			engine.impl_->musicStream.reset();
+		}
 		engine.impl_->music.reset();
 
 		std::lock_guard<std::mutex> lock(engine.impl_->voiceMutex);

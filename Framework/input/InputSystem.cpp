@@ -75,7 +75,7 @@ float InputSystem::bindingAxis(const InputBinding& b) const {
 }
 
 // per-frame update
-void InputSystem::Update(float /*dt*/) {
+void InputSystem::Update(float dt) {
 	// Source gating from ImGui + window focus. GetIO() is valid here because this is
 	// called after ImguiUpdate() (NewFrame) in st::App::Update.
 	//	While the cursor is captured (FPS mode) the player is driving the game, not typing
@@ -133,6 +133,30 @@ void InputSystem::Update(float /*dt*/) {
 		mouseDelta_ = XMFLOAT2((float)dx, (float)dy);
 	} else {
 		mouseDelta_ = XMFLOAT2(0, 0);
+	}
+
+	// Publish this frame to the action-map evaluator. Two things cross here, and both
+	//	have to happen on the MAIN thread before any scene component samples:
+	//
+	//	1. The gate. Which device classes the UI owns right now. The action model has
+	//	   no idea what ImGui is; it asks this table per binding.
+	//	2. The frame snapshot. The relative-mouse delta above is a single-consumer read
+	//	   (SDL clears it), and the touch list is refreshed per frame by the engine, so
+	//	   a binding cannot read either directly - it reads the latched copy.
+	//
+	//	st::InputComponent evaluates in the barriered Compute stage, which runs after
+	//	this and before any component's Update, so every reader sees one stable frame.
+	{
+		using DC = st::input::DeviceClass;
+		st::input::DeviceGate& gate = st::input::Gate();
+		gate.suppressed[(int)DC::Keyboard] = keyboardSuspended_;
+		gate.suppressed[(int)DC::Mouse]    = mouseSuspended_;
+		// Gamepad is never taken by an ImGui panel - only by the editor's hard capture,
+		//	which is the same rule gated() applies to the legacy keymap.
+		gate.suppressed[(int)DC::Gamepad]  = uiInputCaptured_;
+		gate.suppressed[(int)DC::Touch]    = mouseSuspended_;
+
+		st::input::BeginFrame(dt, mouseDelta_, wi::input::GetMouseState().delta_wheel);
 	}
 }
 
@@ -231,6 +255,8 @@ const InputAction* InputSystem::Find(const std::string& action) const {
 }
 
 void InputSystem::LoadDefaults() {
+	LoadDefaultActionMaps();
+
 	actions_.clear();
 	using A = InputBinding::Analog;
 
@@ -290,6 +316,70 @@ XMFLOAT2 InputSystem::MoveVector() const {
 }
 XMFLOAT2 InputSystem::LookVector() const {
 	return XMFLOAT2(Axis("LookX"), Axis("LookY"));
+}
+
+// Default action maps
+//	Seeded before st::App::OnKeyRegister() runs, so a project that registers nothing
+//	still has a working "Player" and "UI" map to point an st::InputComponent at. A
+//	project that wants its own layout calls Actions().Clear() (or RemoveMap) first -
+//	Map()/Action() return the EXISTING entry when the name is taken, so registering
+//	over the top of these appends bindings rather than replacing them.
+void InputSystem::LoadDefaultActionMaps() {
+	using namespace st::input;
+	Registry& reg = actions_registry_;
+	reg.RemoveMap("Player");
+	reg.RemoveMap("UI");
+
+	MapBuilder player = reg.Map("Player");
+
+	// Vector2 actions rather than the legacy pair of scalar axes: one action, one
+	//	read, and the composite is normalized so walking diagonally on the keyboard is
+	//	not 1.41x faster than walking forwards.
+	player.Action("Move", ControlType::Vector2)
+		.Scheme("Gamepad").StickBinding(Stick::Left)
+		.Scheme("Keyboard&Mouse").Composite2D('W', 'S', 'A', 'D');
+
+	// Look is PassThrough: the mouse arm is a pixel delta, and clamping that to 1
+	//	would throw away everything past one pixel of motion.
+	player.Action("Look", ControlType::Vector2)
+		.Type(ActionType::PassThrough)
+		.Scheme("Gamepad").StickBinding(Stick::Right)
+		.Scheme("Keyboard&Mouse").MouseDelta(1.0f);
+
+	player.Action("Sprint")
+		.Scheme("Keyboard&Mouse").Button(wi::input::KEYBOARD_BUTTON_LSHIFT)
+		.Scheme("Gamepad").Button(wi::input::GAMEPAD_BUTTON_6);
+
+	player.Action("Jump")
+		.Scheme("Keyboard&Mouse").Button(wi::input::KEYBOARD_BUTTON_SPACE)
+		.Scheme("Gamepad").Button(wi::input::GAMEPAD_BUTTON_2)
+		.Scheme("Touch").TouchPress();
+
+	player.Action("Fire")
+		.Scheme("Keyboard&Mouse").Button(wi::input::MOUSE_BUTTON_LEFT)
+		.Scheme("Gamepad").Button(wi::input::GAMEPAD_ANALOG_TRIGGER_R_AS_BUTTON)
+		.Scheme("Touch").TouchPress();
+
+	// A Value action on a trigger: the analog pull, not just "past the press point".
+	player.Action("Aim", ControlType::Axis)
+		.Scheme("Gamepad").Axis(GamepadAxis::TriggerL)
+		.Scheme("Keyboard&Mouse").Button(wi::input::MOUSE_BUTTON_RIGHT);
+
+	MapBuilder ui = reg.Map("UI");
+	ui.Action("Navigate", ControlType::Vector2)
+		.Scheme("Gamepad").StickBinding(Stick::Left)
+		.Scheme("Keyboard&Mouse").Composite2D(
+			wi::input::KEYBOARD_BUTTON_UP, wi::input::KEYBOARD_BUTTON_DOWN,
+			wi::input::KEYBOARD_BUTTON_LEFT, wi::input::KEYBOARD_BUTTON_RIGHT);
+	ui.Action("Submit")
+		.Scheme("Keyboard&Mouse").Button(wi::input::KEYBOARD_BUTTON_ENTER)
+		.Scheme("Gamepad").Button(wi::input::GAMEPAD_BUTTON_2);
+	ui.Action("Cancel")
+		.Scheme("Keyboard&Mouse").Button(wi::input::KEYBOARD_BUTTON_ESCAPE)
+		.Scheme("Gamepad").Button(wi::input::GAMEPAD_BUTTON_3);
+	ui.Action("Scroll", ControlType::Axis)
+		.Type(ActionType::PassThrough)
+		.Scheme("Keyboard&Mouse").MouseScroll();
 }
 
 } // namespace st

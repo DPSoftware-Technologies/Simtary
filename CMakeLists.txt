@@ -153,6 +153,7 @@ set(SIMTARY_DEPS_DIR "${SIMTARY_ROOT}/deps" CACHE PATH
 # files), so it is recognised by a file it does own.
 set(_dep_markers "sentry=CMakeLists.txt" "openal=CMakeLists.txt"
                  "tinygltf=CMakeLists.txt" "ufbx=ufbx.c"
+                 "opus=CMakeLists.txt"
                  "steamaudio=include/phonon.h")
 foreach(_entry IN LISTS _dep_markers)
     string(REPLACE "=" ";" _parts "${_entry}")
@@ -225,6 +226,54 @@ FetchContent_Declare(
     GIT_TAG        1.24.2
 )
 FetchContent_MakeAvailable(openal)
+
+# libopus: the Ogg-Opus decoder behind Engine/stAudioDecoder.cpp
+# Added here, beside openal-soft, because it is part of the same audio stack and
+# because the shared deps cache above has to see it. Pure C, so unlike sentry /
+# libzmq / openal-soft it does not care which side of the exceptions-off flags it
+# lands on - it sits here for readability, not for correctness.
+#
+# WHY libopus and not a header-only decoder: there is no credible single-header Opus.
+# The codec is CELT plus SILK plus the layer that switches between them, and the
+# reference implementation is the only one anyone ships. What it buys is the best
+# quality per bit of anything the engine reads - a music bed at 96 kbps that Vorbis
+# needs ~160 for - and a decoder that always outputs 48 kHz, which is already the
+# mix rate, so an Opus asset never touches the resampler.
+#
+# ONLY the decoder is used. The encoder comes along in the same archive because
+# upstream does not split them; nothing in the engine calls it.
+#
+# The Ogg CONTAINER is parsed by the engine itself (stAudioDecoder.cpp), not by
+# libogg/opusfile: page walking is a hundred lines, opusfile is autotools-only
+# upstream, and doing it in-engine is what lets the decoder build an exact packet
+# index at open and therefore seek to a frame instead of to the nearest page.
+set(SIMTARY_OPUS_VERSION "1.5.2" CACHE STRING "libopus version")
+option(SIMTARY_ENABLE_OPUS "Fetch libopus and build the Ogg-Opus decoder against it (OFF drops .opus support; WAV/Ogg Vorbis/QOA are unaffected)" ON)
+
+if (SIMTARY_ENABLE_OPUS)
+    set(OPUS_BUILD_SHARED_LIBRARY        OFF CACHE BOOL "" FORCE)  # static archive, no DLL to stage
+    set(OPUS_BUILD_PROGRAMS              OFF CACHE BOOL "" FORCE)
+    set(OPUS_BUILD_TESTING               OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_PKG_CONFIG_MODULE   OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        opus
+        GIT_REPOSITORY https://github.com/xiph/opus.git
+        GIT_TAG        v${SIMTARY_OPUS_VERSION}
+    )
+    FetchContent_MakeAvailable(opus)
+
+    if (TARGET opus)
+        set(SIMTARY_OPUS_FOUND TRUE CACHE INTERNAL "libopus is available")
+        message(STATUS "Simtary: libopus ${SIMTARY_OPUS_VERSION} - .opus assets enabled")
+    else()
+        set(SIMTARY_OPUS_FOUND FALSE CACHE INTERNAL "libopus is available")
+        message(WARNING "Simtary: libopus was fetched but defined no 'opus' target - .opus assets disabled.")
+    endif()
+else()
+    set(SIMTARY_OPUS_FOUND FALSE CACHE INTERNAL "libopus is available")
+    message(STATUS "Simtary: libopus disabled - .opus assets will fail to load.")
+endif()
 
 # Steam Audio: the 3D audio layer (core SDK only)
 # Steam Audio owns everything spatial - HRTF, distance, air absorption, occlusion,

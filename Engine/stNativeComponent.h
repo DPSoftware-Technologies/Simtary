@@ -414,11 +414,31 @@ namespace wi::scene
 	{
 		NativeComponentFactory factory;
 		NativeTypeID typeID = nullptr;
+		// Editor grouping. The Add Component list is drawn one section per group rather than
+		//	as one flat scroll of everything the executable linked in: `group` is the section
+		//	title ("Project", "Framework", or whatever a game invents) and `tag` is a short
+		//	badge in front of it. The framework's own components register as group "Framework",
+		//	tag "ST", so their section reads "[ST] Framework components".
+		//	An empty group means "Project"; an empty tag means no badge.
+		std::string group;
+		std::string tag;
+		// Sub-section INSIDE the group: "Audio", "Optical", "Scene". A group with twelve
+		//	components in it is a list again, so the section splits once more. Empty means the
+		//	component sits directly under the group header, which is what a game gets by default.
+		std::string category;
 	};
+
+	// The section a component that names no group of its own is filed under.
+	inline constexpr const char* NATIVE_COMPONENT_DEFAULT_GROUP = "Project";
 
 	// Register a component type so it can be attached from metadata.
 	//	Prefer the ST_REGISTER_NATIVE_COMPONENT macro below.
+	//	The three-argument form files the component under "Project" with no badge.
 	void RegisterNativeComponent(const std::string& name, NativeComponentFactory factory, NativeTypeID typeID);
+	void RegisterNativeComponent(const std::string& name, NativeComponentFactory factory, NativeTypeID typeID,
+		const char* group, const char* tag);
+	void RegisterNativeComponent(const std::string& name, NativeComponentFactory factory, NativeTypeID typeID,
+		const char* group, const char* tag, const char* category);
 	// Look up a registration by the metadata name (returns nullptr if not registered).
 	const NativeComponentRegistration* FindNativeComponentRegistration(const std::string& name);
 
@@ -427,6 +447,27 @@ namespace wi::scene
 	//	the registry is populated by static initializers, so by the time any frame runs it
 	//	holds every native component the engine AND the game linked in.
 	void GetRegisteredNativeComponentNames(wi::vector<std::string>& out);
+
+	// The same names, bucketed for the editor's Add Component list. Sections come back in
+	//	display order - "Project" first, then every other group alphabetically - and the
+	//	components inside each are sorted. A component registered without a group lands in
+	//	"Project", so a game that never mentions groups sees exactly the list it saw before.
+	struct NativeComponentCategory
+	{
+		std::string name;                    // "" = filed directly under the group header
+		wi::vector<std::string> components;  // sorted
+	};
+	struct NativeComponentGroup
+	{
+		std::string name;                    // section title, e.g. "Framework"
+		std::string tag;                     // badge, e.g. "ST" -> "[ST] Framework components"
+		wi::vector<std::string> components;  // every component in the group, sorted
+		// The same names again, split by category - uncategorized first, then alphabetically.
+		//	Both views are kept because a caller either wants the whole group (counting, a flat
+		//	menu) or wants to draw the sub-sections, and neither should have to rebuild the other.
+		wi::vector<NativeComponentCategory> categories;
+	};
+	void GetRegisteredNativeComponentGroups(wi::vector<NativeComponentGroup>& out);
 
 	// ------------------------------------------------------------------
 	// Editor-side attach / detach.
@@ -559,3 +600,23 @@ namespace wi::scene
 			return std::unique_ptr<::wi::scene::NativeComponent>(new TYPE()); }, \
 			::wi::scene::GetNativeTypeID<TYPE>()); \
 	} }; static TYPE##_NativeRegAs _global_##TYPE##_NativeRegAs_instance; }
+
+// Register into a named section of the editor's Add Component list.
+//	GROUP is the section title, TAG a short badge drawn in front of it ("" for none), and
+//	CATEGORY a sub-section inside the group ("" to sit directly under its header).
+//	Place in a .cpp file:  ST_REGISTER_NATIVE_COMPONENT_IN(Rifle, "Rifle", "Weapons", "", "Guns")
+#define ST_REGISTER_NATIVE_COMPONENT_IN(TYPE, NAME, GROUP, TAG, CATEGORY) \
+	namespace { struct TYPE##_NativeRegIn { TYPE##_NativeRegIn() { \
+		::wi::scene::RegisterNativeComponent(NAME, []() { \
+			return std::unique_ptr<::wi::scene::NativeComponent>(new TYPE()); }, \
+			::wi::scene::GetNativeTypeID<TYPE>(), GROUP, TAG, CATEGORY); \
+	} }; static TYPE##_NativeRegIn _global_##TYPE##_NativeRegIn_instance; }
+
+// The engine's and the framework's own components: section "Framework", badge "ST", and a
+//	CATEGORY ("Audio", "Optical", "Scene") because that section is long enough to need one.
+//	A game's components use the plain macros above and stay in "Project", and that is the
+//	whole of what keeps the two families apart in the picker.
+#define ST_REGISTER_FRAMEWORK_COMPONENT(TYPE, CATEGORY) \
+	ST_REGISTER_NATIVE_COMPONENT_IN(TYPE, #TYPE, "Framework", "ST", CATEGORY)
+#define ST_REGISTER_FRAMEWORK_COMPONENT_AS(TYPE, NAME, CATEGORY) \
+	ST_REGISTER_NATIVE_COMPONENT_IN(TYPE, NAME, "Framework", "ST", CATEGORY)

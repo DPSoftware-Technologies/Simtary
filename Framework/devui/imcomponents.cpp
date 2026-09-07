@@ -7,6 +7,7 @@
 #include "imgui.h"
 
 #include <cctype>
+#include <cstdio>
 #include <string>
 
 using wi::ecs::Entity;
@@ -132,78 +133,175 @@ bool AddComponentButton(Scene& scene, Entity entity, st::EditorHistory* history)
 
 	ImGui::BeginChild("##add_component_list", ImVec2(260, 320), false);
 
-	// --- project (native) components first: that is what a game author reaches for most ---
-	wi::vector<std::string> nativeNames;
-	GetRegisteredNativeComponentNames(nativeNames);
+	const bool filtering = filter[0] != 0;
 
-	if (ImGui::CollapsingHeader("Project components", ImGuiTreeNodeFlags_DefaultOpen))
+	// --- native components: one section per registered group, one sub-tree per category ---
+	// "Project" comes back first (a game author reaches for their own components far more
+	// often than for the engine's), then "Framework" and anything else a game registered.
+	// Only Project is open by default: the whole point of the sections is that the picker
+	// opens onto the dozen names that entity is likely to want, not onto all sixty.
+	wi::vector<NativeComponentGroup> groups;
+	GetRegisteredNativeComponentGroups(groups);
+
+	for (const NativeComponentGroup& group : groups)
 	{
-		bool anyShown = false;
-		for (const std::string& name : nativeNames)
+		// Count first, so the header can say how many are behind it and a section with no
+		// match under the current filter can stay shut instead of opening onto "(no match)".
+		int matches = 0;
+		for (const std::string& name : group.components)
 		{
-			if (!MatchesFilter(name.c_str(), filter))
-				continue;
-			anyShown = true;
-			// Native components stack (NCI_0, NCI_1, ...), so there is deliberately no
-			// "already attached" gate here the way there is for engine components.
-			if (ImGui::Selectable(name.c_str()))
+			if (MatchesFilter(name.c_str(), filter))
+				++matches;
+		}
+
+		// "[ST] Framework components (12)###group_Framework" - the text before ### is what
+		// is drawn, the part after is the ID, so the open/closed state survives the count
+		// changing as the filter is typed.
+		char header[160];
+		if (group.tag.empty())
+		{
+			snprintf(header, sizeof(header), "%s components (%d)###group_%s",
+				group.name.c_str(), matches, group.name.c_str());
+		}
+		else
+		{
+			snprintf(header, sizeof(header), "[%s] %s components (%d)###group_%s",
+				group.tag.c_str(), group.name.c_str(), matches, group.name.c_str());
+		}
+
+		// While something is typed the filter drives the sections: everything with a hit
+		// opens, everything without closes. Clearing the box leaves them as the user had
+		// them, which is why this is Always only while filtering.
+		if (filtering)
+			ImGui::SetNextItemOpen(matches > 0, ImGuiCond_Always);
+		else
+			ImGui::SetNextItemOpen(group.name == NATIVE_COMPONENT_DEFAULT_GROUP, ImGuiCond_FirstUseEver);
+
+		if (!ImGui::CollapsingHeader(header))
+			continue;
+
+		if (matches == 0)
+		{
+			ImGui::TextDisabled(group.components.empty() ? "(none registered)" : "(no match)");
+			continue;
+		}
+
+		// Inside a group, one sub-tree per category ("Audio", "Optical", ...). The
+		// uncategorized bucket comes first and is drawn with no sub-header at all, so a
+		// project that never names a category sees a plain list exactly as before.
+		for (const NativeComponentCategory& category : group.categories)
+		{
+			int categoryMatches = 0;
+			for (const std::string& name : category.components)
 			{
-				if (history) history->BeginEntity(scene, entity, "Attach Component");
-				const int localID = AttachNativeComponent(scene, entity, name);
-				if (history) history->Commit(scene);
-				if (localID >= 0)
+				if (MatchesFilter(name.c_str(), filter))
+					++categoryMatches;
+			}
+			if (categoryMatches == 0)
+				continue;
+
+			bool indented = false;
+			if (!category.name.empty())
+			{
+				char label[160];
+				snprintf(label, sizeof(label), "%s (%d)###cat_%s_%s",
+					category.name.c_str(), categoryMatches,
+					group.name.c_str(), category.name.c_str());
+
+				// Open by default - opening a group should show what is in it - but
+				// collapsible, so the categories one project never touches can be shut for
+				// good. While filtering the hits are forced open, same rule as the groups.
+				if (filtering)
+					ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+				else
+					ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);
+
+				if (!ImGui::TreeNodeEx(label, ImGuiTreeNodeFlags_SpanAvailWidth))
+					continue;
+				indented = true;
+			}
+
+			for (const std::string& name : category.components)
+			{
+				if (!MatchesFilter(name.c_str(), filter))
+					continue;
+				// Native components stack (NCI_0, NCI_1, ...), so there is deliberately no
+				// "already attached" gate here the way there is for engine components.
+				if (ImGui::Selectable(name.c_str()))
 				{
-					wi::backlog::post("Editor: attached native component '" + name +
-						"' as NCI_" + std::to_string(localID) +
-						" on entity " + std::to_string(entity));
-					added = true;
-					ImGui::CloseCurrentPopup();
+					if (history) history->BeginEntity(scene, entity, "Attach Component");
+					const int localID = AttachNativeComponent(scene, entity, name);
+					if (history) history->Commit(scene);
+					if (localID >= 0)
+					{
+						wi::backlog::post("Editor: attached native component '" + name +
+							"' as NCI_" + std::to_string(localID) +
+							" on entity " + std::to_string(entity));
+						added = true;
+						ImGui::CloseCurrentPopup();
+					}
 				}
 			}
+
+			if (indented)
+				ImGui::TreePop();
 		}
-		if (!anyShown)
-			ImGui::TextDisabled(nativeNames.empty() ? "(none registered)" : "(no match)");
 	}
 
 	// --- engine components ---
-	if (ImGui::CollapsingHeader("Engine components", ImGuiTreeNodeFlags_DefaultOpen))
+	// Closed by default and last: 38 rows that are the same in every project, so they are
+	// the part of this popup least worth scrolling past to reach anything else.
 	{
-		// Two passes so the ones that are inert until you feed them data (a Mesh with no
-		// vertices, a Terrain with no materials) sit under a warning rather than next to Light.
-		for (int pass = 0; pass < 2; ++pass)
+		int engineMatches = 0;
+		for (const EngineComponentType& t : g_engineComponents)
 		{
-			bool wroteSeparator = false;
-			for (const EngineComponentType& t : g_engineComponents)
+			if (MatchesFilter(t.name, filter))
+				++engineMatches;
+		}
+		char engineHeader[96];
+		snprintf(engineHeader, sizeof(engineHeader), "Engine components (%d)###group_engine", engineMatches);
+		if (filtering)
+			ImGui::SetNextItemOpen(engineMatches > 0, ImGuiCond_Always);
+
+		if (ImGui::CollapsingHeader(engineHeader))
+		{
+			// Two passes so the ones that are inert until you feed them data (a Mesh with no
+			// vertices, a Terrain with no materials) sit under a warning rather than next to Light.
+			for (int pass = 0; pass < 2; ++pass)
 			{
-				if (t.needsSetup != (pass == 1))
-					continue;
-				if (!MatchesFilter(t.name, filter))
-					continue;
+				bool wroteSeparator = false;
+				for (const EngineComponentType& t : g_engineComponents)
+				{
+					if (t.needsSetup != (pass == 1))
+						continue;
+					if (!MatchesFilter(t.name, filter))
+						continue;
 
-				if (pass == 1 && !wroteSeparator)
-				{
-					ImGui::Separator();
-					ImGui::TextDisabled("needs data before it does anything");
-					wroteSeparator = true;
-				}
+					if (pass == 1 && !wroteSeparator)
+					{
+						ImGui::Separator();
+						ImGui::TextDisabled("needs data before it does anything");
+						wroteSeparator = true;
+					}
 
-				const bool present = t.Has(scene, entity);
-				ImGui::BeginDisabled(present);
-				if (ImGui::Selectable(t.name))
-				{
-					if (history) history->BeginEntity(scene, entity, "Add Component");
-					t.Add(scene, entity);
-					if (history) history->Commit(scene);
-					wi::backlog::post(std::string("Editor: added engine component '") + t.name +
-						"' to entity " + std::to_string(entity));
-					added = true;
-					ImGui::CloseCurrentPopup();
-				}
-				ImGui::EndDisabled();
-				if (present)
-				{
-					ImGui::SameLine();
-					ImGui::TextDisabled("(on)");
+					const bool present = t.Has(scene, entity);
+					ImGui::BeginDisabled(present);
+					if (ImGui::Selectable(t.name))
+					{
+						if (history) history->BeginEntity(scene, entity, "Add Component");
+						t.Add(scene, entity);
+						if (history) history->Commit(scene);
+						wi::backlog::post(std::string("Editor: added engine component '") + t.name +
+							"' to entity " + std::to_string(entity));
+						added = true;
+						ImGui::CloseCurrentPopup();
+					}
+					ImGui::EndDisabled();
+					if (present)
+					{
+						ImGui::SameLine();
+						ImGui::TextDisabled("(on)");
+					}
 				}
 			}
 		}

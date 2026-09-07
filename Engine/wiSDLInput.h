@@ -28,6 +28,14 @@ namespace wi::input::sdlinput
 	//	Id state parameter is not nullptr, and the controller is available, the state will be written into it
 	bool GetControllerState(wi::input::ControllerState* state, int index);
 
+	// SDL's player index for a controller slot. On Windows SDL fills this from the
+	//	XInput user index, so it is how wi::input recognizes that a pad SDL just
+	//	enumerated is the SAME physical device the XInput backend already registered -
+	//	both are live in a Windows build, and without this check one controller took
+	//	two player slots. Returns -1 for a pad SDL does not consider an XInput device
+	//	(a DualShock/DualSense on Windows, anything on Linux) or an invalid index.
+	int GetControllerXInputUserIndex(int index);
+
 	// Sends feedback data for the controller identified by index parameter to output
 	void SetControllerFeedback(const wi::input::ControllerFeedback& data, int index);
 

@@ -397,4 +397,4 @@ public:
 	}
 };
 
-ST_REGISTER_NATIVE_COMPONENT_AS(StLaserComponent, "sticLaser")
+ST_REGISTER_FRAMEWORK_COMPONENT_AS(StLaserComponent, "sticLaser", "Optical")

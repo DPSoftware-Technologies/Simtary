@@ -4,12 +4,53 @@
 #include "wiJobSystem.h"
 #include "wiPrimitive.h"
 
+#include <functional>
 #include <memory>
+#include <string>
 
 namespace wi::physics
 {
 	// Initializes the physics engine
 	void Initialize();
+
+	// --- SIMTARY EXTENSION: external collision models ---
+	//
+	//	A rigid body whose RigidBodyPhysicsComponent::mesh_source is ExternalFile takes its
+	//	collision geometry from a file rather than from anything in the scene, which is how a
+	//	low-poly collision hull ships beside a high-poly visual model.
+	//
+	//	The engine deliberately does not know how to read one. Model import lives in the
+	//	framework layer (Framework/io/model), which sits ABOVE the engine, so the engine
+	//	publishes this hook and the framework fills it in at startup. With no loader
+	//	installed, an ExternalFile body logs an error and is skipped rather than crashing.
+
+	// Triangle geometry in the collision model's own space, already merged across whatever
+	//	meshes the file contained. Winding is the engine's: the physics backend flips it if
+	//	its own convention differs.
+	struct CollisionGeometry
+	{
+		wi::vector<XMFLOAT3> vertex_positions;
+		wi::vector<uint32_t> indices;
+
+		bool IsValid() const
+		{
+			return !vertex_positions.empty() && indices.size() >= 3 && (indices.size() % 3) == 0;
+		}
+	};
+
+	// Reads `path` into `out`. Returns false if the file cannot be read or holds no triangles.
+	//	Called from job threads, possibly for several different paths at once, so it must be
+	//	safe to call concurrently. Results are cached by the caller: one call per unique path.
+	using CollisionMeshLoader = std::function<bool(const std::string& path, CollisionGeometry& out)>;
+
+	// Install the loader. Pass an empty function to remove it. Installing a loader clears the
+	//	cache, so a file that failed to load before is retried.
+	void SetCollisionMeshLoader(CollisionMeshLoader loader);
+	bool HasCollisionMeshLoader();
+
+	// Drop every cached collision model. Call after the files on disk change; a body already
+	//	built keeps the shape it has until it is rebuilt.
+	void ClearCollisionMeshCache();
 
 	// Enable/disable the physics engine all together
 	void SetEnabled(bool value);

@@ -142,6 +142,137 @@ namespace wi::physics
 			wi::SpinLock lock;
 		};
 
+		// --- SIMTARY EXTENSION: external collision models ---
+		//
+		//	The loader is installed by the framework (see wi::physics::SetCollisionMeshLoader);
+		//	the engine only caches what it returns. Entries are held by shared_ptr so the
+		//	geometry has a stable address for as long as any shape references it - the shape
+		//	cache above keys on exactly those pointers.
+		//
+		//	A path that fails to load is cached as a null entry, so a mistyped filename costs one
+		//	failed load and one log line rather than one of each per body per rebuild.
+		struct CollisionMeshCache
+		{
+			wi::unordered_map<std::string, std::shared_ptr<CollisionGeometry>> cache;
+			wi::SpinLock lock;
+		};
+		CollisionMeshCache collision_mesh_cache;
+		CollisionMeshLoader collision_mesh_loader;
+		wi::SpinLock collision_mesh_loader_lock;
+
+		// Looks the path up WITHOUT loading it. Returns true when the cache has an answer, which
+		//	includes "this path is known not to load" - `out` is then null. Safe from any thread.
+		bool TryGetCachedCollisionGeometry(const std::string& path, std::shared_ptr<CollisionGeometry>& out)
+		{
+			out = nullptr;
+			if (path.empty())
+				return true; // nothing asked for, nothing pending
+
+			collision_mesh_cache.lock.lock();
+			auto it = collision_mesh_cache.cache.find(path);
+			const bool found = it != collision_mesh_cache.cache.end();
+			if (found)
+			{
+				out = it->second;
+			}
+			collision_mesh_cache.lock.unlock();
+			return found;
+		}
+
+		// Loads `path` if it is not cached yet, and caches the result either way. MAIN THREAD
+		//	ONLY: the framework loader imports a model, which builds render data and touches the
+		//	resource manager, neither of which is safe from a physics job. The body creation jobs
+		//	below only ever read the cache, and RunPhysicsUpdateSystem primes it before it
+		//	dispatches them.
+		void PrefetchCollisionGeometry(const std::string& path)
+		{
+			if (path.empty())
+				return;
+
+			std::shared_ptr<CollisionGeometry> existing;
+			if (TryGetCachedCollisionGeometry(path, existing))
+				return; // already loaded, or already known to be unloadable
+
+			collision_mesh_loader_lock.lock();
+			CollisionMeshLoader loader = collision_mesh_loader;
+			collision_mesh_loader_lock.unlock();
+
+			if (loader == nullptr)
+			{
+				wi::backlog::post(
+					"Collision model '" + path + "' cannot be loaded: no collision mesh loader is installed. "
+					"The framework installs one at startup (st::App); an engine-only host must call "
+					"wi::physics::SetCollisionMeshLoader() itself.",
+					wi::backlog::LogLevel::Error);
+				// Cached as a failure so this is said once rather than once per body per frame.
+				//	Installing a loader clears the cache, so nothing is permanently written off.
+				collision_mesh_cache.lock.lock();
+				collision_mesh_cache.cache.insert({ path, nullptr });
+				collision_mesh_cache.lock.unlock();
+				return;
+			}
+
+			auto loaded = std::make_shared<CollisionGeometry>();
+			if (!loader(path, *loaded) || !loaded->IsValid())
+			{
+				loaded = nullptr;
+				wi::backlog::post("Collision model '" + path + "' could not be loaded, or holds no triangles.", wi::backlog::LogLevel::Error);
+			}
+
+			collision_mesh_cache.lock.lock();
+			collision_mesh_cache.cache.insert({ path, loaded });
+			collision_mesh_cache.lock.unlock();
+		}
+
+		// Where a mesh-based shape reads its triangles from. Exactly one of the two is set:
+		//	a scene MeshComponent, which carries LOD subsets, or a flat collision model.
+		struct ShapeGeometrySource
+		{
+			const wi::scene::MeshComponent* mesh = nullptr;
+			const CollisionGeometry* geometry = nullptr;
+
+			bool IsValid() const
+			{
+				if (mesh != nullptr)
+					return !mesh->vertex_positions.empty();
+				if (geometry != nullptr)
+					return geometry->IsValid();
+				return false;
+			}
+			size_t GetVertexCount() const
+			{
+				if (mesh != nullptr) return mesh->vertex_positions.size();
+				if (geometry != nullptr) return geometry->vertex_positions.size();
+				return 0;
+			}
+			const XMFLOAT3* GetVertexPositions() const
+			{
+				if (mesh != nullptr) return mesh->vertex_positions.data();
+				if (geometry != nullptr) return geometry->vertex_positions.data();
+				return nullptr;
+			}
+			const void* GetVertexData() const { return (const void*)GetVertexPositions(); }
+			const void* GetIndexData() const
+			{
+				if (mesh != nullptr) return (const void*)mesh->indices.data();
+				if (geometry != nullptr) return (const void*)geometry->indices.data();
+				return nullptr;
+			}
+			size_t GetIndexCount() const
+			{
+				if (mesh != nullptr) return mesh->indices.size();
+				if (geometry != nullptr) return geometry->indices.size();
+				return 0;
+			}
+		};
+
+		// Defined further down, beside the public wi::physics::CreateRigidBodyShape it backs.
+		void CreateRigidBodyShapeFromSource(
+			wi::scene::RigidBodyPhysicsComponent& physicscomponent,
+			const XMFLOAT3& scale_local,
+			const ShapeGeometrySource& source
+		);
+
 		const uint cMaxBodies = 65536;
 		const uint cNumBodyMutexes = 0;
 		const uint cMaxBodyPairs = 65536;
@@ -345,8 +476,10 @@ namespace wi::physics
 
 			// vehicle:
 			VehicleConstraint* vehicle_constraint = nullptr;
-			Vec3 prev_wheel_positions[4] = { Vec3::sZero(), Vec3::sZero(), Vec3::sZero(), Vec3::sZero() };
-			Quat prev_wheel_rotations[4] = { Quat::sIdentity(), Quat::sIdentity(), Quat::sIdentity(), Quat::sIdentity() };
+			// Interpolation snapshot, one entry per wheel. Sized when the constraint is built,
+			//	because the wheel count is per vehicle now rather than always four.
+			wi::vector<Vec3> prev_wheel_positions;
+			wi::vector<Quat> prev_wheel_rotations;
 
 			// character:
 			Ref<Character> character = nullptr;
@@ -495,6 +628,22 @@ namespace wi::physics
 			return *(Constraint*)physicscomponent.physicsobject.get();
 		}
 
+		// The MeshComponent a collision proxy entity stands for. An artist points this at either
+		//	the mesh entity itself or at the object that draws it, and both should work.
+		const wi::scene::MeshComponent* ResolveProxyMesh(wi::scene::Scene& scene, Entity proxy_entity)
+		{
+			if (proxy_entity == INVALID_ENTITY)
+				return nullptr;
+
+			if (const MeshComponent* direct = scene.meshes.GetComponent(proxy_entity))
+				return direct;
+
+			if (const ObjectComponent* object = scene.objects.GetComponent(proxy_entity))
+				return scene.meshes.GetComponent(object->meshID);
+
+			return nullptr;
+		}
+
 		void AddRigidBody(
 			wi::scene::Scene& scene,
 			Entity entity,
@@ -516,7 +665,69 @@ namespace wi::physics
 
 			transform.ApplyTransform();
 
-			if (mesh != nullptr && mesh->precomputed_rigidbody_physics_shape.physicsobject != nullptr)
+			// --- SIMTARY EXTENSION: where the collision geometry comes from ---
+			//	A mesh-based shape used to be able to read only the mesh on this same entity.
+			//	It can now also read a collision model from a file, or a proxy mesh sitting
+			//	elsewhere in the scene. Primitives ignore all of this.
+			const bool shape_needs_geometry =
+				physicscomponent.shape == RigidBodyPhysicsComponent::CollisionShape::TRIANGLE_MESH ||
+				physicscomponent.shape == RigidBodyPhysicsComponent::CollisionShape::CONVEX_HULL ||
+				physicscomponent.shape == RigidBodyPhysicsComponent::CollisionShape::HEIGHTFIELD;
+
+			ShapeGeometrySource geometry_source;
+			// Keeps an external collision model alive for as long as this function needs it.
+			std::shared_ptr<CollisionGeometry> external_geometry;
+			bool geometry_is_own_object = true;
+
+			if (shape_needs_geometry)
+			{
+				switch (physicscomponent.mesh_source)
+				{
+				default:
+				case RigidBodyPhysicsComponent::MeshSource::OwnObject:
+					geometry_source.mesh = mesh;
+					break;
+
+				case RigidBodyPhysicsComponent::MeshSource::ProxyEntity:
+				{
+					geometry_is_own_object = false;
+					geometry_source.mesh = ResolveProxyMesh(scene, physicscomponent.collision_mesh_entity);
+					if (geometry_source.mesh == nullptr)
+					{
+						wi::backlog::post(
+							"AddRigidBody: collision proxy entity " + std::to_string((unsigned)physicscomponent.collision_mesh_entity) +
+							" has no MeshComponent (directly or through an ObjectComponent), so this body has no collision geometry.",
+							wi::backlog::LogLevel::Error);
+					}
+				}
+				break;
+
+				case RigidBodyPhysicsComponent::MeshSource::ExternalFile:
+				{
+					geometry_is_own_object = false;
+					// Cache reads only: loading a model here would run the framework's importer
+					//	on a physics job thread. RunPhysicsUpdateSystem primes the cache on the
+					//	main thread first, so a miss means this body was created after that pass -
+					//	ask for another refresh and let the next frame build it.
+					if (!TryGetCachedCollisionGeometry(physicscomponent.collision_mesh_file, external_geometry))
+					{
+						physicscomponent.SetRefreshParametersNeeded();
+						return;
+					}
+					geometry_source.geometry = external_geometry.get();
+				}
+				break;
+				}
+			}
+			else
+			{
+				geometry_source.mesh = mesh;
+			}
+
+			// The mesh's precomputed shape is a shape for the mesh on THIS entity, so it only
+			//	applies when that is what we were asked to collide with. This is the path the
+			//	terrain uses, which builds its height fields off the main thread.
+			if (geometry_is_own_object && mesh != nullptr && mesh->precomputed_rigidbody_physics_shape.physicsobject != nullptr)
 			{
 				// The shape comes from mesh's precomputed shape:
 				const RigidBody& precomputed_rigidbody_with_shape = GetRigidBody(mesh->precomputed_rigidbody_physics_shape);
@@ -528,14 +739,16 @@ namespace wi::physics
 				// Check scene's shape cache for complex shapes
 				//	These shapes are expensive to create, reuse them across multiple rigid bodies
 				//	We cache the unit-scale shape and apply scaling per-instance
-				if (mesh != nullptr && (physicscomponent.shape == RigidBodyPhysicsComponent::CollisionShape::TRIANGLE_MESH || physicscomponent.shape == RigidBodyPhysicsComponent::CollisionShape::CONVEX_HULL))
+				//	The key is the ADDRESS of the geometry, so a scene mesh, a proxy mesh and a
+				//	cached collision model each get their own entry without the key knowing which.
+				if (geometry_source.IsValid() && (physicscomponent.shape == RigidBodyPhysicsComponent::CollisionShape::TRIANGLE_MESH || physicscomponent.shape == RigidBodyPhysicsComponent::CollisionShape::CONVEX_HULL))
 				{
 					PhysicsShapeCache& shape_cache = GetPhysicsScene(scene).physics_shape_cache;
 					PhysicsShapeCacheKey cache_key;
-					cache_key.vertex_data = mesh->vertex_positions.data();
-					cache_key.index_data = mesh->indices.data();
-					cache_key.vertex_count = mesh->vertex_positions.size();
-					cache_key.index_count = mesh->indices.size();
+					cache_key.vertex_data = geometry_source.GetVertexData();
+					cache_key.index_data = geometry_source.GetIndexData();
+					cache_key.vertex_count = geometry_source.GetVertexCount();
+					cache_key.index_count = geometry_source.GetIndexCount();
 					cache_key.shape_type = physicscomponent.shape;
 					cache_key.mesh_lod = physicscomponent.mesh_lod;
 
@@ -546,9 +759,14 @@ namespace wi::physics
 					if (it == shape_cache.cache.end())
 					{
 						// Create and store in cache:
-						CreateRigidBodyShape(physicscomponent, XMFLOAT3(1, 1, 1), mesh); // cached with unit scale, it will be scaled per physics instances
+						CreateRigidBodyShapeFromSource(physicscomponent, XMFLOAT3(1, 1, 1), geometry_source); // cached with unit scale, it will be scaled per physics instances
 						base_shape = physicsobject.shape;
-						shape_cache.cache[cache_key] = base_shape;
+						// A failed build must NOT be cached: storing the null would make every
+						//	later body reusing this geometry fail too, permanently.
+						if (base_shape != nullptr)
+						{
+							shape_cache.cache[cache_key] = base_shape;
+						}
 					}
 					else
 					{
@@ -558,12 +776,56 @@ namespace wi::physics
 					shape_cache.lock.unlock();
 
 					// Apply scale to the cached shape
-					physicsobject.shape = ScaledShapeSettings(base_shape, cast(transform.scale_local)).Create().Get(); // instance scaling
+					if (base_shape != nullptr)
+					{
+						physicsobject.shape = ScaledShapeSettings(base_shape, cast(transform.scale_local)).Create().Get(); // instance scaling
+					}
+					else
+					{
+						physicsobject.shape = nullptr;
+					}
 				}
 				else
 				{
 					// Simple shape creation, not using cache:
-					CreateRigidBodyShape(physicscomponent, transform.scale_local, mesh);
+					CreateRigidBodyShapeFromSource(physicscomponent, transform.scale_local, geometry_source);
+				}
+			}
+
+			// Every path above can legitimately fail: a mesh shape on an entity with no mesh, a
+			//	collision model that would not load, a degenerate scale, a body count Jolt refused.
+			//	Everything below here dereferences the shape, so this is where that stops. A
+			//	vehicle gets a chassis box built from the dimensions it already carries instead,
+			//	because a car that falls out of the world is harder to diagnose than one that
+			//	drives on a plain box.
+			if (physicsobject.shape == nullptr)
+			{
+				if (physicscomponent.IsVehicle())
+				{
+					BoxShapeSettings fallback(Vec3(
+						std::max(0.01f, physicscomponent.vehicle.chassis_half_width),
+						std::max(0.01f, physicscomponent.vehicle.chassis_half_height),
+						std::max(0.01f, physicscomponent.vehicle.chassis_half_length)));
+					fallback.SetEmbedded();
+					ShapeSettings::ShapeResult fallback_result = fallback.Create();
+					if (fallback_result.IsValid())
+					{
+						physicsobject.shape = fallback_result.Get();
+					}
+					wi::backlog::post(
+						"AddRigidBody: vehicle on entity " + std::to_string((unsigned)entity) +
+						" could not build its collision shape, so a plain chassis box is standing in. "
+						"Check the shape type and its collision geometry.",
+						wi::backlog::LogLevel::Warning);
+				}
+
+				if (physicsobject.shape == nullptr)
+				{
+					wi::backlog::post(
+						"AddRigidBody: entity " + std::to_string((unsigned)entity) +
+						" has no collision shape, so no body was created. Earlier lines say why the shape failed.",
+						wi::backlog::LogLevel::Error);
+					return;
 				}
 			}
 
@@ -571,7 +833,11 @@ namespace wi::physics
 			if (physicscomponent.IsVehicle())
 			{
 				// Vehicle center of mass will be offset to chassis height to improve handling
-				physicsobject.shape = OffsetCenterOfMassShapeSettings(Vec3(0, -physicsobject.shape->GetLocalBounds().GetExtent().GetY() + physicscomponent.vehicle.chassis_half_height, 0), physicsobject.shape).Create().Get();
+				ShapeRefC offset_shape = OffsetCenterOfMassShapeSettings(Vec3(0, -physicsobject.shape->GetLocalBounds().GetExtent().GetY() + physicscomponent.vehicle.chassis_half_height, 0), physicsobject.shape).Create().Get();
+				if (offset_shape != nullptr)
+				{
+					physicsobject.shape = offset_shape;
+				}
 			}
 
 			// Apply character-specific transformations
@@ -579,7 +845,11 @@ namespace wi::physics
 			{
 				// For character physics, offset the shape so the bottom is at origin
 				Vec3 bottom_offset = Vec3(0, physicsobject.shape->GetLocalBounds().GetExtent().GetY(), 0);
-				physicsobject.shape = RotatedTranslatedShapeSettings(bottom_offset, Quat::sIdentity(), physicsobject.shape).Create().Get();
+				ShapeRefC offset_shape = RotatedTranslatedShapeSettings(bottom_offset, Quat::sIdentity(), physicsobject.shape).Create().Get();
+				if (offset_shape != nullptr)
+				{
+					physicsobject.shape = offset_shape;
+				}
 			}
 
 			if (physicsobject.shape != nullptr)
@@ -695,305 +965,225 @@ namespace wi::physics
 
 				body->SetUserData((uint64_t)&physicsobject);
 
-				// Vehicle const settings:
-				static constexpr bool	sAntiRollbar = true;
-				static constexpr bool	sLimitedSlipDifferentials = true;
-				static constexpr float	sFrontCasterAngle = 0.0f;
-				static constexpr float	sFrontKingPinAngle = 0.0f;
-				static constexpr float	sFrontCamber = 0.0f;
-				static constexpr float	sFrontToe = 0.0f;
-				static constexpr float	sFrontSuspensionForwardAngle = 0.0f;
-				static constexpr float	sFrontSuspensionSidewaysAngle = 0.0f;
-				static constexpr float	sRearSuspensionForwardAngle = 0.0f;
-				static constexpr float	sRearSuspensionSidewaysAngle = 0.0f;
-				static constexpr float	sRearCasterAngle = 0.0f;
-				static constexpr float	sRearKingPinAngle = 0.0f;
-				static constexpr float	sRearCamber = 0.0f;
-				static constexpr float	sRearToe = 0.0f;
-
-				if (physicscomponent.IsCar())
+				// --- SIMTARY EXTENSION: vehicles with any number of wheels ---
+				//
+				//	Wheels, differentials and anti-roll bars all come out of the component's own
+				//	arrays now, so a 6x6 or an 8x8 is data rather than another branch here. The
+				//	chassis_* fields are only the layout input GenerateWheels() reads, plus the
+				//	chassis half height the centre of mass was already dropped to above.
+				//
+				//	A car and a motorcycle differ in exactly one thing at this level: which
+				//	controller is constructed. MotorcycleControllerSettings derives from
+				//	WheeledVehicleControllerSettings, so everything else is shared.
+				if (physicscomponent.IsVehicle())
 				{
-					const float wheel_radius = physicscomponent.vehicle.wheel_radius;
-					const float wheel_width = physicscomponent.vehicle.wheel_width;
-					const float half_vehicle_length = physicscomponent.vehicle.chassis_half_length;
-					const float half_vehicle_width = physicscomponent.vehicle.chassis_half_width;
-					const float half_vehicle_height = physicscomponent.vehicle.chassis_half_height;
-					const float front_wheel_offset = physicscomponent.vehicle.front_wheel_offset;
-					const float rear_wheel_offset = physicscomponent.vehicle.rear_wheel_offset;
-					const bool four_wheel_drive = physicscomponent.vehicle.car.four_wheel_drive;
-					const float max_engine_torque = physicscomponent.vehicle.max_engine_torque;
-					const float clutch_strength = physicscomponent.vehicle.clutch_strength;
+					RigidBodyPhysicsComponent::Vehicle& vehicle_data = physicscomponent.vehicle;
+					const bool is_motorcycle = physicscomponent.IsMotorcycle();
 
-					const float	sFrontSuspensionMinLength = physicscomponent.vehicle.front_suspension.min_length;
-					const float	sFrontSuspensionMaxLength = physicscomponent.vehicle.front_suspension.max_length;
-					const float	sFrontSuspensionFrequency = physicscomponent.vehicle.front_suspension.frequency;
-					const float	sFrontSuspensionDamping = physicscomponent.vehicle.front_suspension.damping;
-
-					const float	sRearSuspensionMinLength = physicscomponent.vehicle.rear_suspension.min_length;
-					const float	sRearSuspensionMaxLength = physicscomponent.vehicle.rear_suspension.max_length;
-					const float	sRearSuspensionFrequency = physicscomponent.vehicle.rear_suspension.frequency;
-					const float	sRearSuspensionDamping = physicscomponent.vehicle.rear_suspension.damping;
-
-					const float	sMaxRollAngle = physicscomponent.vehicle.max_roll_angle;
-					const float	sMaxSteeringAngle = physicscomponent.vehicle.max_steering_angle;
-
-					// Create collision testers
-					VehicleCollisionTester* vehicle_tester = nullptr;
-					switch (physicscomponent.vehicle.collision_mode)
+					// A component created in the inspector starts with no wheels, and a scene
+					//	saved before the wheel array existed carries none either. Lay the default
+					//	axles out rather than handing Jolt a vehicle with nothing to stand on.
+					if (vehicle_data.wheels.empty())
 					{
-					default:
-					case RigidBodyPhysicsComponent::Vehicle::CollisionMode::Ray:
-						vehicle_tester = new VehicleCollisionTesterRay(Layers::MOVING);
-						break;
-					case RigidBodyPhysicsComponent::Vehicle::CollisionMode::Sphere:
-						vehicle_tester = new VehicleCollisionTesterCastSphere(Layers::MOVING, 0.5f * wheel_width);
-						break;
-					case RigidBodyPhysicsComponent::Vehicle::CollisionMode::Cylinder:
-						vehicle_tester = new VehicleCollisionTesterCastCylinder(Layers::MOVING);
-						break;
+						vehicle_data.MigrateLegacyWheels();
 					}
 
-					// Create vehicle constraint
-					VehicleConstraintSettings vehicle;
-					vehicle.mDrawConstraintSize = 0.1f;
-					vehicle.mMaxPitchRollAngle = sMaxRollAngle;
-
-					// Suspension direction
-					Vec3 front_suspension_dir = Vec3(Tan(sFrontSuspensionSidewaysAngle), -1, Tan(sFrontSuspensionForwardAngle)).Normalized();
-					Vec3 front_steering_axis = Vec3(-Tan(sFrontKingPinAngle), 1, -Tan(sFrontCasterAngle)).Normalized();
-					Vec3 front_wheel_up = Vec3(Sin(sFrontCamber), Cos(sFrontCamber), 0);
-					Vec3 front_wheel_forward = Vec3(-Sin(sFrontToe), 0, Cos(sFrontToe));
-					Vec3 rear_suspension_dir = Vec3(Tan(sRearSuspensionSidewaysAngle), -1, Tan(sRearSuspensionForwardAngle)).Normalized();
-					Vec3 rear_steering_axis = Vec3(-Tan(sRearKingPinAngle), 1, -Tan(sRearCasterAngle)).Normalized();
-					Vec3 rear_wheel_up = Vec3(Sin(sRearCamber), Cos(sRearCamber), 0);
-					Vec3 rear_wheel_forward = Vec3(-Sin(sRearToe), 0, Cos(sRearToe));
-					Vec3 flip_x(-1, 1, 1);
-
-					// Wheels, left front
-					WheelSettingsWV* w1 = new WheelSettingsWV;
-					w1->mPosition = Vec3(-half_vehicle_width, half_vehicle_height, half_vehicle_length + front_wheel_offset);
-					w1->mSuspensionDirection = front_suspension_dir;
-					w1->mSteeringAxis = front_steering_axis;
-					w1->mWheelUp = front_wheel_up;
-					w1->mWheelForward = front_wheel_forward;
-					w1->mSuspensionMinLength = sFrontSuspensionMinLength;
-					w1->mSuspensionMaxLength = sFrontSuspensionMaxLength;
-					w1->mSuspensionSpring.mFrequency = sFrontSuspensionFrequency;
-					w1->mSuspensionSpring.mDamping = sFrontSuspensionDamping;
-					w1->mMaxSteerAngle = sMaxSteeringAngle;
-					w1->mMaxHandBrakeTorque = 0.0f; // Front wheel doesn't have hand brake
-
-					// Right front
-					WheelSettingsWV* w2 = new WheelSettingsWV;
-					w2->mPosition = Vec3(half_vehicle_width, half_vehicle_height, half_vehicle_length + front_wheel_offset);
-					w2->mSuspensionDirection = flip_x * front_suspension_dir;
-					w2->mSteeringAxis = flip_x * front_steering_axis;
-					w2->mWheelUp = flip_x * front_wheel_up;
-					w2->mWheelForward = flip_x * front_wheel_forward;
-					w2->mSuspensionMinLength = sFrontSuspensionMinLength;
-					w2->mSuspensionMaxLength = sFrontSuspensionMaxLength;
-					w2->mSuspensionSpring.mFrequency = sFrontSuspensionFrequency;
-					w2->mSuspensionSpring.mDamping = sFrontSuspensionDamping;
-					w2->mMaxSteerAngle = sMaxSteeringAngle;
-					w2->mMaxHandBrakeTorque = 0.0f; // Front wheel doesn't have hand brake
-
-					// Left rear
-					WheelSettingsWV* w3 = new WheelSettingsWV;
-					w3->mPosition = Vec3(-half_vehicle_width, half_vehicle_height, -half_vehicle_length + rear_wheel_offset);
-					w3->mSuspensionDirection = rear_suspension_dir;
-					w3->mSteeringAxis = rear_steering_axis;
-					w3->mWheelUp = rear_wheel_up;
-					w3->mWheelForward = rear_wheel_forward;
-					w3->mSuspensionMinLength = sRearSuspensionMinLength;
-					w3->mSuspensionMaxLength = sRearSuspensionMaxLength;
-					w3->mSuspensionSpring.mFrequency = sRearSuspensionFrequency;
-					w3->mSuspensionSpring.mDamping = sRearSuspensionDamping;
-					w3->mMaxSteerAngle = 0.0f;
-
-					// Right rear
-					WheelSettingsWV* w4 = new WheelSettingsWV;
-					w4->mPosition = Vec3(half_vehicle_width, half_vehicle_height, -half_vehicle_length + rear_wheel_offset);
-					w4->mSuspensionDirection = flip_x * rear_suspension_dir;
-					w4->mSteeringAxis = flip_x * rear_steering_axis;
-					w4->mWheelUp = flip_x * rear_wheel_up;
-					w4->mWheelForward = flip_x * rear_wheel_forward;
-					w4->mSuspensionMinLength = sRearSuspensionMinLength;
-					w4->mSuspensionMaxLength = sRearSuspensionMaxLength;
-					w4->mSuspensionSpring.mFrequency = sRearSuspensionFrequency;
-					w4->mSuspensionSpring.mDamping = sRearSuspensionDamping;
-					w4->mMaxSteerAngle = 0.0f;
-
-					vehicle.mWheels = { w1, w2, w3, w4 };
-
-					for (WheelSettings* w : vehicle.mWheels)
+					// Jolt's MotorcycleController indexes wheel 0 and wheel 1 directly and
+					//	balances the bike between them, so two is not a default here, it is the
+					//	only legal count.
+					if (is_motorcycle && vehicle_data.wheels.size() != 2)
 					{
-						w->mRadius = wheel_radius;
-						w->mWidth = wheel_width;
+						wi::backlog::post(
+							"Vehicle on entity " + std::to_string((unsigned)entity) + " is a motorcycle with " +
+							std::to_string(vehicle_data.wheels.size()) + " wheels. A motorcycle must have exactly 2, so the "
+							"front/rear pair has been regenerated. Switch the type to Car for anything else.",
+							wi::backlog::LogLevel::Warning);
+						vehicle_data.GenerateWheels();
 					}
 
-					WheeledVehicleControllerSettings* controller_settings = new WheeledVehicleControllerSettings;
-
-					controller_settings->mEngine.mMaxTorque = max_engine_torque;
-					controller_settings->mTransmission.mClutchStrength = clutch_strength;
-
-					// Set slip ratios to the same for everything
-					float limited_slip_ratio = sLimitedSlipDifferentials ? 1.4f : FLT_MAX;
-					controller_settings->mDifferentialLimitedSlipRatio = limited_slip_ratio;
-					for (auto& diff : controller_settings->mDifferentials)
+					if (vehicle_data.wheels.empty())
 					{
-						diff.mLimitedSlipRatio = limited_slip_ratio;
+						wi::backlog::post(
+							"Vehicle on entity " + std::to_string((unsigned)entity) + " has no wheels, so no vehicle "
+							"constraint was created. Add wheels in the inspector, or press Generate wheels.",
+							wi::backlog::LogLevel::Error);
 					}
-
-					vehicle.mController = controller_settings;
-
-					// Differential
-					controller_settings->mDifferentials.resize(four_wheel_drive ? 2 : 1);
-					controller_settings->mDifferentials[0].mLeftWheel = 0;
-					controller_settings->mDifferentials[0].mRightWheel = 1;
-					if (four_wheel_drive)
+					else
 					{
-						controller_settings->mDifferentials[1].mLeftWheel = 2;
-						controller_settings->mDifferentials[1].mRightWheel = 3;
+						const int wheel_count = (int)vehicle_data.wheels.size();
 
-						// Split engine torque
-						controller_settings->mDifferentials[0].mEngineTorqueRatio = controller_settings->mDifferentials[1].mEngineTorqueRatio = 0.5f;
+						VehicleConstraintSettings vehicle;
+						vehicle.mDrawConstraintSize = 0.1f;
+						vehicle.mMaxPitchRollAngle = vehicle_data.max_roll_angle;
+
+						float largest_wheel_radius = 0.0f;
+						float largest_wheel_width = 0.0f;
+
+						for (const RigidBodyPhysicsComponent::Vehicle::Wheel& w : vehicle_data.wheels)
+						{
+							// Wheels on the right mirror their partner across the chassis X axis,
+							//	so camber, caster, toe and kingpin lean the same way on both sides.
+							const Vec3 flip = w.mirror_x ? Vec3(-1, 1, 1) : Vec3(1, 1, 1);
+
+							WheelSettingsWV* settings = new WheelSettingsWV;
+							settings->mPosition = cast(w.position);
+							settings->mSuspensionDirection = flip * Vec3(Tan(w.suspension_sideways_angle), -1, Tan(w.suspension_forward_angle)).Normalized();
+							settings->mSteeringAxis = flip * Vec3(-Tan(w.kingpin_angle), 1, -Tan(w.caster_angle)).Normalized();
+							settings->mWheelUp = flip * Vec3(Sin(w.camber), Cos(w.camber), 0);
+							settings->mWheelForward = flip * Vec3(-Sin(w.toe), 0, Cos(w.toe));
+							settings->mRadius = std::max(0.001f, w.radius);
+							settings->mWidth = std::max(0.001f, w.width);
+							settings->mSuspensionMinLength = std::max(0.0f, w.suspension_min_length);
+							// Jolt requires max >= min, and an inspector drag passes through
+							//	states where it is not.
+							settings->mSuspensionMaxLength = std::max(settings->mSuspensionMinLength, w.suspension_max_length);
+							settings->mSuspensionPreloadLength = w.suspension_preload_length;
+							settings->mSuspensionSpring.mFrequency = w.suspension_frequency;
+							settings->mSuspensionSpring.mDamping = w.suspension_damping;
+							// Any number of wheels may steer - Jolt applies each wheel's own angle to
+							//	the same driver input, and a NEGATIVE angle steers that wheel against
+							//	it, which is how a rear axle counter-steers. Past a quarter turn
+							//	Jolt asserts, so the value is clamped rather than trusted.
+							settings->mMaxSteerAngle = clamp(w.max_steer_angle, -0.5f * JPH_PI, 0.5f * JPH_PI);
+							settings->mMaxBrakeTorque = w.max_brake_torque;
+							settings->mMaxHandBrakeTorque = w.max_hand_brake_torque;
+							settings->mInertia = std::max(0.0001f, w.inertia);
+							settings->mAngularDamping = w.angular_damping;
+
+							largest_wheel_radius = std::max(largest_wheel_radius, settings->mRadius);
+							largest_wheel_width = std::max(largest_wheel_width, settings->mWidth);
+
+							vehicle.mWheels.push_back(settings);
+						}
+
+						// Create collision testers. The cast shapes are sized off the biggest
+						//	wheel, so a vehicle with mixed wheel sizes still tests conservatively.
+						VehicleCollisionTester* vehicle_tester = nullptr;
+						switch (vehicle_data.collision_mode)
+						{
+						default:
+						case RigidBodyPhysicsComponent::Vehicle::CollisionMode::Ray:
+							vehicle_tester = new VehicleCollisionTesterRay(Layers::MOVING);
+							break;
+						case RigidBodyPhysicsComponent::Vehicle::CollisionMode::Sphere:
+							vehicle_tester = new VehicleCollisionTesterCastSphere(Layers::MOVING, 0.5f * largest_wheel_width);
+							break;
+						case RigidBodyPhysicsComponent::Vehicle::CollisionMode::Cylinder:
+							vehicle_tester = new VehicleCollisionTesterCastCylinder(Layers::MOVING);
+							break;
+						}
+						(void)largest_wheel_radius;
+
+						// An index naming a wheel that does not exist is an assert inside Jolt, and
+						//	the inspector produces one simply by deleting a wheel. -1 means "not
+						//	connected", which Jolt understands, so that is what a bad index becomes.
+						auto valid_wheel_index = [wheel_count](int index) -> int
+						{
+							return (index >= 0 && index < wheel_count) ? index : -1;
+						};
+
+						WheeledVehicleControllerSettings* controller_settings = is_motorcycle
+							? static_cast<WheeledVehicleControllerSettings*>(new MotorcycleControllerSettings)
+							: new WheeledVehicleControllerSettings;
+
+						controller_settings->mEngine.mMaxTorque = vehicle_data.max_engine_torque;
+						controller_settings->mEngine.mMinRPM = vehicle_data.engine_min_rpm;
+						controller_settings->mEngine.mMaxRPM = std::max(vehicle_data.engine_min_rpm + 1.0f, vehicle_data.engine_max_rpm);
+						controller_settings->mEngine.mInertia = vehicle_data.engine_inertia;
+						controller_settings->mEngine.mAngularDamping = vehicle_data.engine_angular_damping;
+
+						controller_settings->mTransmission.mMode = vehicle_data.auto_transmission ? ETransmissionMode::Auto : ETransmissionMode::Manual;
+						controller_settings->mTransmission.mClutchStrength = vehicle_data.clutch_strength;
+						controller_settings->mTransmission.mSwitchTime = vehicle_data.transmission_switch_time;
+						controller_settings->mTransmission.mClutchReleaseTime = vehicle_data.transmission_clutch_release_time;
+						controller_settings->mTransmission.mSwitchLatency = vehicle_data.transmission_switch_latency;
+						controller_settings->mTransmission.mShiftUpRPM = vehicle_data.transmission_shift_up_rpm;
+						controller_settings->mTransmission.mShiftDownRPM = vehicle_data.transmission_shift_down_rpm;
+						// Empty means "keep Jolt's gearbox", which is what every vehicle that
+						//	never touched the transmission fields wants.
+						if (!vehicle_data.gear_ratios.empty())
+						{
+							controller_settings->mTransmission.mGearRatios.assign(vehicle_data.gear_ratios.begin(), vehicle_data.gear_ratios.end());
+						}
+						if (!vehicle_data.reverse_gear_ratios.empty())
+						{
+							controller_settings->mTransmission.mReverseGearRatios.assign(vehicle_data.reverse_gear_ratios.begin(), vehicle_data.reverse_gear_ratios.end());
+						}
+
+						controller_settings->mDifferentials.resize(vehicle_data.differentials.size());
+						float torque_ratio_total = 0.0f;
+						for (size_t i = 0; i < vehicle_data.differentials.size(); ++i)
+						{
+							const RigidBodyPhysicsComponent::Vehicle::Differential& src = vehicle_data.differentials[i];
+							VehicleDifferentialSettings& dst = controller_settings->mDifferentials[i];
+							dst.mLeftWheel = valid_wheel_index(src.left_wheel);
+							dst.mRightWheel = valid_wheel_index(src.right_wheel);
+							dst.mDifferentialRatio = src.differential_ratio;
+							dst.mLeftRightSplit = src.left_right_split;
+							// Jolt disables the limited slip with FLT_MAX; the component spells
+							//	that as a ratio of 1 or less, the value that has no effect.
+							dst.mLimitedSlipRatio = src.limited_slip_ratio > 1.0f ? src.limited_slip_ratio : FLT_MAX;
+							dst.mEngineTorqueRatio = src.engine_torque_ratio;
+							torque_ratio_total += src.engine_torque_ratio;
+						}
+
+						// Engine torque is distributed in proportion to these, so a set that sums
+						//	to zero means no wheel is ever driven and the vehicle will not move.
+						if (!controller_settings->mDifferentials.empty() && torque_ratio_total <= 0.0f)
+						{
+							const float share = 1.0f / float(controller_settings->mDifferentials.size());
+							for (VehicleDifferentialSettings& dst : controller_settings->mDifferentials)
+							{
+								dst.mEngineTorqueRatio = share;
+							}
+						}
+
+						// Slip limiting BETWEEN differentials. Follows the first differential that
+						//	asks for it, and is off when none of them do.
+						controller_settings->mDifferentialLimitedSlipRatio = FLT_MAX;
+						for (const RigidBodyPhysicsComponent::Vehicle::Differential& src : vehicle_data.differentials)
+						{
+							if (src.limited_slip_ratio > 1.0f)
+							{
+								controller_settings->mDifferentialLimitedSlipRatio = src.limited_slip_ratio;
+								break;
+							}
+						}
+
+						vehicle.mController = controller_settings;
+
+						vehicle.mAntiRollBars.resize(vehicle_data.anti_roll_bars.size());
+						for (size_t i = 0; i < vehicle_data.anti_roll_bars.size(); ++i)
+						{
+							const RigidBodyPhysicsComponent::Vehicle::AntiRollBar& src = vehicle_data.anti_roll_bars[i];
+							VehicleAntiRollBar& dst = vehicle.mAntiRollBars[i];
+							dst.mLeftWheel = valid_wheel_index(src.left_wheel);
+							dst.mRightWheel = valid_wheel_index(src.right_wheel);
+							dst.mStiffness = src.stiffness;
+						}
+
+						physicsobject.vehicle_constraint = new VehicleConstraint(*body, vehicle);
+						physicsobject.vehicle_constraint->SetVehicleCollisionTester(vehicle_tester);
+
+						// The vehicle settings were tweaked with a buggy implementation of the longitudinal tire impulses, this meant that PhysicsSettings::mNumVelocitySteps times more impulse
+						// could be applied than intended. To keep the behavior of the vehicle the same we increase the max longitudinal impulse by the same factor. In a future version the vehicle
+						// will be retweaked.
+						//	Simtary: the factor is per vehicle now (longitudinal_impulse_scale), so a
+						//	vehicle tuned against the corrected solver can turn it down to 1.
+						const float longitudinal_impulse_scale = vehicle_data.longitudinal_impulse_scale;
+						static_cast<WheeledVehicleController*>(physicsobject.vehicle_constraint->GetController())->SetTireMaxImpulseCallback(
+							[longitudinal_impulse_scale](uint, float& outLongitudinalImpulse, float& outLateralImpulse, float inSuspensionImpulse, float inLongitudinalFriction, float inLateralFriction, float, float, float) {
+								outLongitudinalImpulse = longitudinal_impulse_scale * inLongitudinalFriction * inSuspensionImpulse;
+								outLateralImpulse = inLateralFriction * inSuspensionImpulse;
+							});
+
+						// The interpolation snapshot is per wheel, so it has to follow the count.
+						physicsobject.prev_wheel_positions.assign(vehicle_data.wheels.size(), Vec3::sZero());
+						physicsobject.prev_wheel_rotations.assign(vehicle_data.wheels.size(), Quat::sIdentity());
+
+						physics_scene.physics_system.AddConstraint(physicsobject.vehicle_constraint);
+						physics_scene.physics_system.AddStepListener(physicsobject.vehicle_constraint);
 					}
-
-					// Anti rollbars
-					if (sAntiRollbar)
-					{
-						vehicle.mAntiRollBars.resize(2);
-						vehicle.mAntiRollBars[0].mLeftWheel = 0;
-						vehicle.mAntiRollBars[0].mRightWheel = 1;
-						vehicle.mAntiRollBars[1].mLeftWheel = 2;
-						vehicle.mAntiRollBars[1].mRightWheel = 3;
-					}
-
-					physicsobject.vehicle_constraint = new VehicleConstraint(*body, vehicle);
-					physicsobject.vehicle_constraint->SetVehicleCollisionTester(vehicle_tester);
-
-					// The vehicle settings were tweaked with a buggy implementation of the longitudinal tire impulses, this meant that PhysicsSettings::mNumVelocitySteps times more impulse
-					// could be applied than intended. To keep the behavior of the vehicle the same we increase the max longitudinal impulse by the same factor. In a future version the vehicle
-					// will be retweaked.
-					static_cast<WheeledVehicleController*>(physicsobject.vehicle_constraint->GetController())->SetTireMaxImpulseCallback([](uint, float& outLongitudinalImpulse, float& outLateralImpulse, float inSuspensionImpulse, float inLongitudinalFriction, float inLateralFriction, float, float, float) {
-						outLongitudinalImpulse = 10.0f * inLongitudinalFriction * inSuspensionImpulse;
-						outLateralImpulse = inLateralFriction * inSuspensionImpulse;
-					});
-
-					physics_scene.physics_system.AddConstraint(physicsobject.vehicle_constraint);
-					physics_scene.physics_system.AddStepListener(physicsobject.vehicle_constraint);
-				}
-				else if (physicscomponent.IsMotorcycle())
-				{
-					const float max_engine_torque = physicscomponent.vehicle.max_engine_torque;
-					const float clutch_strength = physicscomponent.vehicle.clutch_strength;
-
-					const float back_wheel_radius = physicscomponent.vehicle.wheel_radius;
-					const float back_wheel_width = physicscomponent.vehicle.wheel_width;
-					const float back_wheel_pos_z = -physicscomponent.vehicle.chassis_half_length + physicscomponent.vehicle.rear_wheel_offset;
-					const float back_suspension_min_length = physicscomponent.vehicle.rear_suspension.min_length;
-					const float back_suspension_max_length = physicscomponent.vehicle.rear_suspension.max_length;
-					const float back_suspension_freq = physicscomponent.vehicle.rear_suspension.frequency;
-					const float back_brake_torque = physicscomponent.vehicle.motorcycle.rear_brake_torque;
-
-					const float front_wheel_radius = physicscomponent.vehicle.wheel_radius;
-					const float front_wheel_width = physicscomponent.vehicle.wheel_width;
-					const float front_wheel_pos_z = physicscomponent.vehicle.chassis_half_length + physicscomponent.vehicle.front_wheel_offset;
-					const float front_suspension_min_length = physicscomponent.vehicle.front_suspension.min_length;
-					const float front_suspension_max_length = physicscomponent.vehicle.front_suspension.max_length;
-					const float front_suspension_freq = physicscomponent.vehicle.front_suspension.frequency;
-					const float front_brake_torque = physicscomponent.vehicle.motorcycle.front_brake_torque;
-					const float half_vehicle_height = physicscomponent.vehicle.chassis_half_height;
-
-					const float max_steering_angle = physicscomponent.vehicle.max_steering_angle;
-
-					const float caster_angle = physicscomponent.vehicle.motorcycle.front_suspension_angle;
-
-					const float	sMaxRollAngle = physicscomponent.vehicle.max_roll_angle;
-
-					const bool sOverrideFrontSuspensionForcePoint = false;	///< If true, the front suspension force point is overridden
-					const bool sOverrideRearSuspensionForcePoint = false;	///< If true, the rear suspension force point is overridden
-
-					// Create collision testers
-					VehicleCollisionTester* vehicle_tester = nullptr;
-					switch (physicscomponent.vehicle.collision_mode)
-					{
-					default:
-					case RigidBodyPhysicsComponent::Vehicle::CollisionMode::Ray:
-						vehicle_tester = new VehicleCollisionTesterRay(Layers::MOVING);
-						break;
-					case RigidBodyPhysicsComponent::Vehicle::CollisionMode::Sphere:
-						vehicle_tester = new VehicleCollisionTesterCastSphere(Layers::MOVING, 0.5f * std::max(back_wheel_radius, front_wheel_radius));
-						break;
-					case RigidBodyPhysicsComponent::Vehicle::CollisionMode::Cylinder:
-						vehicle_tester = new VehicleCollisionTesterCastCylinder(Layers::MOVING);
-						break;
-					}
-
-					// Create vehicle constraint
-					VehicleConstraintSettings vehicle;
-					vehicle.mDrawConstraintSize = 0.1f;
-					vehicle.mMaxPitchRollAngle = sMaxRollAngle;
-
-					// Wheels
-					WheelSettingsWV* front = new WheelSettingsWV;
-					front->mPosition = Vec3(0.0f, half_vehicle_height, front_wheel_pos_z);
-					front->mMaxSteerAngle = max_steering_angle;
-					front->mSuspensionDirection = Vec3(0, -1, Tan(caster_angle)).Normalized();
-					front->mSteeringAxis = -front->mSuspensionDirection;
-					front->mRadius = front_wheel_radius;
-					front->mWidth = front_wheel_width;
-					front->mSuspensionMinLength = front_suspension_min_length;
-					front->mSuspensionMaxLength = front_suspension_max_length;
-					front->mSuspensionSpring.mFrequency = front_suspension_freq;
-					front->mMaxBrakeTorque = front_brake_torque;
-
-					WheelSettingsWV* back = new WheelSettingsWV;
-					back->mPosition = Vec3(0.0f, half_vehicle_height, back_wheel_pos_z);
-					back->mMaxSteerAngle = 0.0f;
-					back->mRadius = back_wheel_radius;
-					back->mWidth = back_wheel_width;
-					back->mSuspensionMinLength = back_suspension_min_length;
-					back->mSuspensionMaxLength = back_suspension_max_length;
-					back->mSuspensionSpring.mFrequency = back_suspension_freq;
-					back->mMaxBrakeTorque = back_brake_torque;
-
-					if (sOverrideFrontSuspensionForcePoint)
-					{
-						front->mEnableSuspensionForcePoint = true;
-						front->mSuspensionForcePoint = front->mPosition + front->mSuspensionDirection * front->mSuspensionMinLength;
-					}
-
-					if (sOverrideRearSuspensionForcePoint)
-					{
-						back->mEnableSuspensionForcePoint = true;
-						back->mSuspensionForcePoint = back->mPosition + back->mSuspensionDirection * back->mSuspensionMinLength;
-					}
-
-					vehicle.mWheels = { front, back };
-
-					MotorcycleControllerSettings* controller = new MotorcycleControllerSettings;
-					controller->mEngine.mMaxTorque = max_engine_torque;
-					controller->mEngine.mMinRPM = 1000.0f;
-					controller->mEngine.mMaxRPM = 10000.0f;
-					controller->mTransmission.mShiftDownRPM = 2000.0f;
-					controller->mTransmission.mShiftUpRPM = 8000.0f;
-					controller->mTransmission.mGearRatios = { 2.27f, 1.63f, 1.3f, 1.09f, 0.96f, 0.88f }; // From: https://www.blocklayer.com/rpm-gear-bikes
-					controller->mTransmission.mReverseGearRatios = { -4.0f };
-					controller->mTransmission.mClutchStrength = clutch_strength;
-					//controller->mMaxLeanAngle = sMaxRollAngle;
-					vehicle.mController = controller;
-
-					// Differential (not really applicable to a motorcycle but we need one anyway to drive it)
-					controller->mDifferentials.resize(1);
-					controller->mDifferentials[0].mLeftWheel = -1;
-					controller->mDifferentials[0].mRightWheel = 1;
-					controller->mDifferentials[0].mDifferentialRatio = 1.93f * 40.0f / 16.0f; // Combining primary and final drive (back divided by front sprockets) from: https://www.blocklayer.com/rpm-gear-bikes
-
-					physicsobject.vehicle_constraint = new VehicleConstraint(*body, vehicle);
-					physicsobject.vehicle_constraint->SetVehicleCollisionTester(vehicle_tester);
-					physics_scene.physics_system.AddConstraint(physicsobject.vehicle_constraint);
-					physics_scene.physics_system.AddStepListener(physicsobject.vehicle_constraint);
 				}
 			}
 		}
@@ -1948,10 +2138,14 @@ namespace wi::physics
 		wilog("wi::physics Initialized [Jolt Physics %d.%d.%d] (%d ms)", JPH_VERSION_MAJOR, JPH_VERSION_MINOR, JPH_VERSION_PATCH, (int)std::round(timer.elapsed()));
 	}
 
-	void CreateRigidBodyShape(
+	namespace jolt
+	{
+	// The shape factory proper. `source` is where mesh-based shapes read their triangles from:
+	//	a scene MeshComponent, or a collision model loaded from a file. Primitive shapes ignore it.
+	void CreateRigidBodyShapeFromSource(
 		wi::scene::RigidBodyPhysicsComponent& physicscomponent,
 		const XMFLOAT3& scale_local,
-		const wi::scene::MeshComponent* mesh
+		const ShapeGeometrySource& source
 	)
 	{
 		RigidBody& physicsobject = GetRigidBody(physicscomponent);
@@ -1962,6 +2156,20 @@ namespace wi::physics
 		const float convexRadius = 0.001f;
 
 		Vec3 bottom_offset = Vec3::sZero();
+
+		// A zero or negative scale collapses every shape below into something Jolt refuses to
+		//	build, and the failure used to surface much later as a null shape dereference. An
+		//	entity scaled to 0 on one axis is a normal thing to do in an editor, so this is a
+		//	skip with a reason rather than an error.
+		if (scale_local.x == 0.0f || scale_local.y == 0.0f || scale_local.z == 0.0f)
+		{
+			wi::backlog::post(
+				"CreateRigidBodyShape skipped: the entity's scale has a zero component, which cannot make a collision shape.",
+				wi::backlog::LogLevel::Warning);
+			return;
+		}
+
+		const wi::scene::MeshComponent* mesh = source.mesh;
 
 		switch (physicscomponent.shape)
 		{
@@ -1999,12 +2207,16 @@ namespace wi::physics
 		break;
 
 		case RigidBodyPhysicsComponent::CollisionShape::CONVEX_HULL:
-			if (mesh != nullptr)
+			if (source.IsValid())
 			{
+				const XMFLOAT3* positions = source.GetVertexPositions();
+				const size_t position_count = source.GetVertexCount();
+
 				Array<Vec3> points;
-				points.reserve(mesh->vertex_positions.size());
-				for (auto& pos : mesh->vertex_positions)
+				points.reserve(position_count);
+				for (size_t i = 0; i < position_count; ++i)
 				{
+					const XMFLOAT3& pos = positions[i];
 					points.push_back(Vec3(pos.x * scale_local.x, pos.y * scale_local.y, pos.z * scale_local.z));
 				}
 				ConvexHullShapeSettings settings(points, convexRadius);
@@ -2013,32 +2225,70 @@ namespace wi::physics
 			}
 			else
 			{
-				wi::backlog::post("CreateRigidBodyShape failed: convex hull physics requested, but no MeshComponent provided!", wi::backlog::LogLevel::Error);
+				wi::backlog::post("CreateRigidBodyShape failed: convex hull physics requested, but no usable collision geometry was found (no mesh, or a mesh with no vertices).", wi::backlog::LogLevel::Error);
 				return;
 			}
 			break;
 
 		case RigidBodyPhysicsComponent::CollisionShape::TRIANGLE_MESH:
-			if (mesh != nullptr)
+			if (source.IsValid())
 			{
 				TriangleList trianglelist;
 
-				uint32_t first_subset = 0;
-				uint32_t last_subset = 0;
-				mesh->GetLODSubsetRange(physicscomponent.mesh_lod, first_subset, last_subset);
-				for (uint32_t subsetIndex = first_subset; subsetIndex < last_subset; ++subsetIndex)
+				// Winding is reversed on the way in (V1 and V2 swapped): the engine and Jolt
+				//	disagree on handedness, and a mesh built the other way round collides from
+				//	the inside.
+				auto add_triangles = [&](const XMFLOAT3* positions, size_t position_count, const uint32_t* indices, size_t index_count)
 				{
-					const MeshComponent::MeshSubset& subset = mesh->subsets[subsetIndex];
-					const uint32_t* indices = mesh->indices.data() + subset.indexOffset;
-					for (uint32_t i = 0; i < subset.indexCount; i += 3)
+					for (size_t i = 0; i + 2 < index_count; i += 3)
 					{
+						const uint32_t i0 = indices[i + 0];
+						const uint32_t i1 = indices[i + 1];
+						const uint32_t i2 = indices[i + 2];
+						// A subset can name a vertex the mesh does not have if the two halves were
+						//	edited out of step. Dropping the triangle beats reading past the array.
+						if (i0 >= position_count || i1 >= position_count || i2 >= position_count)
+							continue;
+
 						Triangle triangle;
 						triangle.mMaterialIndex = 0;
-						triangle.mV[0] = Float3(mesh->vertex_positions[indices[i + 0]].x * scale_local.x, mesh->vertex_positions[indices[i + 0]].y * scale_local.y, mesh->vertex_positions[indices[i + 0]].z * scale_local.z);
-						triangle.mV[2] = Float3(mesh->vertex_positions[indices[i + 1]].x * scale_local.x, mesh->vertex_positions[indices[i + 1]].y * scale_local.y, mesh->vertex_positions[indices[i + 1]].z * scale_local.z);
-						triangle.mV[1] = Float3(mesh->vertex_positions[indices[i + 2]].x * scale_local.x, mesh->vertex_positions[indices[i + 2]].y * scale_local.y, mesh->vertex_positions[indices[i + 2]].z * scale_local.z);
+						triangle.mV[0] = Float3(positions[i0].x * scale_local.x, positions[i0].y * scale_local.y, positions[i0].z * scale_local.z);
+						triangle.mV[2] = Float3(positions[i1].x * scale_local.x, positions[i1].y * scale_local.y, positions[i1].z * scale_local.z);
+						triangle.mV[1] = Float3(positions[i2].x * scale_local.x, positions[i2].y * scale_local.y, positions[i2].z * scale_local.z);
 						trianglelist.push_back(triangle);
 					}
+				};
+
+				if (mesh != nullptr)
+				{
+					// A scene mesh carries LOD subsets, so mesh_lod picks which range to collide.
+					const size_t position_count = mesh->vertex_positions.size();
+					uint32_t first_subset = 0;
+					uint32_t last_subset = 0;
+					mesh->GetLODSubsetRange(physicscomponent.mesh_lod, first_subset, last_subset);
+					last_subset = std::min(last_subset, (uint32_t)mesh->subsets.size());
+					for (uint32_t subsetIndex = first_subset; subsetIndex < last_subset; ++subsetIndex)
+					{
+						const MeshComponent::MeshSubset& subset = mesh->subsets[subsetIndex];
+						if (subset.indexCount == 0)
+							continue;
+						// An empty index buffer makes data() null, and the subset offsets are not
+						//	re-validated when a mesh is rebuilt, so both are checked here.
+						if ((size_t)subset.indexOffset + subset.indexCount > mesh->indices.size())
+							continue;
+						add_triangles(mesh->vertex_positions.data(), position_count, mesh->indices.data() + subset.indexOffset, subset.indexCount);
+					}
+				}
+				else
+				{
+					// A collision model is one flat triangle soup: no LODs, no subsets.
+					add_triangles(source.GetVertexPositions(), source.GetVertexCount(), source.geometry->indices.data(), source.geometry->indices.size());
+				}
+
+				if (trianglelist.empty())
+				{
+					wi::backlog::post("CreateRigidBodyShape failed: triangle mesh physics requested, but the geometry produced no triangles (check the mesh LOD).", wi::backlog::LogLevel::Error);
+					return;
 				}
 
 				MeshShapeSettings settings(trianglelist);
@@ -2047,21 +2297,25 @@ namespace wi::physics
 			}
 			else
 			{
-				wi::backlog::post("CreateRigidBodyShape failed: triangle mesh physics requested, but no MeshComponent provided!", wi::backlog::LogLevel::Error);
+				wi::backlog::post("CreateRigidBodyShape failed: triangle mesh physics requested, but no usable collision geometry was found (no mesh, or a mesh with no vertices).", wi::backlog::LogLevel::Error);
 				return;
 			}
 			break;
 
 		case RigidBodyPhysicsComponent::CollisionShape::HEIGHTFIELD:
-			if (mesh != nullptr)
+			if (source.IsValid())
 			{
+				const XMFLOAT3* positions = source.GetVertexPositions();
+				const size_t position_count = source.GetVertexCount();
+
 				wi::vector<float> heights;
-				heights.reserve(mesh->vertex_positions.size());
+				heights.reserve(position_count);
 
 				wi::primitive::AABB aabb;
 
-				for (XMFLOAT3 pos : mesh->vertex_positions)
+				for (size_t i = 0; i < position_count; ++i)
 				{
+					XMFLOAT3 pos = positions[i];
 					pos.x *= scale_local.x;
 					pos.y *= scale_local.y;
 					pos.z *= scale_local.z;
@@ -2073,7 +2327,17 @@ namespace wi::physics
 				min.y = 0;
 
 				uint32_t dim = (uint32_t)std::sqrt((double)heights.size());
-				wilog_assert(dim >= 2, "Height field shape dimension must be at least 2!");
+				// A height field is a square grid of samples. wilog_assert compiles out of a
+				//	release build, so a mesh that is not a square grid used to reach Jolt with a
+				//	dim of 0 or 1 and divide by zero below.
+				if (dim < 2 || (size_t)dim * dim > heights.size())
+				{
+					wi::backlog::post(
+						"CreateRigidBodyShape failed: height field physics needs a square grid of at least 2x2 vertices, and this mesh has " +
+						std::to_string(heights.size()) + ".",
+						wi::backlog::LogLevel::Error);
+					return;
+				}
 
 				Vec3 scale = cast(aabb.getHalfWidth()) * 2 / (float)(dim - 1);
 				scale.SetY(1);
@@ -2084,7 +2348,7 @@ namespace wi::physics
 			}
 			else
 			{
-				wi::backlog::post("CreateRigidBodyShape failed: height field physics requested, but no MeshComponent provided!", wi::backlog::LogLevel::Error);
+				wi::backlog::post("CreateRigidBodyShape failed: height field physics requested, but no usable collision geometry was found (no mesh, or a mesh with no vertices).", wi::backlog::LogLevel::Error);
 				return;
 			}
 			break;
@@ -2097,7 +2361,53 @@ namespace wi::physics
 			return;
 		}
 
-		physicsobject.shape = shape_result.Get();
+		// Get() can still hand back nothing on a shape Jolt accepted but could not build, and
+		//	everything downstream dereferences this without checking.
+		ShapeRefC created = shape_result.Get();
+		if (created == nullptr)
+		{
+			wi::backlog::post("CreateRigidBodyShape failed: the shape reported success but produced nothing.", wi::backlog::LogLevel::Error);
+			return;
+		}
+
+		physicsobject.shape = created;
+	}
+	} // namespace jolt
+
+	void CreateRigidBodyShape(
+		wi::scene::RigidBodyPhysicsComponent& physicscomponent,
+		const XMFLOAT3& scale_local,
+		const wi::scene::MeshComponent* mesh
+	)
+	{
+		jolt::ShapeGeometrySource source;
+		source.mesh = mesh;
+		jolt::CreateRigidBodyShapeFromSource(physicscomponent, scale_local, source);
+	}
+
+	// --- SIMTARY EXTENSION: external collision models ---
+
+	void SetCollisionMeshLoader(CollisionMeshLoader loader)
+	{
+		jolt::collision_mesh_loader_lock.lock();
+		jolt::collision_mesh_loader = std::move(loader);
+		jolt::collision_mesh_loader_lock.unlock();
+
+		// A path that failed under the previous loader (or under none) deserves another try.
+		ClearCollisionMeshCache();
+	}
+	bool HasCollisionMeshLoader()
+	{
+		jolt::collision_mesh_loader_lock.lock();
+		const bool has = jolt::collision_mesh_loader != nullptr;
+		jolt::collision_mesh_loader_lock.unlock();
+		return has;
+	}
+	void ClearCollisionMeshCache()
+	{
+		jolt::collision_mesh_cache.lock.lock();
+		jolt::collision_mesh_cache.cache.clear();
+		jolt::collision_mesh_cache.lock.unlock();
 	}
 
 	bool IsEnabled() { return ENABLED; }
@@ -2151,6 +2461,22 @@ namespace wi::physics
 		{
 			physics_scene.optimize_broadphase = false;
 			physics_scene.physics_system.OptimizeBroadPhase();
+		}
+
+		// --- SIMTARY EXTENSION: prime the collision model cache ---
+		//	Every body about to be built that collides against a FILE gets its model loaded here,
+		//	on the main thread, before any job runs. The loader is the framework's model importer:
+		//	it builds render data and registers resources, so calling it from a physics job is not
+		//	safe. Bodies then only ever read the cache. This walk is a handful of field reads per
+		//	rigid body and touches the disk once per unique path, ever.
+		for (size_t i = 0; i < scene.rigidbodies.GetCount(); ++i)
+		{
+			const RigidBodyPhysicsComponent& physicscomponent = scene.rigidbodies[i];
+			if (physicscomponent.physicsobject != nullptr && !physicscomponent.IsRefreshParametersNeeded())
+				continue;
+			if (physicscomponent.mesh_source != RigidBodyPhysicsComponent::MeshSource::ExternalFile)
+				continue;
+			PrefetchCollisionGeometry(physicscomponent.collision_mesh_file);
 		}
 
 		// First, do the creations when needed (AddRigidBody, AddSoftBody, etc):
@@ -2876,21 +3202,17 @@ namespace wi::physics
 
 						if (rb.vehicle_constraint != nullptr)
 						{
-							const Entity car_wheel_entities[] = {
-								physicscomponent.vehicle.wheel_entity_front_left,
-								physicscomponent.vehicle.wheel_entity_front_right,
-								physicscomponent.vehicle.wheel_entity_rear_left,
-								physicscomponent.vehicle.wheel_entity_rear_right,
-							};
-							const Entity motor_wheel_entities[] = {
-								physicscomponent.vehicle.wheel_entity_front_left,
-								physicscomponent.vehicle.wheel_entity_rear_left,
-							};
-							const uint32_t count = physicscomponent.vehicle.type == RigidBodyPhysicsComponent::Vehicle::Type::Car ? arraysize(car_wheel_entities) : arraysize(motor_wheel_entities);
+							// One entry per wheel the constraint was actually built with. The
+							//	component can have gained or lost wheels since, and the body is not
+							//	rebuilt until the next refresh, so the snapshot arrays are what say
+							//	how many there are.
+							const uint32_t count = std::min(
+								(uint32_t)rb.prev_wheel_positions.size(),
+								(uint32_t)physicscomponent.vehicle.wheels.size());
 
 							for (uint32_t i = 0; i < count; ++i)
 							{
-								Entity wheel_entity = physicscomponent.vehicle.type == RigidBodyPhysicsComponent::Vehicle::Type::Car ? car_wheel_entities[i] : motor_wheel_entities[i];
+								const Entity wheel_entity = physicscomponent.vehicle.wheels[i].entity;
 								if (wheel_entity == INVALID_ENTITY)
 									continue;
 
@@ -3780,21 +4102,15 @@ namespace wi::physics
 			if (physicsobject.vehicle_constraint == nullptr)
 				return;
 
-			const Entity car_wheel_entities[] = {
-				physicscomponent.vehicle.wheel_entity_front_left,
-				physicscomponent.vehicle.wheel_entity_front_right,
-				physicscomponent.vehicle.wheel_entity_rear_left,
-				physicscomponent.vehicle.wheel_entity_rear_right,
-			};
-			const Entity motor_wheel_entities[] = {
-				physicscomponent.vehicle.wheel_entity_front_left,
-				physicscomponent.vehicle.wheel_entity_rear_left,
-			};
-			const uint32_t count = physicscomponent.vehicle.type == RigidBodyPhysicsComponent::Vehicle::Type::Car ? arraysize(car_wheel_entities) : arraysize(motor_wheel_entities);
+			// One entry per wheel the constraint was built with; the component's array can have
+			//	changed since without the body having been rebuilt yet.
+			const uint32_t count = std::min(
+				(uint32_t)physicsobject.prev_wheel_positions.size(),
+				(uint32_t)physicscomponent.vehicle.wheels.size());
 
 			for (uint32_t i = 0; i < count; ++i)
 			{
-				Entity wheel_entity = physicscomponent.vehicle.type == RigidBodyPhysicsComponent::Vehicle::Type::Car ? car_wheel_entities[i] : motor_wheel_entities[i];
+				const Entity wheel_entity = physicscomponent.vehicle.wheels[i].entity;
 				if (wheel_entity == INVALID_ENTITY)
 					continue;
 

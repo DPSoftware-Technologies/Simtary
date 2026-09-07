@@ -170,10 +170,21 @@ namespace wi::input
 	struct ControllerState
 	{
 		uint32_t buttons = 0;
+		// Processed values: deadzoned and rescaled. This is what the game reads.
+		//	Sign convention, the same for every backend: X is right-positive,
+		//	thumbstick_L.y is UP-positive and thumbstick_R.y is DOWN-positive.
 		XMFLOAT2 thumbstick_L = XMFLOAT2(0, 0);
 		XMFLOAT2 thumbstick_R = XMFLOAT2(0, 0);
 		float trigger_L = 0;
 		float trigger_R = 0;
+
+		// The same values straight off the device, before the deadzone, in the same
+		//	sign convention. Only diagnostics reads these (the DevUI analog scope) -
+		//	they are what makes a bad deadzone or a drifting stick visible.
+		XMFLOAT2 thumbstick_L_raw = XMFLOAT2(0, 0);
+		XMFLOAT2 thumbstick_R_raw = XMFLOAT2(0, 0);
+		float trigger_L_raw = 0;
+		float trigger_R_raw = 0;
 	};
 	struct ControllerFeedback
 	{
@@ -211,6 +222,39 @@ namespace wi::input
 	void HidePointer(bool value);
 	// read analog input from controllers, like thumbsticks or triggers
 	XMFLOAT4 GetAnalog(GAMEPAD_ANALOG analog, int playerIndex = 0);
+
+	// Deadzone / response shaping, shared by EVERY controller backend (XInput,
+	//	RawInput, SDL, PS5, Apple). It used to live as three separate hardcoded
+	//	constants inside the backends - 0.24 in XInput, 0.26 in RawInput, 0.20 in SDL -
+	//	so the same physical pad behaved differently depending on which backend
+	//	happened to own its slot, and none of them rescaled: the axis snapped from 0
+	//	straight to the deadzone value instead of easing out of it.
+	struct AnalogSettings
+	{
+		float stick_deadzone   = 0.16f; // radial, applied to both axes of a stick together
+		float stick_saturation = 0.95f; // magnitude treated as full deflection (worn sticks rarely reach 1)
+		float trigger_deadzone = 0.06f;
+		float trigger_saturation = 0.98f;
+	};
+	AnalogSettings& GetAnalogSettings();
+
+	// Radial deadzone with rescaling.
+	//	Radial, not per-axis: a per-axis cut squares off the corner of the stick gate,
+	//	so a diagonal push registers a different magnitude than a straight one, and an
+	//	axis resting near the threshold flickers on and off independently of its twin.
+	//	Rescaling maps [deadzone, saturation] back onto [0, 1], so movement starts from
+	//	0 continuously instead of jumping to the deadzone value.
+	XMFLOAT2 ApplyStickDeadzone(const XMFLOAT2& value);
+	float ApplyTriggerDeadzone(float value);
+
+	// Diagnostics: what the engine currently believes is plugged in. Player index is
+	//	the same index Down()/GetAnalog() take.
+	int GetControllerCount();
+	// Backend that owns this slot ("XInput", "RawInput", "SDL", "PS5", "Apple",
+	//	"disconnected"), or nullptr when the index is out of range.
+	const char* GetControllerBackend(int playerindex);
+	// Full state of a slot, processed AND raw. Returns false for an out-of-range index.
+	bool GetControllerState(ControllerState* state, int playerindex);
 	// send various feedback to the controller
 	void SetControllerFeedback(const ControllerFeedback& data, int playerindex = 0);
 

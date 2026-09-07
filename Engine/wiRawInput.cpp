@@ -4,6 +4,7 @@
 #ifdef PLATFORM_WINDOWS_DESKTOP
 #include "wiVector.h"
 
+#include <algorithm>
 #include <cassert>
 #include <string>
 #include <hidsdi.h>
@@ -124,15 +125,46 @@ namespace wi::input::rawinput
 		input_messages.reserve(64);
 	}
 
-	constexpr float deadzone(float x)
+	// Map one HID value onto [-1, 1] using the range the DEVICE declares.
+	//	The old code assumed every axis was 8-bit and centred on 128:
+	//	`(value - 128) / 128`. That is true of a DualShock 4 and false of most
+	//	other pads - a 16-bit axis produced values in the thousands, which
+	//	saturated the stick to +/-1 the moment it was touched. LogicalMin and
+	//	LogicalMax are reported per usage precisely so the caller does not have
+	//	to guess.
+	inline float hid_axis_to_signed(const HIDP_VALUE_CAPS& caps, ULONG value)
 	{
-		if ((x) > -0.26f && (x) < 0.26f)
-			x = 0;
-		if (x < -1.0f)
-			x = -1.0f;
-		if (x > 1.0f)
-			x = 1.0f;
-		return x;
+		LONG logical_min = caps.LogicalMin;
+		LONG logical_max = caps.LogicalMax;
+
+		// A device that declares LogicalMin == 0 reports UNSIGNED, so the raw ULONG
+		//	is already correct. Otherwise the report field is a signed two's-complement
+		//	value of BitSize bits, and HidP_GetUsageValue hands it back zero-extended.
+		LONG signed_value = (LONG)value;
+		if (logical_min < 0 && caps.BitSize > 0 && caps.BitSize < 32)
+		{
+			const ULONG sign_bit = 1ul << (caps.BitSize - 1);
+			if (value & sign_bit)
+			{
+				signed_value = (LONG)(value | (~0ul << caps.BitSize));
+			}
+		}
+
+		if (logical_max <= logical_min)
+		{
+			return 0; // device declared a degenerate range; nothing sane to report
+		}
+
+		// Normalize to [0,1] then to [-1,1] around the middle of the declared range.
+		const float span = (float)(logical_max - logical_min);
+		const float unit = ((float)(signed_value - logical_min)) / span;
+		return std::max(-1.0f, std::min(1.0f, unit * 2.0f - 1.0f));
+	}
+
+	// Triggers are one-sided: [logical_min, logical_max] -> [0, 1].
+	inline float hid_axis_to_unsigned(const HIDP_VALUE_CAPS& caps, ULONG value)
+	{
+		return std::max(0.0f, std::min(1.0f, (hid_axis_to_signed(caps, value) + 1.0f) * 0.5f));
 	}
 
 	void ParseRawInputBlock(const RAWINPUT& raw)
@@ -304,34 +336,42 @@ namespace wi::input::rawinput
 
 				for (USHORT i = 0; i < Caps.NumberInputValueCaps; i++)
 				{
+					// Range.UsageMin is only meaningful when the caps entry IS a range.
+					//	For the single-usage entries a gamepad's axes actually use,
+					//	the usage lives in NotRange.Usage and Range.UsageMin is
+					//	uninitialised padding - reading it there matched axes by luck.
+					const USAGE usage_id = pValueCaps[i].IsRange
+						? pValueCaps[i].Range.UsageMin
+						: pValueCaps[i].NotRange.Usage;
+
 					ULONG value;
 					if(HidP_GetUsageValue(
 						HidP_Input, pValueCaps[i].UsagePage, 0,
-						pValueCaps[i].Range.UsageMin, &value, pPreparsedData,
+						usage_id, &value, pPreparsedData,
 						(PCHAR)raw.data.hid.bRawData, raw.data.hid.dwSizeHid) != HIDP_STATUS_SUCCESS)
 					{
 						continue;
 					}
 
-					switch (pValueCaps[i].Range.UsageMin)
+					switch (usage_id)
 					{
 					case 0x30:  // X-axis
-						controller.thumbstick_L.x = deadzone(((float)value - 128) / 128.0f);
+						controller.thumbstick_L_raw.x = hid_axis_to_signed(pValueCaps[i], value);
 						break;
-					case 0x31:  // Y-axis
-						controller.thumbstick_L.y = deadzone(-((float)value - 128) / 128.0f);
+					case 0x31:  // Y-axis (HID is down-positive; engine wants L up-positive)
+						controller.thumbstick_L_raw.y = -hid_axis_to_signed(pValueCaps[i], value);
 						break;
 					case 0x32: // Z-axis
-						controller.thumbstick_R.x = deadzone(((float)value - 128) / 128.0f);
+						controller.thumbstick_R_raw.x = hid_axis_to_signed(pValueCaps[i], value);
 						break;
 					case 0x33: // Rotate-X
-						controller.trigger_L = deadzone((float)value / 256.0f);
+						controller.trigger_L_raw = hid_axis_to_unsigned(pValueCaps[i], value);
 						break;
 					case 0x34: // Rotate-Y
-						controller.trigger_R = deadzone((float)value / 256.0f);
+						controller.trigger_R_raw = hid_axis_to_unsigned(pValueCaps[i], value);
 						break;
-					case 0x35: // Rotate-Z
-						controller.thumbstick_R.y = deadzone(((float)value - 128) / 128.0f);
+					case 0x35: // Rotate-Z (engine keeps the RIGHT stick down-positive)
+						controller.thumbstick_R_raw.y = hid_axis_to_signed(pValueCaps[i], value);
 						break;
 					case 0x39:  // Hat Switch
 					{
@@ -391,6 +431,13 @@ namespace wi::input::rawinput
 					break;
 					}
 				}
+
+				// One shared deadzone, applied to a stick's two axes together, after
+				//	every value in this report has been read.
+				controller.thumbstick_L = wi::input::ApplyStickDeadzone(controller.thumbstick_L_raw);
+				controller.thumbstick_R = wi::input::ApplyStickDeadzone(controller.thumbstick_R_raw);
+				controller.trigger_L = wi::input::ApplyTriggerDeadzone(controller.trigger_L_raw);
+				controller.trigger_R = wi::input::ApplyTriggerDeadzone(controller.trigger_R_raw);
 
 				allocator.free(preparsed_data_size + buttoncaps_buffer_size + valuecaps_buffer_size);
 

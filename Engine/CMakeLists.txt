@@ -302,6 +302,17 @@ target_link_libraries(Simtary_common PUBLIC ${Simtary_STATIC_LIBRARIES})
 # AL/al.h include dir propagates to consumers of the engine.
 target_link_libraries(Simtary_common PUBLIC OpenAL)
 
+# libopus (declared in the top-level CMakeLists). Backs the Ogg-Opus decoder in
+# stAudioDecoder.cpp, which is the only translation unit that includes opus.h.
+# SIMTARY_HAS_OPUS is PUBLIC rather than PRIVATE so game code can compile-time check
+# whether .opus is a format it may ship, the same way SIMTARY_HAS_STEAMAUDIO works.
+# When the SDK is absent the target simply does not exist and the decoder compiles
+# out - WAV, Ogg Vorbis and QOA are unaffected.
+if (TARGET opus)
+    target_link_libraries(Simtary_common PUBLIC opus)
+    target_compile_definitions(Simtary_common PUBLIC SIMTARY_HAS_OPUS=1)
+endif()
+
 # Steam Audio (declared in the top-level CMakeLists). PUBLIC so phonon.h's include
 # dir and the SIMTARY_HAS_STEAMAUDIO define reach every consumer of the engine -
 # stAudioSpatial.h switches its whole implementation on that define, and a game TU
@@ -341,6 +352,9 @@ set_property(SOURCE
     stAudioSpatial.cpp
     stAudioClip.cpp
     stAudioComponents.cpp
+    stAudioGeometry.cpp
+    stAudioDecoder.cpp
+    stAudioStream.cpp
     stAudioLegacy.cpp
 
     PROPERTY SKIP_UNITY_BUILD_INCLUSION TRUE

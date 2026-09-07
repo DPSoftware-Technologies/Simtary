@@ -6,6 +6,8 @@
 #include "wiUnorderedMap.h"
 #include "wiBacklog.h"
 
+#include <algorithm>
+
 namespace wi::input::sdlinput
 {
     wi::input::KeyboardState keyboard;
@@ -13,16 +15,27 @@ namespace wi::input::sdlinput
 
     struct Internal_ControllerState
     {
-        Sint32 portID;
-        SDL_JoystickID internalID;
-        SDL_GameController* controller;
-        Uint16 rumble_l, rumble_r = 0;
+        Sint32 portID = -1;
+        SDL_JoystickID internalID = -1;
+        SDL_GameController* controller = nullptr;
+        // `Uint16 rumble_l, rumble_r = 0;` only ever initialized rumble_r - the left
+        //  motor started on whatever happened to be in the allocation.
+        Uint16 rumble_l = 0;
+        Uint16 rumble_r = 0;
+        int xinput_user = -1; // SDL player index; on Windows this IS the XInput user index
         wi::input::ControllerState state;
     };
     wi::vector<Internal_ControllerState> controllers;
     wi::unordered_map<SDL_JoystickID, size_t> controller_mapped;
 
     wi::vector<SDL_Event> events;
+
+    // SDL axes are Sint16: the negative end reaches -32768, the positive end only
+    //  32767. Dividing both by 32767 overshoots -1 on the way left/down.
+    inline float normalize_axis(Sint16 v) {
+        const float f = (v < 0) ? ((float)v / 32768.0f) : ((float)v / 32767.0f);
+        return std::max(-1.0f, std::min(1.0f, f));
+    }
 
     int to_wicked(const SDL_Scancode &scan, const SDL_Keycode &sym);
     void controller_to_wicked(uint32_t *current, Uint8 button, bool pressed);
@@ -44,15 +57,32 @@ namespace wi::input::sdlinput
         SDL_GameController* gc = SDL_GameControllerOpen(joystick_index);
         if (gc == nullptr)
             return;
-        SDL_JoystickID iid = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(gc));
+        SDL_Joystick* js = SDL_GameControllerGetJoystick(gc);
+        SDL_JoystickID iid = SDL_JoystickInstanceID(js);
         if (controller_mapped.find(iid) != controller_mapped.end()) {
             SDL_GameControllerClose(gc); // already registered (e.g. via DEVICEADDED)
             return;
         }
-        auto& controller = controllers.emplace_back();
-        controller.controller = gc;
-        controller.portID     = joystick_index;
-        controller.internalID = iid;
+
+        // Reuse a slot a removed pad left behind rather than always appending. The
+        //  slot index is the identity wi::input remembers a device by, so it has to
+        //  stay put for as long as that device is plugged in.
+        size_t slot = controllers.size();
+        for (size_t i = 0; i < controllers.size(); ++i) {
+            if (controllers[i].controller == nullptr) {
+                slot = i;
+                break;
+            }
+        }
+        if (slot == controllers.size())
+            controllers.emplace_back();
+
+        Internal_ControllerState& controller = controllers[slot];
+        controller = Internal_ControllerState();
+        controller.controller  = gc;
+        controller.portID      = joystick_index;
+        controller.internalID  = iid;
+        controller.xinput_user = SDL_JoystickGetPlayerIndex(js);
         controller_map_rebuild();
     }
 
@@ -162,27 +192,35 @@ namespace wi::input::sdlinput
                 {
                     auto controller_get = controller_mapped.find(event.caxis.which);
                     if(controller_get != controller_mapped.end()){
-                        float raw = event.caxis.value / 32767.0f;
-                        const float deadzone = 0.2;
-                        float deadzoned = (raw < -deadzone || raw > deadzone) ? raw : 0;
+                        // Store RAW only. A radial deadzone needs both axes of a stick
+                        //  at once, and SDL delivers X and Y as two separate events, so
+                        //  it cannot be applied here - it is applied once per frame
+                        //  below, after the whole event batch has landed.
+                        //  The old code deadzoned each axis on its own at 0.20 with no
+                        //  rescale: that squares off the stick gate, and lets one axis
+                        //  drop to 0 while its twin still reports motion.
+                        const float raw = normalize_axis(event.caxis.value);
+                        wi::input::ControllerState& state = controllers[controller_get->second].state;
                         switch(event.caxis.axis){
                             case SDL_CONTROLLER_AXIS_LEFTX:
-                                controllers[controller_get->second].state.thumbstick_L.x = deadzoned;
+                                state.thumbstick_L_raw.x = raw;
                                 break;
                             case SDL_CONTROLLER_AXIS_LEFTY:
-                                controllers[controller_get->second].state.thumbstick_L.y = -deadzoned;
+                                // SDL reports Y down-positive; engine wants L up-positive.
+                                state.thumbstick_L_raw.y = -raw;
                                 break;
                             case SDL_CONTROLLER_AXIS_RIGHTX:
-                                controllers[controller_get->second].state.thumbstick_R.x = deadzoned;
+                                state.thumbstick_R_raw.x = raw;
                                 break;
                             case SDL_CONTROLLER_AXIS_RIGHTY:
-                                controllers[controller_get->second].state.thumbstick_R.y = deadzoned;
+                                // Engine convention keeps the RIGHT stick down-positive.
+                                state.thumbstick_R_raw.y = raw;
                                 break;
                             case SDL_CONTROLLER_AXIS_TRIGGERLEFT:
-                                controllers[controller_get->second].state.trigger_L = (deadzoned > 0.f) ? deadzoned : 0;
+                                state.trigger_L_raw = std::max(0.0f, raw);
                                 break;
                             case SDL_CONTROLLER_AXIS_TRIGGERRIGHT:
-                                controllers[controller_get->second].state.trigger_R = (deadzoned > 0.f) ? deadzoned : 0;
+                                state.trigger_R_raw = std::max(0.0f, raw);
                                 break;
                         }
                     }
@@ -216,8 +254,11 @@ namespace wi::input::sdlinput
                     auto find = controller_mapped.find(event.cdevice.which);
                     if(find != controller_mapped.end()){
                         SDL_GameControllerClose(controllers[find->second].controller);
-                        controllers[find->second] = std::move(controllers.back());
-                        controllers.pop_back();
+                        // Free the slot IN PLACE. This used to swap the last element
+                        //  down and pop, which renumbered every pad after the removed
+                        //  one - and wi::input remembers a device by that number, so
+                        //  unplugging pad 1 silently handed pad 2's stick to player 1.
+                        controllers[find->second] = Internal_ControllerState();
                     }
                     controller_map_rebuild();
                     break;
@@ -247,8 +288,23 @@ namespace wi::input::sdlinput
             //external_events.push_back(event);
         }
 
+        // Deadzone pass. Once per frame, after every axis event for this frame has
+        //  landed, so both axes of a stick are deadzoned together and by the same
+        //  shared rule every other backend uses.
+        for(auto& controller : controllers){
+            if(controller.controller == nullptr)
+                continue;
+            wi::input::ControllerState& state = controller.state;
+            state.thumbstick_L = wi::input::ApplyStickDeadzone(state.thumbstick_L_raw);
+            state.thumbstick_R = wi::input::ApplyStickDeadzone(state.thumbstick_R_raw);
+            state.trigger_L    = wi::input::ApplyTriggerDeadzone(state.trigger_L_raw);
+            state.trigger_R    = wi::input::ApplyTriggerDeadzone(state.trigger_R_raw);
+        }
+
         //Update rumble every call
         for(auto& controller : controllers){
+            if(controller.controller == nullptr)
+                continue;
             SDL_GameControllerRumble(
                 controller.controller,
                 controller.rumble_l,
@@ -388,8 +444,10 @@ namespace wi::input::sdlinput
     // Rebuild controller mappings for fast array access
     void controller_map_rebuild(){
         controller_mapped.clear();
-        for(int index = 0; index < controllers.size(); ++index){
-            controller_mapped.insert({controllers[index].internalID, index});
+        for(int index = 0; index < (int)controllers.size(); ++index){
+            if(controllers[index].controller == nullptr)
+                continue; // freed slot, kept so the indices after it do not shift
+            controller_mapped.insert({controllers[index].internalID, (size_t)index});
         }
     }
 
@@ -400,9 +458,9 @@ namespace wi::input::sdlinput
         *state = mouse;
     }
 
-    int GetMaxControllerCount() { return controllers.size(); }
+    int GetMaxControllerCount() { return (int)controllers.size(); }
     bool GetControllerState(wi::input::ControllerState* state, int index) {
-        if(index < controllers.size()){
+        if(index >= 0 && index < (int)controllers.size() && controllers[index].controller != nullptr){
             if (state != nullptr)
             {
                 *state = controllers[index].state;
@@ -411,8 +469,13 @@ namespace wi::input::sdlinput
         }
         return false;
     }
+    int GetControllerXInputUserIndex(int index) {
+        if(index >= 0 && index < (int)controllers.size() && controllers[index].controller != nullptr)
+            return controllers[index].xinput_user;
+        return -1;
+    }
     void SetControllerFeedback(const wi::input::ControllerFeedback& data, int index) {
-        if(index < controllers.size()){
+        if(index >= 0 && index < (int)controllers.size() && controllers[index].controller != nullptr){
 #ifdef SDL2_FEATURE_CONTROLLER_LED
             SDL_GameControllerSetLED(
                 controllers[index].controller,
@@ -434,6 +497,7 @@ namespace wi::input::sdlinput
     void GetMouseState(wi::input::MouseState* state) {}
     int GetMaxControllerCount() { return 0; }
     bool GetControllerState(wi::input::ControllerState* state, int index) { return false; }
+    int GetControllerXInputUserIndex(int index) { return -1; }
     void SetControllerFeedback(const wi::input::ControllerFeedback& data, int index) {}
 }
 #endif // _WIN32

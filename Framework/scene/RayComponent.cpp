@@ -111,4 +111,4 @@ void RayComponent::DrawDebug() {
 // qualified one. The alias is the type, so GetNativeTypeID<> still resolves to the
 // same identity a GetComponent<st::RayComponent>() lookup asks for.
 using StRayComponent = st::RayComponent;
-ST_REGISTER_NATIVE_COMPONENT_AS(StRayComponent, "sticRay")
+ST_REGISTER_FRAMEWORK_COMPONENT_AS(StRayComponent, "sticRay", "Scene")

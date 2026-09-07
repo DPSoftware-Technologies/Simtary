@@ -244,6 +244,8 @@ namespace wi
 			{"HDR", DataType::IMAGE},
 			{"WAV", DataType::SOUND},
 			{"OGG", DataType::SOUND},
+			{"QOA", DataType::SOUND},
+			{"OPUS", DataType::SOUND},
 			{"LUA", DataType::SCRIPT},
 			{"MP4", DataType::VIDEO_MP4},
 			{"H264", DataType::VIDEO_H264_RAW},

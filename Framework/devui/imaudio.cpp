@@ -146,11 +146,12 @@ void AudioMixerGUI () {
                 LabelledValue("pathing", "%s", sim.pathing ? "enabled" : "off");
                 ImGui::EndTable();
             }
-            // Occlusion and reflections are inert until scene geometry is registered,
-            // and nothing does that automatically yet. Saying so here saves the hour
-            // otherwise spent wondering why a wall does not block anything.
-            ImGui::TextDisabled("Geometry: register meshes with Spatializer::AddStaticMesh() for "
-                                "occlusion, reflections and pathing to do anything.");
+            // Occlusion and reflections are inert until scene geometry is registered, and
+            // nothing registers it automatically. Saying so here saves the hour otherwise
+            // spent wondering why a wall does not block anything.
+            ImGui::TextDisabled("Geometry: attach stAudioRoom / stAudioWall / stAudioGeometry to an "
+                                "entity (or call Spatializer::AddStaticMesh) for occlusion, "
+                                "reflections and pathing to do anything.");
         }
     }
 

@@ -3,10 +3,12 @@
 #include "imcomponents.h"
 #include "imassets.h"
 #include "imeditorhistory.h"
+#include "imhierarchy.h"
 
 #include "wiScene.h"
 #include "wiMath.h"
 #include "wiEnums.h"
+#include "wiPhysics.h"
 #include "imgui.h"
 
 #include <cfloat>
@@ -143,6 +145,54 @@ bool DragUint(const char* label, uint32_t& v, float speed = 1.0f)
 void EntityRef(Scene& scene, const char* label, Entity e)
 {
 	ImGui::LabelText(label, "%s", EntityLabel(scene, e).c_str());
+}
+
+// The writable version, for an ENGINE component's raw entity handle: drag a row from the
+//	Hierarchy onto it, right-click to clear. Unlike the native-component EntityField above it
+//	stores the runtime id directly, which is what these components serialize (through
+//	SerializeEntity, so the id is remapped on load and the reference survives a reload).
+//	Returns true on the frame the reference changed.
+bool EntityDropField(Scene& scene, const char* label, Entity& value)
+{
+	bool changed = false;
+
+	ImGui::PushID(label);
+
+	const float labelW = ImGui::CalcTextSize(label).x + ImGui::GetStyle().ItemInnerSpacing.x;
+	ImGui::Button((EntityLabel(scene, value) + "##entitydropfield").c_str(), ImVec2(-labelW, 0));
+
+	if (ImGui::BeginDragDropTarget())
+	{
+		if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(SIMTARY_ENTITY_PAYLOAD))
+		{
+			if (p->DataSize == (int)sizeof(Entity))
+			{
+				const Entity dropped = *(const Entity*)p->Data;
+				if (dropped != INVALID_ENTITY && dropped != value)
+				{
+					value = dropped;
+					changed = true;
+				}
+			}
+		}
+		ImGui::EndDragDropTarget();
+	}
+
+	if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && value != INVALID_ENTITY)
+	{
+		value = INVALID_ENTITY;
+		changed = true;
+	}
+	if (ImGui::IsItemHovered())
+	{
+		ImGui::SetTooltip("Drag an entity here from the Hierarchy. Right-click to clear.");
+	}
+
+	ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+	ImGui::TextUnformatted(label);
+	ImGui::PopID();
+
+	return changed;
 }
 
 // 32-bit mask as hex, which is the only spelling that reads back.
@@ -803,11 +853,72 @@ void DrawRigidBody(Scene& scene, Entity e, st::EditorHistory* history)
 	case RigidBodyPhysicsComponent::TRIANGLE_MESH:
 		rebuild |= DragUint("Mesh LOD", c->mesh_lod);
 		track("Set Physics Mesh LOD");
-		HelpMarker("Which LOD of the MeshComponent supplies the collision geometry.");
+		HelpMarker("Which LOD of the MeshComponent supplies the collision geometry. Only applies "
+			"to a mesh in the scene - a collision model loaded from a file has no LODs.");
 		break;
 	default:
-		ImGui::TextDisabled("Geometry is taken from the mesh on this entity.");
 		break;
+	}
+
+	// Where a mesh-based shape reads its triangles from. A convex hull, a triangle mesh or a
+	//	height field can collide against the mesh on this entity, a separate collision model
+	//	file, or a low-poly proxy mesh elsewhere in the scene.
+	const bool shape_uses_geometry =
+		c->shape == RigidBodyPhysicsComponent::CONVEX_HULL ||
+		c->shape == RigidBodyPhysicsComponent::TRIANGLE_MESH ||
+		c->shape == RigidBodyPhysicsComponent::HEIGHTFIELD;
+
+	if (shape_uses_geometry)
+	{
+		static const char* meshSources[] = { "This entity's mesh", "Collision model file", "Proxy mesh entity" };
+		int ms = (int)c->mesh_source;
+		if (ImGui::Combo("Geometry from", &ms, meshSources, IM_ARRAYSIZE(meshSources)))
+		{
+			c->mesh_source = (RigidBodyPhysicsComponent::MeshSource)ms;
+			rebuild = true;
+		}
+		track("Set Collision Geometry Source");
+		HelpMarker("Collision does not have to follow what is drawn. Point this at a low-poly "
+			"collision model and the visual mesh can be as dense as it likes.");
+
+		switch (c->mesh_source)
+		{
+		case RigidBodyPhysicsComponent::MeshSource::ExternalFile:
+			if (AssetDropField("Collision model", c->collision_mesh_file))
+			{
+				rebuild = true;
+			}
+			else if (ImGui::IsItemDeactivatedAfterEdit())
+			{
+				rebuild = true;
+			}
+			track("Set Collision Model File");
+			HelpMarker(".gltf .glb .fbx .obj .wiscene .stsd - loaded once and shared by every body "
+				"naming the same path. Drop a row here from the Resource Explorer.");
+			if (ImGui::Button("Reload collision models"))
+			{
+				// The file changed on disk. Bodies already built keep the shape they have until
+				//	they are rebuilt, which is what the Rebuild body button below is for.
+				wi::physics::ClearCollisionMeshCache();
+				rebuild = true;
+			}
+			HelpMarker("Drops every cached collision model so the files are read again.");
+			break;
+
+		case RigidBodyPhysicsComponent::MeshSource::ProxyEntity:
+			if (EntityDropField(scene, "Proxy mesh", c->collision_mesh_entity))
+			{
+				rebuild = true;
+			}
+			track("Set Collision Proxy Entity");
+			HelpMarker("An entity carrying a MeshComponent, or an object that draws one. Hide it "
+				"and it is a pure collision volume.");
+			break;
+
+		default:
+			ImGui::TextDisabled("Geometry is taken from the mesh on this entity.");
+			break;
+		}
 	}
 
 	refresh |= ImGui::DragFloat("Mass", &c->mass, 0.05f, 0.0f, 100000.0f);
@@ -855,81 +966,433 @@ void DrawRigidBody(Scene& scene, Entity e, st::EditorHistory* history)
 			rebuild = true;
 		}
 		track("Set Vehicle Type");
+		HelpMarker("Car drives any number of wheels. Motorcycle is exactly two, balanced by a "
+			"lean controller.");
 
 		if (c->IsVehicle())
 		{
-			static const char* modes[] = { "Ray", "Sphere", "Cylinder" };
-			int cm = (int)c->vehicle.collision_mode;
-			if (ImGui::Combo("Wheel collision", &cm, modes, IM_ARRAYSIZE(modes)))
+			RigidBodyPhysicsComponent::Vehicle& v = c->vehicle;
+
+			static const char* collisionModes[] = { "Ray", "Sphere", "Cylinder" };
+			int cm = (int)v.collision_mode;
+			if (ImGui::Combo("Wheel collision", &cm, collisionModes, IM_ARRAYSIZE(collisionModes)))
 			{
-				c->vehicle.collision_mode = (RigidBodyPhysicsComponent::Vehicle::CollisionMode)cm;
+				v.collision_mode = (RigidBodyPhysicsComponent::Vehicle::CollisionMode)cm;
 				rebuild = true;
 			}
 			track("Set Wheel Collision Mode");
+			HelpMarker("How a wheel finds the ground. Ray is one line per wheel and the cheapest; "
+				"Sphere and Cylinder sweep a shape and ride kerbs and rubble far better.");
 
-			rebuild |= ImGui::DragFloat("Chassis half width", &c->vehicle.chassis_half_width, 0.01f);
-			track("Set Chassis Width");
-			rebuild |= ImGui::DragFloat("Chassis half height", &c->vehicle.chassis_half_height, 0.01f);
-			track("Set Chassis Height");
-			rebuild |= ImGui::DragFloat("Chassis half length", &c->vehicle.chassis_half_length, 0.01f);
-			track("Set Chassis Length");
-			rebuild |= ImGui::DragFloat("Front wheel offset", &c->vehicle.front_wheel_offset, 0.01f);
-			track("Set Front Wheel Offset");
-			rebuild |= ImGui::DragFloat("Rear wheel offset", &c->vehicle.rear_wheel_offset, 0.01f);
-			track("Set Rear Wheel Offset");
-			rebuild |= ImGui::DragFloat("Wheel radius", &c->vehicle.wheel_radius, 0.005f, 0.0f, 10.0f);
-			track("Set Wheel Radius");
-			rebuild |= ImGui::DragFloat("Wheel width", &c->vehicle.wheel_width, 0.005f, 0.0f, 10.0f);
-			track("Set Wheel Width");
-			refresh |= ImGui::DragFloat("Max engine torque", &c->vehicle.max_engine_torque, 1.0f, 0.0f, 100000.0f);
-			track("Set Engine Torque");
-			refresh |= ImGui::DragFloat("Clutch strength", &c->vehicle.clutch_strength, 0.1f, 0.0f, 1000.0f);
-			track("Set Clutch Strength");
-			refresh |= DragAngle("Max roll angle", c->vehicle.max_roll_angle, 0.25f, 0.0f, 90.0f);
-			track("Set Max Roll Angle");
-			refresh |= DragAngle("Max steering angle", c->vehicle.max_steering_angle, 0.25f, 0.0f, 90.0f);
-			track("Set Max Steering Angle");
+			// ---- chassis: the layout input the wheel generator reads ----
+			if (ImGui::TreeNodeEx("Chassis", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				HelpMarker("These are the dimensions Generate wheels lays an axle set out against. "
+					"Chassis half height also sets how far the centre of mass is dropped, which is "
+					"what stops a vehicle rolling over, so it matters even with hand-placed wheels.");
+				rebuild |= ImGui::DragFloat("Chassis half width", &v.chassis_half_width, 0.01f);
+				track("Set Chassis Half Width");
+				rebuild |= ImGui::DragFloat("Chassis half height", &v.chassis_half_height, 0.01f);
+				track("Set Chassis Half Height");
+				rebuild |= ImGui::DragFloat("Chassis half length", &v.chassis_half_length, 0.01f);
+				track("Set Chassis Half Length");
+				rebuild |= ImGui::DragFloat("Front wheel offset", &v.front_wheel_offset, 0.01f);
+				track("Set Front Wheel Offset");
+				rebuild |= ImGui::DragFloat("Rear wheel offset", &v.rear_wheel_offset, 0.01f);
+				track("Set Rear Wheel Offset");
+				rebuild |= ImGui::DragFloat("Wheel radius", &v.wheel_radius, 0.005f, 0.0f, 10.0f);
+				track("Set Wheel Radius");
+				rebuild |= ImGui::DragFloat("Wheel width", &v.wheel_width, 0.005f, 0.0f, 10.0f);
+				track("Set Wheel Width");
+				refresh |= DragAngle("Max roll angle", v.max_roll_angle, 0.25f, 0.0f, 90.0f);
+				track("Set Max Roll Angle");
+				refresh |= DragAngle("Max steering angle", v.max_steering_angle, 0.25f, 0.0f, 90.0f);
+				track("Set Max Steering Angle");
 
-			auto suspension = [&](const char* label, RigidBodyPhysicsComponent::Vehicle::Suspension& s) {
-				if (!ImGui::TreeNode(label)) return;
-				refresh |= ImGui::DragFloat("Min length", &s.min_length, 0.005f, 0.0f, 10.0f);
-				track("Set Suspension Min Length");
-				refresh |= ImGui::DragFloat("Max length", &s.max_length, 0.005f, 0.0f, 10.0f);
-				track("Set Suspension Max Length");
-				refresh |= ImGui::DragFloat("Frequency", &s.frequency, 0.01f, 0.0f, 100.0f);
-				track("Set Suspension Frequency");
-				refresh |= ImGui::DragFloat("Damping", &s.damping, 0.005f, 0.0f, 10.0f);
-				track("Set Suspension Damping");
+				auto suspension = [&](const char* label, RigidBodyPhysicsComponent::Vehicle::Suspension& s) {
+					if (!ImGui::TreeNode(label)) return;
+					refresh |= ImGui::DragFloat("Min length", &s.min_length, 0.005f, 0.0f, 10.0f);
+					track("Set Suspension Min Length");
+					refresh |= ImGui::DragFloat("Max length", &s.max_length, 0.005f, 0.0f, 10.0f);
+					track("Set Suspension Max Length");
+					refresh |= ImGui::DragFloat("Frequency", &s.frequency, 0.01f, 0.0f, 100.0f);
+					track("Set Suspension Frequency");
+					HelpMarker("Hz, not a spring rate: the stiffness is derived from the weight this "
+						"corner carries, so it does not need retuning when the vehicle's mass changes.");
+					refresh |= ImGui::DragFloat("Damping", &s.damping, 0.005f, 0.0f, 10.0f);
+					track("Set Suspension Damping");
+					HelpMarker("A ratio, where 1 is critically damped.");
+					ImGui::TreePop();
+				};
+				suspension("Front suspension", v.front_suspension);
+				suspension("Rear suspension",  v.rear_suspension);
+
 				ImGui::TreePop();
-			};
-			suspension("Front suspension", c->vehicle.front_suspension);
-			suspension("Rear suspension",  c->vehicle.rear_suspension);
-
-			if (c->IsCar())
-			{
-				if (ImGui::Checkbox("Four wheel drive", &c->vehicle.car.four_wheel_drive))
-					refresh = true;
-				track("Set Four Wheel Drive");
 			}
-			if (c->IsMotorcycle())
+
+			// ---- the wheel generator ----
+			if (ImGui::TreeNodeEx("Generate wheels", ImGuiTreeNodeFlags_DefaultOpen))
 			{
-				refresh |= DragAngle("Front suspension angle",
-					c->vehicle.motorcycle.front_suspension_angle, 0.25f, 0.0f, 90.0f);
-				track("Set Front Suspension Angle");
-				refresh |= ImGui::DragFloat("Front brake torque",
-					&c->vehicle.motorcycle.front_brake_torque, 1.0f, 0.0f, 100000.0f);
-				track("Set Front Brake Torque");
-				refresh |= ImGui::DragFloat("Rear brake torque",
-					&c->vehicle.motorcycle.rear_brake_torque, 1.0f, 0.0f, 100000.0f);
-				track("Set Rear Brake Torque");
-				ImGui::Checkbox("Lean control", &c->vehicle.motorcycle.lean_control);
+				HelpMarker("Lays a fresh axle set out from the chassis above and REPLACES the wheels, "
+					"differentials and anti-roll bars below. Two axles reproduce a standard car; "
+					"three make a 6x6.");
+
+				static int axles = 2;
+				static bool allWheelDrive = false;
+				static int steering = 0;
+				ImGui::SliderInt("Axles", &axles, 1, 8);
+				ImGui::Checkbox("All wheel drive", &allWheelDrive);
+				HelpMarker("Off drives the front axle only.");
+
+				static const char* steeringLayouts[] = {
+					"Front axle",
+					"Front + rear counter-steer",
+					"Front + rear crab",
+					"All axles",
+				};
+				ImGui::Combo("Steering", &steering, steeringLayouts, IM_ARRAYSIZE(steeringLayouts));
+				HelpMarker("Any number of wheels can steer - this only decides what a freshly "
+					"generated vehicle starts with, and every wheel's angle stays editable below. "
+					"Counter-steer turns the rear axle the other way, which is how a long 6x6 gets "
+					"round a corner; crab steers both the same way so it slides sideways; all axles "
+					"tapers from full lock at the front to full counter-lock at the back.");
+
+				if (c->IsMotorcycle())
+				{
+					ImGui::TextDisabled("A motorcycle is always the front/rear pair.");
+				}
+				if (ImGui::Button("Generate"))
+				{
+					v.GenerateWheels((uint32_t)axles, allWheelDrive,
+						(RigidBodyPhysicsComponent::Vehicle::SteeringLayout)steering);
+					rebuild = true;
+				}
+				ImGui::SameLine();
+				ImGui::Text("%d wheel%s", (int)v.wheels.size(), v.wheels.size() == 1 ? "" : "s");
+				track("Generate Vehicle Wheels");
+
+				ImGui::TreePop();
+			}
+
+			// ---- wheels ----
+			if (ImGui::TreeNodeEx("Wheels", ImGuiTreeNodeFlags_DefaultOpen))
+			{
+				int remove_wheel = -1;
+				for (size_t i = 0; i < v.wheels.size(); ++i)
+				{
+					RigidBodyPhysicsComponent::Vehicle::Wheel& w = v.wheels[i];
+					ImGui::PushID((int)i);
+
+					char header[64];
+					const char* steerTag =
+						w.max_steer_angle > 0.0f ? " (steered)" :
+						w.max_steer_angle < 0.0f ? " (counter-steered)" : "";
+					std::snprintf(header, sizeof(header), "Wheel %d%s", (int)i, steerTag);
+
+					if (ImGui::TreeNode(header))
+					{
+						rebuild |= ImGui::DragFloat3("Position", &w.position.x, 0.01f);
+						track("Set Wheel Position");
+						HelpMarker("Suspension attachment point in chassis space: +X right, +Y up, +Z forward.");
+
+						rebuild |= ImGui::Checkbox("Mirror across X", &w.mirror_x);
+						track("Set Wheel Mirror");
+						HelpMarker("Turn this on for wheels on the right, so camber, caster and toe "
+							"lean the same way as their partner on the left.");
+
+						rebuild |= ImGui::DragFloat("Radius", &w.radius, 0.005f, 0.001f, 10.0f);
+						track("Set Wheel Radius");
+						rebuild |= ImGui::DragFloat("Width", &w.width, 0.005f, 0.001f, 10.0f);
+						track("Set Wheel Width");
+
+						if (ImGui::TreeNode("Suspension"))
+						{
+							rebuild |= ImGui::DragFloat("Min length", &w.suspension_min_length, 0.005f, 0.0f, 10.0f);
+							track("Set Wheel Suspension Min Length");
+							rebuild |= ImGui::DragFloat("Max length", &w.suspension_max_length, 0.005f, 0.0f, 10.0f);
+							track("Set Wheel Suspension Max Length");
+							HelpMarker("Travel is max minus min.");
+							rebuild |= ImGui::DragFloat("Frequency", &w.suspension_frequency, 0.01f, 0.0f, 100.0f);
+							track("Set Wheel Suspension Frequency");
+							rebuild |= ImGui::DragFloat("Damping", &w.suspension_damping, 0.005f, 0.0f, 10.0f);
+							track("Set Wheel Suspension Damping");
+							rebuild |= ImGui::DragFloat("Preload length", &w.suspension_preload_length, 0.005f, 0.0f, 10.0f);
+							track("Set Wheel Suspension Preload");
+							HelpMarker("Compresses the spring at full droop. Makes touchdown abrupt, "
+								"which reads as bounciness, so leave it at 0 unless you want that.");
+							rebuild |= DragAngle("Forward angle", w.suspension_forward_angle, 0.25f, -60.0f, 60.0f);
+							track("Set Wheel Suspension Forward Angle");
+							rebuild |= DragAngle("Sideways angle", w.suspension_sideways_angle, 0.25f, -60.0f, 60.0f);
+							track("Set Wheel Suspension Sideways Angle");
+							ImGui::TreePop();
+						}
+
+						if (ImGui::TreeNode("Alignment"))
+						{
+							rebuild |= DragAngle("Caster", w.caster_angle, 0.25f, -45.0f, 45.0f);
+							track("Set Wheel Caster");
+							rebuild |= DragAngle("Kingpin", w.kingpin_angle, 0.25f, -45.0f, 45.0f);
+							track("Set Wheel Kingpin");
+							rebuild |= DragAngle("Camber", w.camber, 0.25f, -45.0f, 45.0f);
+							track("Set Wheel Camber");
+							rebuild |= DragAngle("Toe", w.toe, 0.25f, -45.0f, 45.0f);
+							track("Set Wheel Toe");
+							ImGui::TreePop();
+						}
+
+						rebuild |= DragAngle("Max steer angle", w.max_steer_angle, 0.25f, -90.0f, 90.0f);
+						track("Set Wheel Max Steer Angle");
+						HelpMarker("0 means this wheel does not steer. Any number of wheels can, and "
+							"they all follow the same driver input scaled by their own angle. A "
+							"NEGATIVE angle steers this wheel the opposite way - put that on a rear "
+							"axle for counter-steering, which tightens the turning circle a lot.");
+						rebuild |= ImGui::DragFloat("Max brake torque", &w.max_brake_torque, 1.0f, 0.0f, 100000.0f);
+						track("Set Wheel Brake Torque");
+						rebuild |= ImGui::DragFloat("Max handbrake torque", &w.max_hand_brake_torque, 1.0f, 0.0f, 100000.0f);
+						track("Set Wheel Handbrake Torque");
+						HelpMarker("Usually the rear wheels only.");
+						rebuild |= ImGui::DragFloat("Inertia", &w.inertia, 0.01f, 0.0001f, 1000.0f);
+						track("Set Wheel Inertia");
+						HelpMarker("kg m^2. About 0.5 * mass * radius^2 for a solid disc.");
+						rebuild |= ImGui::DragFloat("Angular damping", &w.angular_damping, 0.005f, 0.0f, 10.0f);
+						track("Set Wheel Angular Damping");
+
+						EntityDropField(scene, "Visual wheel", w.entity);
+						track("Set Wheel Entity");
+						HelpMarker("The entity whose transform this wheel drives every frame. Optional: "
+							"the wheel still simulates without one.");
+
+						if (ImGui::Button("Remove this wheel"))
+						{
+							remove_wheel = (int)i;
+						}
+
+						ImGui::TreePop();
+					}
+					ImGui::PopID();
+				}
+
+				if (remove_wheel >= 0)
+				{
+					v.wheels.erase(v.wheels.begin() + remove_wheel);
+					// Every index after the removed one shifted down, and an index that named the
+					//	removed wheel now names nothing. Fixing them here beats letting the physics
+					//	backend quietly disconnect them.
+					auto fixup = [remove_wheel](int& index) {
+						if (index == remove_wheel) index = -1;
+						else if (index > remove_wheel) index -= 1;
+					};
+					for (auto& d : v.differentials) { fixup(d.left_wheel); fixup(d.right_wheel); }
+					for (auto& b : v.anti_roll_bars) { fixup(b.left_wheel); fixup(b.right_wheel); }
+					rebuild = true;
+					track("Remove Vehicle Wheel");
+				}
+
+				if (ImGui::Button("Add wheel"))
+				{
+					// A new wheel copies the last one, which is nearly always what you want when
+					//	adding an axle: same size, same suspension, just move it.
+					RigidBodyPhysicsComponent::Vehicle::Wheel w = v.wheels.empty()
+						? RigidBodyPhysicsComponent::Vehicle::Wheel{}
+						: v.wheels.back();
+					v.wheels.push_back(w);
+					rebuild = true;
+					track("Add Vehicle Wheel");
+				}
+
+				ImGui::TreePop();
+			}
+
+			// ---- drivetrain ----
+			if (ImGui::TreeNode("Engine"))
+			{
+				refresh |= ImGui::DragFloat("Max engine torque", &v.max_engine_torque, 1.0f, 0.0f, 100000.0f);
+				track("Set Max Engine Torque");
+				refresh |= ImGui::DragFloat("Min RPM", &v.engine_min_rpm, 10.0f, 0.0f, 30000.0f);
+				track("Set Engine Min RPM");
+				refresh |= ImGui::DragFloat("Max RPM", &v.engine_max_rpm, 10.0f, 1.0f, 30000.0f);
+				track("Set Engine Max RPM");
+				refresh |= ImGui::DragFloat("Inertia", &v.engine_inertia, 0.01f, 0.0f, 100.0f);
+				track("Set Engine Inertia");
+				refresh |= ImGui::DragFloat("Angular damping", &v.engine_angular_damping, 0.005f, 0.0f, 10.0f);
+				track("Set Engine Angular Damping");
+				ImGui::TreePop();
+			}
+
+			if (ImGui::TreeNode("Transmission"))
+			{
+				refresh |= ImGui::Checkbox("Automatic", &v.auto_transmission);
+				track("Set Automatic Transmission");
+				refresh |= ImGui::DragFloat("Clutch strength", &v.clutch_strength, 0.1f, 0.0f, 1000.0f);
+				track("Set Clutch Strength");
+				refresh |= ImGui::DragFloat("Shift up RPM", &v.transmission_shift_up_rpm, 10.0f, 0.0f, 30000.0f);
+				track("Set Shift Up RPM");
+				refresh |= ImGui::DragFloat("Shift down RPM", &v.transmission_shift_down_rpm, 10.0f, 0.0f, 30000.0f);
+				track("Set Shift Down RPM");
+				refresh |= ImGui::DragFloat("Switch time", &v.transmission_switch_time, 0.01f, 0.0f, 10.0f);
+				track("Set Gear Switch Time");
+				refresh |= ImGui::DragFloat("Clutch release time", &v.transmission_clutch_release_time, 0.01f, 0.0f, 10.0f);
+				track("Set Clutch Release Time");
+				refresh |= ImGui::DragFloat("Switch latency", &v.transmission_switch_latency, 0.01f, 0.0f, 10.0f);
+				track("Set Gear Switch Latency");
+
+				ImGui::Text("Gears: %d forward, %d reverse",
+					(int)v.gear_ratios.size(), (int)v.reverse_gear_ratios.size());
+				HelpMarker("Empty keeps the physics engine's own gearbox, which is what a vehicle "
+					"that has never been given ratios wants.");
+
+				auto gearList = [&](const char* label, wi::vector<float>& ratios, float defaultRatio) {
+					if (!ImGui::TreeNode(label)) return;
+					int remove_gear = -1;
+					for (size_t i = 0; i < ratios.size(); ++i)
+					{
+						ImGui::PushID((int)i);
+						char name[32];
+						std::snprintf(name, sizeof(name), "%d", (int)i + 1);
+						refresh |= ImGui::DragFloat(name, &ratios[i], 0.01f, -20.0f, 20.0f);
+						ImGui::SameLine();
+						if (ImGui::SmallButton("x")) remove_gear = (int)i;
+						ImGui::PopID();
+					}
+					if (remove_gear >= 0)
+					{
+						ratios.erase(ratios.begin() + remove_gear);
+						refresh = true;
+					}
+					if (ImGui::SmallButton("Add gear"))
+					{
+						ratios.push_back(ratios.empty() ? defaultRatio : ratios.back());
+						refresh = true;
+					}
+					ImGui::TreePop();
+				};
+				gearList("Forward gear ratios", v.gear_ratios, 2.66f);
+				gearList("Reverse gear ratios", v.reverse_gear_ratios, -2.9f);
+				track("Set Gear Ratios");
+
+				ImGui::TreePop();
+			}
+
+			// ---- differentials ----
+			if (ImGui::TreeNode("Differentials"))
+			{
+				HelpMarker("Engine torque is split between these in proportion to their torque "
+					"ratios. One per driven axle.");
+
+				const int wheelCount = (int)v.wheels.size();
+				int remove_diff = -1;
+				for (size_t i = 0; i < v.differentials.size(); ++i)
+				{
+					RigidBodyPhysicsComponent::Vehicle::Differential& d = v.differentials[i];
+					ImGui::PushID((int)i);
+					char header[48];
+					std::snprintf(header, sizeof(header), "Differential %d", (int)i);
+					if (ImGui::TreeNode(header))
+					{
+						rebuild |= ImGui::DragInt("Left wheel", &d.left_wheel, 0.1f, -1, wheelCount - 1);
+						track("Set Differential Left Wheel");
+						rebuild |= ImGui::DragInt("Right wheel", &d.right_wheel, 0.1f, -1, wheelCount - 1);
+						track("Set Differential Right Wheel");
+						HelpMarker("Index into the wheel list above. -1 leaves that side unconnected.");
+						rebuild |= ImGui::DragFloat("Differential ratio", &d.differential_ratio, 0.01f, 0.0f, 100.0f);
+						track("Set Differential Ratio");
+						rebuild |= ImGui::DragFloat("Left/right split", &d.left_right_split, 0.01f, 0.0f, 1.0f);
+						track("Set Differential Split");
+						rebuild |= ImGui::DragFloat("Limited slip ratio", &d.limited_slip_ratio, 0.01f, 0.0f, 20.0f);
+						track("Set Limited Slip Ratio");
+						HelpMarker("1 or less turns the limited slip off, which is an open differential.");
+						rebuild |= ImGui::DragFloat("Engine torque ratio", &d.engine_torque_ratio, 0.01f, 0.0f, 10.0f);
+						track("Set Engine Torque Ratio");
+						if (ImGui::Button("Remove")) remove_diff = (int)i;
+						ImGui::TreePop();
+					}
+					ImGui::PopID();
+				}
+				if (remove_diff >= 0)
+				{
+					v.differentials.erase(v.differentials.begin() + remove_diff);
+					rebuild = true;
+					track("Remove Differential");
+				}
+				if (ImGui::Button("Add differential"))
+				{
+					v.differentials.push_back({});
+					rebuild = true;
+					track("Add Differential");
+				}
+				ImGui::TreePop();
+			}
+
+			// ---- anti-roll bars ----
+			if (ImGui::TreeNode("Anti-roll bars"))
+			{
+				HelpMarker("Ties two wheels together so the vehicle resists rolling over in a turn. "
+					"One per axle is normal.");
+
+				const int wheelCount = (int)v.wheels.size();
+				int remove_bar = -1;
+				for (size_t i = 0; i < v.anti_roll_bars.size(); ++i)
+				{
+					RigidBodyPhysicsComponent::Vehicle::AntiRollBar& b = v.anti_roll_bars[i];
+					ImGui::PushID((int)i);
+					char header[48];
+					std::snprintf(header, sizeof(header), "Anti-roll bar %d", (int)i);
+					if (ImGui::TreeNode(header))
+					{
+						rebuild |= ImGui::DragInt("Left wheel", &b.left_wheel, 0.1f, -1, wheelCount - 1);
+						track("Set Anti-roll Bar Left Wheel");
+						rebuild |= ImGui::DragInt("Right wheel", &b.right_wheel, 0.1f, -1, wheelCount - 1);
+						track("Set Anti-roll Bar Right Wheel");
+						rebuild |= ImGui::DragFloat("Stiffness", &b.stiffness, 10.0f, 0.0f, 1000000.0f);
+						track("Set Anti-roll Bar Stiffness");
+						HelpMarker("N/m. 0 disables this bar.");
+						if (ImGui::Button("Remove")) remove_bar = (int)i;
+						ImGui::TreePop();
+					}
+					ImGui::PopID();
+				}
+				if (remove_bar >= 0)
+				{
+					v.anti_roll_bars.erase(v.anti_roll_bars.begin() + remove_bar);
+					rebuild = true;
+					track("Remove Anti-roll Bar");
+				}
+				if (ImGui::Button("Add anti-roll bar"))
+				{
+					v.anti_roll_bars.push_back({});
+					rebuild = true;
+					track("Add Anti-roll Bar");
+				}
+				ImGui::TreePop();
+			}
+
+			// ---- tires ----
+			if (ImGui::TreeNode("Tires"))
+			{
+				rebuild |= ImGui::DragFloat("Longitudinal impulse scale", &v.longitudinal_impulse_scale, 0.05f, 0.0f, 50.0f);
+				track("Set Longitudinal Impulse Scale");
+				HelpMarker("Forward grip multiplier. The stock vehicle presets were tuned against a "
+					"solver bug that let through this much extra longitudinal impulse, so 10 keeps "
+					"them feeling right. Tune a vehicle from scratch and it belongs nearer 1.");
+				ImGui::TreePop();
+			}
+
+			if (c->IsMotorcycle() && ImGui::TreeNode("Motorcycle"))
+			{
+				rebuild |= DragAngle("Front suspension angle",
+					v.motorcycle.front_suspension_angle, 0.25f, 0.0f, 90.0f);
+				track("Set Motorcycle Fork Angle");
+				HelpMarker("The fork rake. Only read when the wheels are regenerated.");
+				rebuild |= ImGui::DragFloat("Front brake torque",
+					&v.motorcycle.front_brake_torque, 1.0f, 0.0f, 100000.0f);
+				track("Set Motorcycle Front Brake Torque");
+				rebuild |= ImGui::DragFloat("Rear brake torque",
+					&v.motorcycle.rear_brake_torque, 1.0f, 0.0f, 100000.0f);
+				track("Set Motorcycle Rear Brake Torque");
+				ImGui::Checkbox("Lean control", &v.motorcycle.lean_control);
 				HelpMarker("Not serialized: a runtime assist that keeps the bike upright.");
+				ImGui::TreePop();
 			}
-
-			EntityRef(scene, "Wheel: front left",  c->vehicle.wheel_entity_front_left);
-			EntityRef(scene, "Wheel: front right", c->vehicle.wheel_entity_front_right);
-			EntityRef(scene, "Wheel: rear left",   c->vehicle.wheel_entity_rear_left);
-			EntityRef(scene, "Wheel: rear right",  c->vehicle.wheel_entity_rear_right);
 		}
 		ImGui::TreePop();
 	}

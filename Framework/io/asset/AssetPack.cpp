@@ -592,7 +592,7 @@ AssetType ClassifyByExtension (const std::string& path) {
         e == "bmp" || e == "hdr" || e == "exr" || e == "gif" || e == "psd") return AssetType::Image;
     if (e == "wiscene")                                                     return AssetType::Model;
     if (e == "stsd")                                                        return AssetType::Scene;
-    if (e == "wav" || e == "flac" || e == "aiff")                           return AssetType::Sound;
+    if (e == "wav" || e == "flac" || e == "aiff" || e == "qoa")             return AssetType::Sound;
     if (e == "ogg" || e == "mp3" || e == "m4a" || e == "opus")              return AssetType::Music;
     if (e == "mp4" || e == "h264" || e == "mkv" || e == "webm")             return AssetType::Video;
     if (e == "lua")                                                         return AssetType::Script;
@@ -612,9 +612,13 @@ bool IsCompressedContainer (const std::string& path) {
     // and, worse, it gives up the zero-copy mapped read that mip and audio streaming
     // depend on. Raw-sample formats (bmp, tga, hdr, exr, psd, wav) are deliberately NOT
     // in this list: they compress like any other buffer.
+    // .qoa belongs here despite looking raw-ish: it is block-compressed at a fixed
+    // 3.2:1 with per-slice LMS state, so there is nothing left for zstd to find, and
+    // wrapping it would break the per-frame seeking its decoder is built around.
     return e == "png"  || e == "jpg"  || e == "jpeg" || e == "gif"  || e == "webp" ||
            e == "dds"  || e == "ktx"  || e == "ktx2" || e == "basis" ||
            e == "ogg"  || e == "mp3"  || e == "m4a"  || e == "opus" || e == "flac" ||
+           e == "qoa"  ||
            e == "mp4"  || e == "h264" || e == "mkv"  || e == "webm" ||
            e == "zst"  || e == "zip"  || e == "7z"   || e == "gz";
 }

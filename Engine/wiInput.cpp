@@ -12,6 +12,7 @@
 #include "Utility/win32ico.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <atomic>
 #include <thread>
@@ -112,17 +113,58 @@ namespace wi::input
 	const KeyboardState& GetKeyboardState() { return keyboard; }
 	const MouseState& GetMouseState() { return mouse; }
 
+	AnalogSettings analog_settings;
+	AnalogSettings& GetAnalogSettings() { return analog_settings; }
+
+	XMFLOAT2 ApplyStickDeadzone(const XMFLOAT2& value)
+	{
+		const AnalogSettings& s = analog_settings;
+		const float magnitude = std::sqrt(value.x * value.x + value.y * value.y);
+		if (magnitude <= s.stick_deadzone || magnitude <= 0)
+		{
+			return XMFLOAT2(0, 0);
+		}
+		// Rescale [deadzone, saturation] -> [0, 1] along the direction the stick is
+		//	actually pointing, so the first movement out of the deadzone starts at 0.
+		const float span = std::max(1e-5f, s.stick_saturation - s.stick_deadzone);
+		float scaled = (magnitude - s.stick_deadzone) / span;
+		scaled = std::min(1.0f, scaled);
+		const float gain = scaled / magnitude;
+		return XMFLOAT2(value.x * gain, value.y * gain);
+	}
+
+	float ApplyTriggerDeadzone(float value)
+	{
+		const AnalogSettings& s = analog_settings;
+		if (value <= s.trigger_deadzone)
+		{
+			return 0;
+		}
+		const float span = std::max(1e-5f, s.trigger_saturation - s.trigger_deadzone);
+		return std::min(1.0f, (value - s.trigger_deadzone) / span);
+	}
+
 	struct Input 
 	{
 		BUTTON button = BUTTON_NONE;
 		int playerIndex = 0;
 
-		bool operator<(const Input other) {
-			return (button != other.button || playerIndex != other.playerIndex);
+		bool operator<(const Input other) const {
+			if (playerIndex != other.playerIndex)
+				return playerIndex < other.playerIndex;
+			return button < other.button;
 		}
+		// This has to be a STRICT WEAK ORDERING or std::map is undefined behaviour.
+		//	It used to be `a.button < b.button || a.playerIndex < b.playerIndex`, which
+		//	is not one: for a={BUTTON_X,player0} and b={BUTTON_A,player1} it answers
+		//	"a < b" AND "b < a". The tree that Press()/Release()/Hold() read their frame
+		//	counters out of was therefore free to corrupt itself - which is what made a
+		//	press occasionally not register at all.
 		struct LessComparer {
 			bool operator()(Input const& a, Input const& b) const {
-				return (a.button < b.button || a.playerIndex < b.playerIndex);
+				if (a.playerIndex != b.playerIndex)
+					return a.playerIndex < b.playerIndex;
+				return a.button < b.button;
 			}
 		};
 	};
@@ -309,6 +351,30 @@ namespace wi::input
 		{
 			if (wi::input::sdlinput::GetControllerState(nullptr, i))
 			{
+				// One pad, one slot.
+				//	On Windows this build defines BOTH SDL2 and PLATFORM_WINDOWS_DESKTOP,
+				//	so an XInput pad is enumerated twice: once by the XInput backend above
+				//	and again by SDL here. That handed a single controller two player
+				//	slots - a phantom player 2 - and left the two copies disagreeing,
+				//	because each backend deadzoned and signed the axes its own way.
+				//	SDL's player index IS the XInput user index on Windows, so if the
+				//	XInput backend already owns that user index, skip the SDL duplicate.
+				const int xinput_user = wi::input::sdlinput::GetControllerXInputUserIndex(i);
+				if (xinput_user >= 0)
+				{
+					bool claimed_by_xinput = false;
+					for (auto& c : controllers)
+					{
+						if (c.deviceType == Controller::XINPUT && c.deviceIndex == xinput_user)
+						{
+							claimed_by_xinput = true;
+							break;
+						}
+					}
+					if (claimed_by_xinput)
+						continue;
+				}
+
 				int slot = -1;
 				for (int j = 0; j < (int)controllers.size(); ++j)
 				{
@@ -434,6 +500,9 @@ namespace wi::input
 			if (!connected)
 			{
 				controller.deviceType = Controller::DISCONNECTED;
+				// Zero it too. Without this the slot keeps serving whatever the stick
+				//	last read, so a pad that drops out leaves the player walking.
+				controller.state = ControllerState();
 			}
 		}
 
@@ -540,16 +609,19 @@ namespace wi::input
 				case GAMEPAD_BUTTON_9: return state.buttons & (1 << (GAMEPAD_BUTTON_9 - GAMEPAD_RANGE_START - 1));
 				case GAMEPAD_BUTTON_10: return state.buttons & (1 << (GAMEPAD_BUTTON_10 - GAMEPAD_RANGE_START - 1));
 
-				case GAMEPAD_ANALOG_THUMBSTICK_L_AS_BUTTON_UP: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_L).y > 0.5f;
-				case GAMEPAD_ANALOG_THUMBSTICK_L_AS_BUTTON_LEFT: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_L).x < -0.5f;
-				case GAMEPAD_ANALOG_THUMBSTICK_L_AS_BUTTON_DOWN: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_L).y < -0.5f;
-				case GAMEPAD_ANALOG_THUMBSTICK_L_AS_BUTTON_RIGHT: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_L).x > 0.5f;
-				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_UP: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_R).y > 0.5f;
-				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_LEFT: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_R).x < -0.5f;
-				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_DOWN: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_R).y < -0.5f;
-				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_RIGHT: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_R).x > 0.5f;
-				case GAMEPAD_ANALOG_TRIGGER_L_AS_BUTTON: return GetAnalog(GAMEPAD_ANALOG_TRIGGER_L).x > 0.5f;
-				case GAMEPAD_ANALOG_TRIGGER_R_AS_BUTTON: return GetAnalog(GAMEPAD_ANALOG_TRIGGER_R).x > 0.5f;
+				// These forward the player index. They used to call GetAnalog() with its
+				//	default argument, so "stick as button" always answered for player 0
+				//	no matter which pad was asked.
+				case GAMEPAD_ANALOG_THUMBSTICK_L_AS_BUTTON_UP: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_L, playerindex).y > 0.5f;
+				case GAMEPAD_ANALOG_THUMBSTICK_L_AS_BUTTON_LEFT: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_L, playerindex).x < -0.5f;
+				case GAMEPAD_ANALOG_THUMBSTICK_L_AS_BUTTON_DOWN: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_L, playerindex).y < -0.5f;
+				case GAMEPAD_ANALOG_THUMBSTICK_L_AS_BUTTON_RIGHT: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_L, playerindex).x > 0.5f;
+				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_UP: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_R, playerindex).y > 0.5f;
+				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_LEFT: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_R, playerindex).x < -0.5f;
+				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_DOWN: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_R, playerindex).y < -0.5f;
+				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_RIGHT: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_R, playerindex).x > 0.5f;
+				case GAMEPAD_ANALOG_TRIGGER_L_AS_BUTTON: return GetAnalog(GAMEPAD_ANALOG_TRIGGER_L, playerindex).x > 0.5f;
+				case GAMEPAD_ANALOG_TRIGGER_R_AS_BUTTON: return GetAnalog(GAMEPAD_ANALOG_TRIGGER_R, playerindex).x > 0.5f;
 
 				default: break;
 				}
@@ -1149,6 +1221,36 @@ namespace wi::input
 		}
 
 		return XMFLOAT4(0, 0, 0, 0);
+	}
+
+	int GetControllerCount()
+	{
+		return (int)controllers.size();
+	}
+
+	const char* GetControllerBackend(int playerindex)
+	{
+		if (playerindex < 0 || playerindex >= (int)controllers.size())
+			return nullptr;
+		switch (controllers[playerindex].deviceType)
+		{
+		case Controller::XINPUT: return "XInput";
+		case Controller::RAWINPUT: return "RawInput";
+		case Controller::SDLINPUT: return "SDL";
+		case Controller::PS5: return "PS5";
+		case Controller::APPLE: return "Apple";
+		default: break;
+		}
+		return "disconnected";
+	}
+
+	bool GetControllerState(ControllerState* state, int playerindex)
+	{
+		if (playerindex < 0 || playerindex >= (int)controllers.size())
+			return false;
+		if (state != nullptr)
+			*state = controllers[playerindex].state;
+		return controllers[playerindex].deviceType != Controller::DISCONNECTED;
 	}
 
 	void SetControllerFeedback(const ControllerFeedback& data, int playerindex)

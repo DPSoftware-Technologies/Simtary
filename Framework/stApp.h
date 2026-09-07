@@ -40,6 +40,7 @@
 #include "io/SettingsManager.h"
 #include "io/asset/AssetSystem.h"
 #include "audio/faust/FaustManager.h"
+#include "input/InputActions.h"
 
 #include <SDL_scancode.h>
 #include <SDL_events.h>
@@ -242,6 +243,42 @@ protected:
     // Register the project's scenes. Called once during Initialize(), before
     // AppConfig::startupScene is loaded.
     virtual void RegisterScenes(SceneManager& /*scenes*/) {}
+
+    // Register the project's KEYBINDS. Called once during Initialize(), before any
+    // scene is registered or loaded, so a scene's st::InputComponent finds its map
+    // already built.
+    //
+    // The registry arrives holding the framework's default "Player" and "UI" maps, so
+    // a project that registers nothing still has something usable. EXTEND them by
+    // naming the same map, or start from nothing with input.Clear() as the first line
+    // - Map()/Action() return the EXISTING entry when the name is already taken, so
+    // re-registering over a default appends bindings instead of replacing them.
+    //
+    //     void OnKeyRegister(st::input::Registry& input) override {
+    //         using namespace st::input;
+    //         input.Clear();
+    //
+    //         MapBuilder player = input.Map("Player");
+    //         player.Action("Move", ControlType::Vector2)
+    //             .Scheme("Gamepad").StickBinding(Stick::Left)
+    //             .Scheme("Keyboard&Mouse").Composite2D('W', 'S', 'A', 'D');
+    //         player.Action("Look", ControlType::Vector2)
+    //             .Type(ActionType::PassThrough)
+    //             .Scheme("Gamepad").StickBinding(Stick::Right)
+    //             .Scheme("Keyboard&Mouse").MouseDelta();
+    //         player.Action("Fire")
+    //             .Button(wi::input::MOUSE_BUTTON_LEFT)
+    //             .Button(wi::input::GAMEPAD_ANALOG_TRIGGER_R_AS_BUTTON)
+    //             .TouchPress();
+    //
+    //         input.Map("UI").Action("Cancel")
+    //             .Button(wi::input::KEYBOARD_BUTTON_ESCAPE)
+    //             .Button(wi::input::GAMEPAD_BUTTON_3);
+    //     }
+    //
+    // Attach "stInput" to the entity that should receive the map, then read it from a
+    // sibling component - see Framework/input/InputComponent.h.
+    virtual void OnKeyRegister(st::input::Registry& /*input*/) {}
     // After the framework is up and the startup scene is loaded.
     virtual void OnInitialize() {}
     // Once per frame, after the scene manager has updated.
@@ -352,6 +389,8 @@ private:
     bool showProperties = false;
     bool showFaustDSP = false;
     bool showAudioMixer = false;
+    bool showGamepadAnalog = false;
+    bool showInputActions = false;
 
     bool STDDBoneLines = false;
     bool STDDCameras = false;

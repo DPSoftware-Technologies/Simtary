@@ -49,7 +49,9 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `io/` | `Nbt` (the `.stad`/`.stcd` format), `NbtStore`, `SettingsManager`, `SaveGame`, `PlayerPrefs`, `UserData` (LocalLow path resolver). |
 | `io/model/` | **Model import**: `.gltf`/`.glb` through tinygltf v3, `.fbx` and `.obj`/`.mtl` through ufbx. `st::model::Import()` builds nodes, meshes, PBR materials, skins and animations straight into a `wi::scene::Scene`. Both loaders are C — this workspace is `_HAS_EXCEPTIONS=0`, and a throwing C++ parser would need its own exception settings behind a C boundary. Every byte reaches them through `wi::helper::FileRead`, so a model inside a mounted asset package imports like one on disk. |
 | `io/asset/` | **The asset package**: `.strd` index + `.stafp<N>` payload parts + `.stsd` maps. `AssetFormat.h` is the on-disk layout, `AssetPack` reads it, `AssetPackWriter` builds it, `SceneDescriptor` splits and rebuilds `.wiscene`, `StHash.h` is XXH64. `AssetSystem` is the only engine-aware file: it mounts packages and installs `wi::helper::SetAssetSourceOverride` so every engine read resolves through them. Reach it anywhere via `st::AssetSystem::Get()`, or `App::Assets()`. |
-| `input/InputSystem.*` | Centralized action/axis keymap, refreshed once per frame. |
+| `input/InputActions.*` | **The action-map input model**, in the shape Unity's Input System uses: `Registry` (every map the game registered) → `ActionMap` ("Player", "UI") → `Action` (a name plus a control type: Button / Axis / Vector2) → `Binding` (one control, optionally a composite arm, with scale/invert processors). `ActionRuntime` evaluates one map for one player index. Bindings cover keyboard, mouse (button, delta, wheel), gamepad (button, axis, stick) and touch. |
+| `input/InputComponent.*` | The `"stInput"` NATIVE COMPONENT — Simtary's `PlayerInput`. Attach it to the entity that should receive input (`NCA_0_actionMap`, `NCA_0_playerIndex`), and sibling components read the actions off it as a local component instead of out of a singleton. |
+| `input/InputSystem.*` | Owns the `Registry` (`Actions()`), the ImGui/editor device gating, and SDL relative-mouse ownership. Also still carries the ORIGINAL flat keymap (`Down("Sprint")`, `Axis("MoveX")`, `MoveVector()`) unchanged, for the scenes written against it. |
 | `crash/CrashHandler.*` | sentry-native + Crashpad, offline only; launches `SimtaryCrashReporter`. |
 | `render/LensFlare.*` | Procedural screen-space flare (`assets/shaders/StLensFlare*`). |
 | `render/Projector.*` | `st::Projector` + `st::ProjectorSystem` — SQUARE (or rect/ellipse/rounded) image projection with projector optics: throw ratio, aspect, lens shift, keystone, barrel/pincushion, edge softness, vignette, plus a rectangular volumetric beam. `opticBounces` reflects the image off `st::Mirror` and images it through `st::Lens` by uploading a virtual projector clipped to that element's aperture. Runs as a `RenderPath3D` custom post process (`assets/shaders/StProjectorCS.hlsl`), plus one depth-only pass per shadow-casting projector (`RenderShadows()`, driven from `st::App::Render()` BEFORE the render path so the command list is recorded ahead of the pass that samples it). Reach it anywhere via `st::ProjectorSystem::Get()`. |
@@ -68,7 +70,7 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 
 ### Project hook surface (`st::App`)
 
-Content: `RegisterScenes`, `OnInitialize`, `OnExit`.
+Content: `RegisterScenes`, `OnKeyRegister`, `OnInitialize`, `OnExit`.
 Frame: `OnUpdate(dt)`, `OnFixedUpdate()`.
 UI: `RenderUI()` (game UI, always), `RenderDevUI()` + `OnDevUIMenu()` (dev only),
 `RenderLoadingScreen(state)`.
@@ -191,11 +193,89 @@ different toolchains — one Visual Studio, one Ninja+mingw — and the second p
 cache (`CMAKE_C_COMPILE_OBJECT` errors on the next regenerate). The Windows preset is
 pinned to the Visual Studio generator; `win_x86-64-ninja` is the separate opt-in.
 
+**Input is registered in code, evaluated per entity, and disambiguated rather than
+summed.** `st::App::OnKeyRegister(st::input::Registry&)` runs once at Initialize,
+before `RegisterScenes`, so a scene's `stInput` components find their map already
+built. Three things about the model are deliberate:
+
+- **Maps are switched, not merged.** "Player" and "UI" can both bind A/Enter without
+  fighting, because one component reads one map at a time (`SwitchMap`).
+- **A Vector2 action picks ONE candidate, it does not sum its bindings.** Each binding
+  group proposes a value and the largest magnitude wins - Unity calls this control
+  disambiguation. Without it, a stick half over plus W held reads as 1.5. A composite
+  (the four keys of a WASD 2D vector) counts as one group and is normalized, so
+  walking diagonally on the keyboard is not 1.41x faster than walking forwards.
+- **Sampling happens in `Compute()`, not `Update()`.** `Compute` is a barriered stage:
+  every component's `Compute` finishes before any component's `Update` starts, so a
+  sibling reading `stInput` in its `Update` always sees a fully evaluated frame.
+  Sampling in `Update` would race whichever component the job system ran first.
+
+The frame's pointer delta, wheel and touch list are latched ONCE on the main thread by
+`InputSystem::Update` (`st::input::BeginFrame`) because SDL's relative-mouse delta is a
+single-consumer read - a binding that called `SDL_GetRelativeMouseState` itself would
+both race and steal the delta from every other reader. Device gating crosses the same
+seam as `st::input::Gate()`: the action model knows nothing about ImGui and just asks
+the table per binding.
+
+`LoadDefaults()` seeds a default "Player" and "UI" map before the hook runs, so a
+project that registers nothing still has something to attach. `Map()`/`Action()` return
+the EXISTING entry when the name is taken, so re-registering over a default appends
+bindings - call `input.Clear()` first to start from empty.
+
 **Scene update runs exactly once per frame.** `st::App::Initialize` calls
 `renderPath.setSceneUpdateEnabled(false)`; scenes call `scene.Update(dt)` themselves
 from `SceneManager::Update`. A second update per frame swaps `MeshComponent`'s
 `so_pos`/`so_pre` streamout views twice, which cancels out — skinned meshes then get
 garbage velocity (broken motion blur, TAA, FSR2).
+
+**A vehicle is a wheel ARRAY, and `rigidbodies` is serialization version 7.**
+`RigidBodyPhysicsComponent::Vehicle` used to be four wheels hardcoded inside
+`wiPhysics_Jolt.cpp`; it is now `wi::vector<Wheel>` plus `differentials` and
+`anti_roll_bars` vectors that index into it, so a 6x6 is data. The `chassis_*` /
+`wheel_*` / `*_suspension` fields survive as the LAYOUT INPUT `Vehicle::GenerateWheels()`
+lays an axle set out from — plus `chassis_half_height`, which still sets how far the
+centre of mass is dropped and therefore still matters to a hand-placed vehicle. A scene
+written before version 7 carries no array, so `Serialize` calls
+`Vehicle::MigrateLegacyWheels()` on load and rebuilds the two-axle layout the old fields
+described; the legacy `wheel_entity_*` slots and `car.four_wheel_drive` are kept for
+exactly that and are read nowhere else. Car and motorcycle now share one builder — a
+motorcycle is the same code with `MotorcycleControllerSettings`, and it is the one shape
+that is still fixed at two wheels, because Jolt's controller indexes wheel 0 and 1
+directly to balance the bike.
+
+Steering has no count limit either, and never did — `WheeledVehicleController::PreCollide`
+walks every wheel and sets `-mRightInput * mMaxSteerAngle`, so a wheel steers if and only
+if its own `max_steer_angle` is non-zero. A **negative** angle is legal (Jolt asserts on
+`abs(angle) > 90°`, not on the sign) and steers that wheel against the input, which is
+what rear-axle counter-steering is. `Vehicle::SteeringLayout` only decides what a freshly
+generated vehicle starts with; the per-wheel angles stay editable afterwards.
+
+**Collision geometry does not have to be what is drawn, and the loader is a HOOK.**
+`RigidBodyPhysicsComponent::mesh_source` picks between the mesh on the entity, a
+`ProxyEntity` holding a low-poly mesh, and an `ExternalFile` collision model. Reading a
+model file is `Framework/io/model`'s job and the engine sits below it, so the engine
+publishes `wi::physics::SetCollisionMeshLoader()` and `st::App::Initialize` fills it in
+(`LoadCollisionModel` in `stApp.cpp`, dispatching `.stsd` / `.wiscene` / the interchange
+formats). With no loader installed an `ExternalFile` body logs and is skipped.
+
+The loader is **main thread only** and that is not incidental: importing builds render
+data and registers resources, neither of which survives being called from a physics job.
+`RunPhysicsUpdateSystem` therefore walks the rigid bodies and primes the model cache
+BEFORE it dispatches any body-creation job, and `AddRigidBody` only ever reads the cache
+— a miss re-requests a refresh and lets the next frame build the body. Loaded geometry is
+held by `shared_ptr` so its address is stable, which is what lets the existing shape cache
+keep keying on the vertex/index pointer.
+
+**`AddRigidBody` must never assume it got a shape.** Every shape path can legitimately
+fail — a mesh shape on an entity with no mesh, a collision model that would not load, an
+entity scaled to zero on one axis, a mesh whose subset offsets outrun its index buffer.
+The vehicle and character branches then dereferenced `physicsobject.shape` unconditionally
+and the whole engine went down with a read from address 0 on a job thread, which
+symbolizes as a stack with no obvious cause. A failed shape is now a logged skip; a
+vehicle additionally falls back to a plain box built from its own `chassis_half_*`, on the
+grounds that a car driving on a box is easier to diagnose than one that never appears. A
+failed shape is also never written into the shape cache — caching the null made every
+later body sharing that geometry fail too, permanently.
 
 **ImGui integration is hand-rolled** on the engine's graphics device.
 `ImGui::Render()` runs in `Update()` (not `Compose()`) so draw data is ready before
@@ -666,6 +746,25 @@ shader-heavy change, publish the result back with the
 code. Native components use address-based `GetNativeTypeID<T>()` for type identity
 for exactly this reason.
 
+**One physical gamepad must not take two player slots.** On Windows this workspace
+defines `SDL2=1` *and* `PLATFORM_WINDOWS_DESKTOP`, so `wi::input` compiles the XInput,
+RawInput and SDL backends all at once and an Xbox pad is enumerated twice - once by
+XInput, once by SDL - with the two copies deadzoned and signed independently.
+`wiInput.cpp` now checks SDL's player index (which IS the XInput user index on Windows,
+via `sdlinput::GetControllerXInputUserIndex`) against the already-registered XInput
+slots and skips the duplicate. RawInput is a third enumeration in principle, but
+`rawinput::ParseMessage()` is called from nowhere in this workspace - SDL2 owns the
+message loop and there is no WndProc - so that path is inert and non-XInput pads
+(DualShock/DualSense) reach the engine through SDL.
+
+Deadzoning is ONE shared rule (`wi::input::ApplyStickDeadzone` /
+`ApplyTriggerDeadzone`, tunable through `GetAnalogSettings()`), radial and rescaled.
+It used to be three different per-axis constants - 0.24 in XInput, 0.26 in RawInput,
+0.20 in SDL - none of which rescaled, so an axis snapped from 0 straight to the
+deadzone value and flickered whenever the stick rested near that line. `ControllerState`
+carries the pre-deadzone values alongside the processed ones purely so the DevUI scope
+(`Simtary > Gamepad Analog`) can draw both on one axis; nothing in the game reads them.
+
 **Native Components** (`Engine/stNativeComponent.{h,cpp,_inl.h}`) are an engine-core
 feature, not a framework one: a Unity-like C++ component model attached data-driven
 through the engine `MetadataComponent`, so it stays editable in the Wicked Editor.
@@ -698,6 +797,47 @@ now RECORDS every field it binds, and `SaveBoundParams()` writes them all back t
 (`if (dirty) { Apply(); SaveBoundParams(); }`, which is what every component in
 `Framework/` does). Parameters exposed through `DescribeParams()` instead need none of
 this: the shared inspector writes each edit back through `Set*()` itself.
+
+**The Add Component list is grouped and categorized, and both are part of the
+registration.** A registration carries a `group` (section title), a `tag` (a badge in
+front of it) and a `category` (a sub-tree inside the group), so the picker is sections
+rather than one flat scroll of everything the executable linked in.
+`ST_REGISTER_NATIVE_COMPONENT(_AS)` files a component under **Project** with no
+category; `ST_REGISTER_FRAMEWORK_COMPONENT(_AS)(TYPE, NAME, CATEGORY)` — and the explicit
+`RegisterNativeComponent(..., "Framework", "ST", "Audio")` the audio components use —
+puts it under **[ST] Framework** in that category;
+`ST_REGISTER_NATIVE_COMPONENT_IN(TYPE, NAME, GROUP, TAG, CATEGORY)` invents any other
+section a game wants. The framework's categories are **Audio** (emitter, collector,
+speaker, microphone, geometry/wall/room), **Optical** (laser, mirror, lens, projector)
+and **Scene** (ray).
+
+Only Project is open by default; categories inside an opened group are open but
+collapsible; typing in the search box forces open exactly the sections and categories
+that have a hit and hides the rest. Engine components (the 38 `Scene` managers) sit last
+and closed. An empty category means "directly under the group header", which is what a
+project that never names one gets, so the plain list still looks plain.
+`GetRegisteredNativeComponentGroups()` is what the editor reads — each group carries both
+the flat `components` list and the `categories` split of the same names;
+`GetRegisteredNativeComponentNames()` still returns everything as one list.
+
+**Steam Audio hears nothing until something registers geometry, and `stAudioGeometry` is
+that something.** `Spatializer::AddStaticMesh` existed from the start and nothing called
+it, so occlusion, transmission, reflections and pathing were all inert no matter what an
+emitter asked for. `Engine/stAudioGeometry.{h,cpp}` is one component under three names —
+`stAudioRoom` (a hollow box of up to six slabs around an interior), `stAudioWall` (one
+slab) and `stAudioGeometry` (a solid Box, or Mesh: the entity's own rendered triangles) —
+with Steam Audio's material table as presets plus Custom. The name only picks the default
+shape; the dropdown can change it afterwards.
+
+Two things about it are load-bearing. Every shape is a CLOSED solid with real
+`thickness`, because transmission is computed through the material — a zero-thickness
+wall leaks everything — and because a closed slab presents a real surface to a listener
+on either side whichever way the tracer orients a normal. And geometry is registered in
+ORIGIN-RELATIVE space like every other audio coordinate, so a large-world rebase
+invalidates a mesh that has not moved a millimetre: the component re-registers on an
+origin change even when `staticGeometry` is on. Otherwise static geometry is registered
+once at `Start` and never re-read; a door sets `staticGeometry` off and pays a rebuild
+(and a scene re-commit) at `rebuildRateHz`.
 
 **Graphics API**: DirectX 12 on Windows, Vulkan on Linux (the SDL2 window is created
 with `SDL_WINDOW_VULKAN`). Pass `vulkan` as a command-line argument to force Vulkan on

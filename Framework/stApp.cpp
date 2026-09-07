@@ -4,11 +4,125 @@
 #include <cstdlib>
 #include "eventBus.h"
 #include "input/InputSystem.h"
+#include "io/asset/AssetSystem.h"
+#include "io/model/ModelImporter.h"
 #include "wiPhysics.h"
+#include "wiScene.h"
+#include "wiHelper.h"
+#include "wiBacklog.h"
+
+#include <algorithm>
 
 namespace {
 // Owned by st::Run for the whole process; null until Run() installs it.
 const st::AppConfig* g_config = nullptr;
+
+// --- Collision models ---
+//
+// A rigid body can take its collision geometry from a FILE rather than from anything in the
+// scene (RigidBodyPhysicsComponent::mesh_source == ExternalFile), which is how a low-poly
+// collision hull ships beside a high-poly visual model. Reading a model file is the framework's
+// job - Framework/io/model sits above the engine - so the engine publishes a hook and this
+// fills it in. Everything below runs on the MAIN THREAD: the engine primes its cache before it
+// dispatches any physics job, precisely because importing builds render data and registers
+// resources.
+
+// Merge every mesh a loaded scene holds into one triangle soup, in the scene's own space.
+// Placement matters: a model with a node hierarchy has its parts positioned by their
+// transforms, and collapsing to raw mesh-local vertices would pile them all on the origin.
+void AppendSceneGeometry (const wi::scene::Scene& scene, wi::physics::CollisionGeometry& out)
+{
+    for (size_t i = 0; i < scene.objects.GetCount(); ++i)
+    {
+        const wi::scene::ObjectComponent& object = scene.objects[i];
+        const wi::scene::MeshComponent* mesh = scene.meshes.GetComponent(object.meshID);
+        if (mesh == nullptr || mesh->vertex_positions.empty() || mesh->indices.empty())
+            continue;
+
+        const wi::ecs::Entity entity = scene.objects.GetEntity(i);
+        const wi::scene::TransformComponent* transform = scene.transforms.GetComponent(entity);
+        const XMMATRIX world = transform != nullptr ? XMLoadFloat4x4(&transform->world) : XMMatrixIdentity();
+
+        const uint32_t base = (uint32_t)out.vertex_positions.size();
+        out.vertex_positions.reserve(out.vertex_positions.size() + mesh->vertex_positions.size());
+        for (const XMFLOAT3& position : mesh->vertex_positions)
+        {
+            XMFLOAT3 placed;
+            XMStoreFloat3(&placed, XMVector3Transform(XMLoadFloat3(&position), world));
+            out.vertex_positions.push_back(placed);
+        }
+
+        out.indices.reserve(out.indices.size() + mesh->indices.size());
+        for (uint32_t index : mesh->indices)
+        {
+            out.indices.push_back(base + index);
+        }
+    }
+}
+
+// Read one collision model. Dispatches on extension the same way the editor's import does:
+// a packed map, an engine archive, or one of the interchange formats.
+bool LoadCollisionModel (const std::string& path, wi::physics::CollisionGeometry& out)
+{
+    std::string extension = wi::helper::GetExtensionFromFileName(path);
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+
+    // A scene of its own, thrown away as soon as the triangles are copied out. Nothing here
+    // is ever rendered; it exists only to give the loaders somewhere to build components.
+    wi::scene::Scene model;
+
+    if (extension == "stsd")
+    {
+        std::string error;
+        if (st::AssetSystem::Get().LoadScene(model, path, XMMatrixIdentity(), true, nullptr, &error) == wi::ecs::INVALID_ENTITY)
+        {
+            wi::backlog::post("Collision model '" + path + "' failed to load: " + error, wi::backlog::LogLevel::Error);
+            return false;
+        }
+    }
+    else if (extension == "wiscene")
+    {
+        if (wi::scene::LoadModel(model, path, XMMatrixIdentity(), true) == wi::ecs::INVALID_ENTITY)
+            return false;
+    }
+    else if (st::model::CanImport(path))
+    {
+        // A collision model needs geometry and nothing else. Skipping the rest is not only
+        // faster, it keeps a collision file from dragging in lights and animation data.
+        st::model::ImportOptions options;
+        options.importCameras    = false;
+        options.importLights     = false;
+        options.importAnimations = false;
+        options.importSkins      = false;
+        options.generateMissingNormals = false;
+
+        const st::model::ImportResult result = st::model::Import(model, path, options);
+        if (!result.ok())
+        {
+            wi::backlog::post("Collision model '" + path + "' failed to import: " + result.error, wi::backlog::LogLevel::Error);
+            return false;
+        }
+    }
+    else
+    {
+        wi::backlog::post(
+            "Collision model '" + path + "' has no loader for its extension. Supported: "
+            ".gltf .glb .fbx .obj .wiscene .stsd",
+            wi::backlog::LogLevel::Error);
+        return false;
+    }
+
+    // Resolve the hierarchy so every object's world matrix exists before it is read.
+    model.Update(0.0f);
+    AppendSceneGeometry(model, out);
+    return out.IsValid();
+}
+
+void InstallCollisionMeshLoader ()
+{
+    wi::physics::SetCollisionMeshLoader(&LoadCollisionModel);
+}
 }
 
 namespace st::detail {
@@ -177,13 +291,21 @@ void st::App::Initialize() {
     optics_.LoadFrom(st::SettingsManager::Get().SubCompound("optics"));
     lasers_.LoadFrom(st::SettingsManager::Get().SubCompound("lasers"));
 
-    // Centralized input: install the default keymap before any scene updates.
+    // Centralized input: install the default keymap before any scene updates. This
+    // seeds both halves - the legacy flat keymap AND the default "Player"/"UI" action
+    // maps - and then hands the registry to the project.
     st::InputSystem::Get().LoadDefaults();
+
+    // Project hook: the game's keybinds. Before RegisterScenes, so a scene loaded
+    // below already finds its action map registered when its stInput components start.
+    m_loadingScreen.SetStatusText("registering keybinds");
+    OnKeyRegister(st::InputSystem::Get().Actions());
 
     // Ensure the physics simulation actually steps (not just builds bodies). Some
     // load paths leave it disabled, which freezes characters (built but never moved).
     wi::physics::SetEnabled(true);
     wi::physics::SetSimulationEnabled(true);
+    InstallCollisionMeshLoader();
 
     m_loadingScreen.SetStatusText("registering scenes");
     // Project hook: every scene the game owns is registered here, before the

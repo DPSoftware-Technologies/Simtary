@@ -55,6 +55,11 @@
 
 namespace st::audio
 {
+	// Defined in stAudioStream.h. Declared here so the engine can hand back the
+	// player behind streamed music without every consumer of this header pulling in
+	// the decoder API.
+	class StreamPlayer;
+
 	// mixer routing
 	// A submix is a volume group. Independent of 2D/3D: a footstep is a SoundEffect
 	// whether it is spatialized or not.
@@ -299,8 +304,9 @@ namespace st::audio
 		// The free helpers below are the engine's own public face; they reach into the
 		// 2D voice pool and the music slot, which nothing outside this file should.
 		friend void PlayOneShot(const AudioClip&, float, Submix, float);
-		friend EmitterRef PlayMusic(const std::string&, float, bool);
+		friend EmitterRef PlayMusic(const std::string&, float, bool, bool);
 		friend void StopMusic();
+		friend std::shared_ptr<StreamPlayer> GetMusicStream();
 		friend void StopAll();
 	};
 
@@ -327,8 +333,24 @@ namespace st::audio
 
 	// Looping 2D music on its own submix. Returns the emitter so it can be stopped or
 	// faded; passing an empty filename stops whatever is playing.
-	EmitterRef PlayMusic(const std::string& filename, float volume = 1.0f, bool loop = true);
+	//
+	// `stream` is the default because a track is the one asset a game should never
+	// decode whole: streaming keeps the compressed bytes and decodes a block at a time
+	// (see stAudioStream.h), which is megabytes instead of the hundred-odd a
+	// five-minute track costs as float. Pass false to force the old full-decode path -
+	// worth it only for a short sting that is restarted constantly, where a cached
+	// clip beats spinning up a worker thread. A stream that fails to open falls back
+	// to a clip on its own, so a format the streamer chokes on still plays.
+	//
+	// Reach the stream itself (seek, position, length) with GetMusicStream().
+	EmitterRef PlayMusic(const std::string& filename, float volume = 1.0f, bool loop = true,
+		bool stream = true);
 	void StopMusic();
+
+	// The StreamPlayer behind the current music, or null when music is not playing or
+	// was loaded as a clip. Include stAudioStream.h to do anything with it - seek,
+	// read the position, ask how long the track is.
+	std::shared_ptr<StreamPlayer> GetMusicStream();
 
 	// Stop every emitter and every 2D voice. Scene transitions.
 	void StopAll();

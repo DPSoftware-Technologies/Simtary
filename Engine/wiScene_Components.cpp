@@ -3421,4 +3421,187 @@ namespace wi::scene
 
 		bvh.Build(precomputed_aabbs.data(), (uint32_t)precomputed_aabbs.size());
 	}
+
+	// --- SIMTARY EXTENSION: vehicle wheel layout ---
+	// The vehicle used to be four hardcoded wheels built inside the physics backend. It is now
+	// an array the component owns, and these two functions are the only places that know the
+	// old four-slot shape: one lays a fresh N-axle vehicle out from the chassis dimensions,
+	// the other converts a scene saved before the array existed.
+
+	void RigidBodyPhysicsComponent::Vehicle::GenerateWheels(uint32_t axles, bool all_wheel_drive,
+		SteeringLayout steering)
+	{
+		wheels.clear();
+		differentials.clear();
+		anti_roll_bars.clear();
+
+		if (type == Type::Motorcycle)
+		{
+			// A motorcycle is two wheels on the centre line, and Jolt's MotorcycleController
+			//	requires exactly that, so the axle count does not apply.
+			Wheel front;
+			front.position = XMFLOAT3(0, chassis_half_height, chassis_half_length + front_wheel_offset);
+			front.radius = wheel_radius;
+			front.width = wheel_width;
+			front.suspension_min_length = front_suspension.min_length;
+			front.suspension_max_length = front_suspension.max_length;
+			front.suspension_frequency = front_suspension.frequency;
+			front.suspension_damping = front_suspension.damping;
+			// A bike's fork rakes the suspension itself, not only the steering axis, so the
+			//	angle goes on both. Together these reproduce exactly what the old motorcycle
+			//	path built by hand (suspension along (0,-1,tan a), steering axis its opposite).
+			front.caster_angle = motorcycle.front_suspension_angle;
+			front.suspension_forward_angle = motorcycle.front_suspension_angle;
+			front.max_steer_angle = max_steering_angle;
+			front.max_brake_torque = motorcycle.front_brake_torque;
+			front.entity = wheel_entity_front_left;
+			wheels.push_back(front);
+
+			Wheel rear;
+			rear.position = XMFLOAT3(0, chassis_half_height, -chassis_half_length + rear_wheel_offset);
+			rear.radius = wheel_radius;
+			rear.width = wheel_width;
+			rear.suspension_min_length = rear_suspension.min_length;
+			rear.suspension_max_length = rear_suspension.max_length;
+			rear.suspension_frequency = rear_suspension.frequency;
+			rear.suspension_damping = rear_suspension.damping;
+			rear.max_steer_angle = 0.0f;
+			rear.max_brake_torque = motorcycle.rear_brake_torque;
+			rear.entity = wheel_entity_rear_left;
+			wheels.push_back(rear);
+
+			// Not really applicable to a motorcycle, but the controller needs one to drive it.
+			//	The ratio combines the primary and final drive (rear divided by front sprockets).
+			Differential diff;
+			diff.left_wheel = -1;
+			diff.right_wheel = 1;
+			diff.differential_ratio = 1.93f * 40.0f / 16.0f;
+			differentials.push_back(diff);
+
+			// The bike drivetrain the old hardcoded path used. Only applied when the gearbox has
+			//	never been configured, so regenerating the wheels of a tuned bike leaves its
+			//	engine alone.
+			if (gear_ratios.empty())
+			{
+				engine_min_rpm = 1000.0f;
+				engine_max_rpm = 10000.0f;
+				transmission_shift_down_rpm = 2000.0f;
+				transmission_shift_up_rpm = 8000.0f;
+				gear_ratios = { 2.27f, 1.63f, 1.3f, 1.09f, 0.96f, 0.88f }; // From: https://www.blocklayer.com/rpm-gear-bikes
+				reverse_gear_ratios = { -4.0f };
+			}
+			return;
+		}
+
+		axles = std::max(1u, axles);
+
+		const float front_z = chassis_half_length + front_wheel_offset;
+		const float rear_z = -chassis_half_length + rear_wheel_offset;
+
+		for (uint32_t axle = 0; axle < axles; ++axle)
+		{
+			// Spread the axles evenly from front to rear. One axle sits at the front position;
+			//	two reproduce exactly the old front/rear pair.
+			const float t = (axles == 1) ? 0.0f : float(axle) / float(axles - 1);
+			const float z = front_z + (rear_z - front_z) * t;
+
+			const bool is_front_axle = (axle == 0);
+			const bool is_rear_axle = (axle == axles - 1);
+			const Suspension& suspension = is_front_axle ? front_suspension : rear_suspension;
+
+			// Steering is per wheel and any number of wheels can have it. A negative angle steers
+			//	that wheel against the input, which is what counter-steering an axle means.
+			float steer_angle = 0.0f;
+			switch (steering)
+			{
+			default:
+			case SteeringLayout::FrontAxle:
+				steer_angle = is_front_axle ? max_steering_angle : 0.0f;
+				break;
+			case SteeringLayout::FrontAndRearCounter:
+				if (is_front_axle)     steer_angle = max_steering_angle;
+				else if (is_rear_axle) steer_angle = -max_steering_angle;
+				break;
+			case SteeringLayout::FrontAndRearCrab:
+				steer_angle = (is_front_axle || is_rear_axle) ? max_steering_angle : 0.0f;
+				break;
+			case SteeringLayout::AllAxles:
+				// Full lock at the front, full counter-lock at the back, linear between.
+				steer_angle = (axles == 1) ? max_steering_angle : max_steering_angle * (1.0f - 2.0f * t);
+				break;
+			}
+
+			const int first_index = (int)wheels.size();
+
+			for (int side = 0; side < 2; ++side)
+			{
+				const bool right = (side == 1);
+
+				Wheel w;
+				w.position = XMFLOAT3(right ? chassis_half_width : -chassis_half_width, chassis_half_height, z);
+				w.radius = wheel_radius;
+				w.width = wheel_width;
+				w.suspension_min_length = suspension.min_length;
+				w.suspension_max_length = suspension.max_length;
+				w.suspension_frequency = suspension.frequency;
+				w.suspension_damping = suspension.damping;
+				w.mirror_x = right;
+				w.max_steer_angle = steer_angle;
+				// Only the rear axle gets a hand brake, which is how the four-wheel version behaved.
+				w.max_hand_brake_torque = is_rear_axle ? 4000.0f : 0.0f;
+				wheels.push_back(w);
+			}
+
+			AntiRollBar bar;
+			bar.left_wheel = first_index;
+			bar.right_wheel = first_index + 1;
+			anti_roll_bars.push_back(bar);
+
+			// Drive the front axle always (that is what a non-4WD car did), every axle when
+			//	all wheel drive is asked for.
+			if (is_front_axle || all_wheel_drive)
+			{
+				Differential diff;
+				diff.left_wheel = first_index;
+				diff.right_wheel = first_index + 1;
+				differentials.push_back(diff);
+			}
+		}
+
+		// Split engine torque evenly across whatever ended up driven.
+		if (!differentials.empty())
+		{
+			const float share = 1.0f / float(differentials.size());
+			for (auto& diff : differentials)
+			{
+				diff.engine_torque_ratio = share;
+			}
+		}
+
+		// Bind the legacy wheel entity slots to the wheels they used to name, so regenerating
+		//	a four-wheel car in the editor does not silently drop its visual wheels.
+		const wi::ecs::Entity legacy[] = {
+			wheel_entity_front_left,
+			wheel_entity_front_right,
+			wheel_entity_rear_left,
+			wheel_entity_rear_right,
+		};
+		if (axles == 2 && wheels.size() == 4)
+		{
+			for (size_t i = 0; i < 4; ++i)
+			{
+				wheels[i].entity = legacy[i];
+			}
+		}
+	}
+
+	void RigidBodyPhysicsComponent::Vehicle::MigrateLegacyWheels()
+	{
+		if (!wheels.empty() || type == Type::None)
+			return;
+
+		// The old builder always made two axles, and four_wheel_drive decided whether the rear
+		//	one was driven too.
+		GenerateWheels(2, car.four_wheel_drive);
+	}
 }

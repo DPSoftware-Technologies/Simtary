@@ -1,5 +1,7 @@
 #include "wiXInput.h"
 
+#include <algorithm>
+
 #if __has_include(<xinput.h>)
 
 #if defined(PLATFORM_WINDOWS_DESKTOP)
@@ -17,20 +19,40 @@ namespace wi::input::xinput
 	XINPUT_STATE controllers[4] = {};
 	bool connected[arraysize(controllers)] = {};
 
+	// Frames to wait before re-probing a slot that answered ERROR_DEVICE_NOT_CONNECTED.
+	//	XInputGetState on an EMPTY user index is not a cheap read: it walks the device
+	//	list, and on a machine with one pad the three empty slots cost far more than the
+	//	one real one - milliseconds, every frame, as a spike rather than a constant. A
+	//	frame that hitches makes analog input feel unstable even when the values are
+	//	perfect, because whatever the stick drives is integrated against a delta time
+	//	that jumps around. Hot-plug still works, it is just noticed within ~1s instead
+	//	of within one frame.
+	static constexpr int DISCONNECTED_RETRY_FRAMES = 60;
+	int retry_countdown[arraysize(controllers)] = {};
+
 	void Update()
 	{
 		for (DWORD i = 0; i < arraysize(controllers); i++)
 		{
+			if (!connected[i] && retry_countdown[i] > 0)
+			{
+				retry_countdown[i]--;
+				controllers[i] = {};
+				continue;
+			}
+
 			controllers[i] = {};
 			DWORD dwResult = XInputGetState(i, &controllers[i]);
 
 			if (dwResult == ERROR_SUCCESS)
 			{
 				connected[i] = true;
+				retry_countdown[i] = 0;
 			}
 			else
 			{
 				connected[i] = false;
+				retry_countdown[i] = DISCONNECTED_RETRY_FRAMES;
 			}
 		}
 	}
@@ -39,15 +61,14 @@ namespace wi::input::xinput
 	{
 		return arraysize(controllers);
 	}
-	constexpr float deadzone(float x)
+	// Normalize one XInput axis. sThumbLX/LY are SHORT, so the negative end reaches
+	//	-32768 while the positive end stops at 32767: dividing both by 32767 lets the
+	//	left/down end overshoot -1, which then clamps and makes the axis very slightly
+	//	asymmetric. Divide by the correct magnitude per sign instead.
+	inline float normalize_axis(SHORT v)
 	{
-		if ((x) > -0.24f && (x) < 0.24f)
-			x = 0;
-		if (x < -1.0f)
-			x = -1.0f;
-		if (x > 1.0f)
-			x = 1.0f;
-		return x;
+		const float f = (v < 0) ? ((float)v / 32768.0f) : ((float)v / 32767.0f);
+		return std::max(-1.0f, std::min(1.0f, f));
 	}
 	bool GetControllerState(wi::input::ControllerState* state, int index)
 	{
@@ -88,11 +109,25 @@ namespace wi::input::xinput
 						}
 					}
 
-					// Retrieve analog inoputs:
-					state->thumbstick_L = XMFLOAT2(deadzone((float)xinput_state.Gamepad.sThumbLX / 32767.0f), deadzone((float)xinput_state.Gamepad.sThumbLY / 32767.0f));
-					state->thumbstick_R = XMFLOAT2(deadzone((float)xinput_state.Gamepad.sThumbRX / 32767.0f), -deadzone((float)xinput_state.Gamepad.sThumbRY / 32767.0f));
-					state->trigger_L = (float)xinput_state.Gamepad.bLeftTrigger / 255.0f;
-					state->trigger_R = (float)xinput_state.Gamepad.bRightTrigger / 255.0f;
+					// Retrieve analog inputs. Raw first, in the engine's sign convention
+					//	(L.y up-positive, R.y down-positive - XInput reports both sticks
+					//	up-positive, so only the right one is flipped), then one shared
+					//	radial deadzone on top. The old per-axis cut at 0.24 with no
+					//	rescale is what made the stick jump straight from 0 to 0.24 and
+					//	flicker whenever it rested near that line.
+					state->thumbstick_L_raw = XMFLOAT2(
+						normalize_axis(xinput_state.Gamepad.sThumbLX),
+						normalize_axis(xinput_state.Gamepad.sThumbLY));
+					state->thumbstick_R_raw = XMFLOAT2(
+						normalize_axis(xinput_state.Gamepad.sThumbRX),
+						-normalize_axis(xinput_state.Gamepad.sThumbRY));
+					state->trigger_L_raw = (float)xinput_state.Gamepad.bLeftTrigger / 255.0f;
+					state->trigger_R_raw = (float)xinput_state.Gamepad.bRightTrigger / 255.0f;
+
+					state->thumbstick_L = wi::input::ApplyStickDeadzone(state->thumbstick_L_raw);
+					state->thumbstick_R = wi::input::ApplyStickDeadzone(state->thumbstick_R_raw);
+					state->trigger_L = wi::input::ApplyTriggerDeadzone(state->trigger_L_raw);
+					state->trigger_R = wi::input::ApplyTriggerDeadzone(state->trigger_R_raw);
 
 				}
 

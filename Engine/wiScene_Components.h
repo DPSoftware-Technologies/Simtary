@@ -492,6 +492,34 @@ namespace wi::scene
 			HEIGHTFIELD,
 		};
 		CollisionShape shape = BOX;
+
+		// Where the geometry for a mesh-based shape (CONVEX_HULL / TRIANGLE_MESH / HEIGHTFIELD)
+		//	comes from. The primitive shapes ignore this entirely.
+		enum class MeshSource : uint32_t
+		{
+			// The MeshComponent the ObjectComponent on this same entity points at. The original
+			//	behaviour, and still the default: collision follows whatever is rendered here.
+			OwnObject,
+			// A separate 3D file, loaded once and cached, independent of anything in the scene.
+			//	This is the low-poly collision model an artist exports beside the visual one.
+			//	Needs a loader to be installed - see wi::physics::SetCollisionMeshLoader.
+			ExternalFile,
+			// A MeshComponent already in the scene, reached through another entity. Point this
+			//	at a hidden low-poly proxy to keep collision and visuals separate without
+			//	shipping a second file.
+			ProxyEntity,
+		};
+		MeshSource mesh_source = MeshSource::OwnObject;
+
+		// Collision model file, used when mesh_source == ExternalFile. Any path the installed
+		//	loader accepts - with the framework loader that is .gltf/.glb/.fbx/.obj/.wiscene,
+		//	resolved through the asset system, so a packaged file works like a loose one.
+		std::string collision_mesh_file;
+
+		// Entity carrying the MeshComponent to collide with, used when mesh_source == ProxyEntity.
+		//	Either the mesh entity itself or an object pointing at one.
+		wi::ecs::Entity collision_mesh_entity = wi::ecs::INVALID_ENTITY;
+
 		float mass = 1.0f; // Set to 0 to make body static
 		float friction = 0.2f;
 		float restitution = 0.1f;
@@ -574,11 +602,147 @@ namespace wi::scene
 				bool lean_control = true; // true: avoids fall over to the side
 			} motorcycle;
 
-			// These can be specified to drive wheel animation from physics engine state:
+			// One simulated wheel. A vehicle carries as many of these as it likes: two for a
+			//	motorcycle, four for a car, six for a 6x6, and so on. Everything Jolt's
+			//	WheelSettingsWV understands is here, so adding an axle is data, not code.
+			//
+			//	The chassis_* / wheel_* / *_suspension fields above are the LAYOUT INPUT that
+			//	GenerateWheels() lays these out from; once generated, the wheels are what the
+			//	simulation reads and they can be edited individually.
+			struct Wheel
+			{
+				// Suspension attachment point, chassis local space, metres. +Z is forward,
+				//	+X is right, +Y is up, and Y is normally the chassis half height.
+				XMFLOAT3 position = XMFLOAT3(0, 0, 0);
+
+				float radius = 0.3f;
+				float width = 0.1f;
+
+				// Suspension. frequency is in Hz and damping is a RATIO (1 = critically damped):
+				//	Jolt's ESpringMode::FrequencyAndDamping, where the spring rate is derived from
+				//	the sprung mass rather than given directly. Travel = max_length - min_length.
+				float suspension_min_length = 0.3f;
+				float suspension_max_length = 0.5f;
+				float suspension_frequency = 1.5f;
+				float suspension_damping = 0.5f;
+				// Natural spring length is max_length + this, so a positive value preloads the
+				//	spring. Note it makes touchdown discontinuous, which reads as bounciness.
+				float suspension_preload_length = 0.0f;
+
+				// Wheel and suspension geometry, radians. All zero is a vertical wheel pointing
+				//	straight ahead on a vertical suspension, which is what the old code hardcoded.
+				float suspension_forward_angle = 0.0f;
+				float suspension_sideways_angle = 0.0f;
+				float caster_angle = 0.0f;
+				float kingpin_angle = 0.0f;
+				float camber = 0.0f;
+				float toe = 0.0f;
+
+				float max_steer_angle = 0.0f;			// radians. 0 = this wheel does not steer
+				float max_brake_torque = 1500.0f;		// Nm
+				float max_hand_brake_torque = 0.0f;		// Nm. Usually rear wheels only
+				float inertia = 0.9f;					// kg m^2. 0.5 * mass * radius^2 for a disc
+				float angular_damping = 0.2f;
+
+				// Mirror this wheel's geometry across the chassis X axis. Wheels on the right
+				//	want this so camber, caster and toe lean the same way as their left partner.
+				bool mirror_x = false;
+
+				// Optional visual wheel: its transform is driven from the simulated wheel every
+				//	frame, interpolated between physics steps.
+				wi::ecs::Entity entity = wi::ecs::INVALID_ENTITY;
+			};
+			wi::vector<Wheel> wheels;
+
+			// A differential across two wheels. Engine torque is divided between differentials
+			//	in proportion to engine_torque_ratio (Jolt normalizes the ratios), so a 6x6 with
+			//	three driven axles is three entries. A differential with only one wheel connected
+			//	(the other left at -1) drives that wheel alone.
+			struct Differential
+			{
+				int left_wheel = -1;					// index into wheels, -1 = not connected
+				int right_wheel = -1;
+				float differential_ratio = 3.42f;		// rotation rate between gearbox and wheels
+				float left_right_split = 0.5f;			// 0 = all torque left, 1 = all torque right
+				float limited_slip_ratio = 1.4f;		// <= 1 disables the limited slip
+				float engine_torque_ratio = 1.0f;
+			};
+			wi::vector<Differential> differentials;
+
+			// Torsion bar tying two wheels together, which is what stops a vehicle rolling over
+			//	in a hard turn. One per axle is normal.
+			struct AntiRollBar
+			{
+				int left_wheel = -1;					// index into wheels, -1 = not connected
+				int right_wheel = -1;
+				float stiffness = 1000.0f;				// N/m
+			};
+			wi::vector<AntiRollBar> anti_roll_bars;
+
+			// Engine. Defaults match Jolt's own, so leaving them alone changes nothing.
+			float engine_min_rpm = 1000.0f;
+			float engine_max_rpm = 6000.0f;
+			float engine_inertia = 0.5f;
+			float engine_angular_damping = 0.2f;
+
+			// Transmission. Empty gear_ratios means "use Jolt's default gearbox".
+			bool auto_transmission = true;
+			wi::vector<float> gear_ratios;
+			wi::vector<float> reverse_gear_ratios;
+			float transmission_switch_time = 0.5f;
+			float transmission_clutch_release_time = 0.3f;
+			float transmission_switch_latency = 0.5f;
+			float transmission_shift_up_rpm = 4000.0f;
+			float transmission_shift_down_rpm = 2000.0f;
+
+			// Longitudinal tire impulse multiplier. Jolt's vehicle presets were tuned against a
+			//	bug that let mNumVelocitySteps times more longitudinal impulse through, so the
+			//	stock behaviour needs this at 10 to feel the same. Lower it for a vehicle tuned
+			//	from scratch against the corrected solver.
+			float longitudinal_impulse_scale = 10.0f;
+
+			// These are the LEGACY four wheel-entity slots. Wheel::entity replaced them; they
+			//	are kept so a scene saved before the wheel array still binds its wheels, and are
+			//	migrated into wheels[] on load. Nothing reads them at runtime any more.
 			wi::ecs::Entity wheel_entity_front_left = wi::ecs::INVALID_ENTITY;	// car, motorcycle
 			wi::ecs::Entity wheel_entity_front_right = wi::ecs::INVALID_ENTITY;	// car
 			wi::ecs::Entity wheel_entity_rear_left = wi::ecs::INVALID_ENTITY;	// car, motorcycle
 			wi::ecs::Entity wheel_entity_rear_right = wi::ecs::INVALID_ENTITY;	// car
+
+			// Which axles the generator gives a steering angle to. Steering itself is per wheel
+			//	(Wheel::max_steer_angle) and has no count limit - this only decides what a freshly
+			//	generated vehicle starts with. A NEGATIVE angle steers that wheel the other way,
+			//	which is what rear-axle counter-steering is.
+			enum class SteeringLayout : uint32_t
+			{
+				// Only the first axle steers. A normal car, and what the old four-wheel code did.
+				FrontAxle,
+				// Front steers, rear steers the opposite way. Tightens the turning circle sharply -
+				//	how a long 6x6 or 8x8 gets around a corner it otherwise could not.
+				FrontAndRearCounter,
+				// Front and rear steer the same way, so the vehicle slides sideways without
+				//	rotating. Crab steering.
+				FrontAndRearCrab,
+				// Every axle steers, tapering from full lock at the front to full counter-lock at
+				//	the back. The middle axle of an odd count lands on zero, which is what a real
+				//	multi-axle steering system does.
+				AllAxles,
+			};
+
+			// Lay wheels, differentials and anti-roll bars out from the chassis_* / wheel_* /
+			//	*_suspension fields above: `axles` evenly spaced pairs between the front and rear
+			//	wheel positions, steering per `steering`, rear axle handbraked, every axle driven
+			//	when `all_wheel_drive`. Two axles reproduces exactly what the old hardcoded car
+			//	built. Replaces the current arrays, so it is the "regenerate" button, not an "add".
+			void GenerateWheels(uint32_t axles = 2, bool all_wheel_drive = false,
+				SteeringLayout steering = SteeringLayout::FrontAxle);
+
+			// Build wheels[] out of the legacy four-slot layout. Called on load for scenes saved
+			//	before wheels existed; harmless afterwards.
+			void MigrateLegacyWheels();
+
+			// Number of wheels Jolt will actually be given for the current type.
+			uint32_t GetWheelCount() const { return (uint32_t)wheels.size(); }
 
 		} vehicle;
 

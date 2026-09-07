@@ -24,6 +24,7 @@
 //	by capture state, so FPS look keeps working with an ImGui window open.
 
 #include "wiInput.h"   // wi::input::BUTTON / GAMEPAD_ANALOG + DirectXMath (XMFLOAT2)
+#include "input/InputActions.h" // the action-map model this class now owns
 
 struct SDL_Window; // only ever held as a pointer here; SDL.h stays out of this header
 
@@ -60,6 +61,21 @@ class InputSystem {
 public:
 	static InputSystem& Get();
 
+	// ------------------------------------------------------------------
+	// Action maps (the current system - see input/InputActions.h).
+	//
+	//	The registry is the game's whole keymap: named maps ("Player", "UI"), named
+	//	actions inside them, and typed bindings. It is built once at startup, from
+	//	st::App::OnKeyRegister(), and read per entity through st::InputComponent
+	//	rather than out of this singleton - so two players are two entities, and a
+	//	component that wants input asks for a sibling instead of a global.
+	//
+	//	LoadDefaults() seeds a "Player" and a "UI" map before the hook runs, so a
+	//	project that registers nothing still has something to attach. Call
+	//	Actions().Clear() as the first line of OnKeyRegister to start from empty.
+	st::input::Registry& Actions() { return actions_registry_; }
+	const st::input::Registry& Actions() const { return actions_registry_; }
+
 	// Call once per frame (st::App::Update), after wi::Application::Update.
 	void Update(float dt);
 
@@ -69,6 +85,18 @@ public:
 	void BindButton(const std::string& action, wi::input::BUTTON b, bool negative = false);
 	void BindAnalog(const std::string& action, InputBinding::Analog a, float scale = 1.0f, bool negative = false);
 	const InputAction* Find(const std::string& action) const;
+
+	// ------------------------------------------------------------------
+	// Legacy flat keymap.
+	//
+	//	One namespace of actions with no maps, no control types and no player index -
+	//	what existed before Actions() above. It is kept working, unchanged, because
+	//	scenes and components are written against it; new code should use an
+	//	st::InputComponent and an action map instead.
+	//
+	//	The two run side by side over the same devices and do not interfere: this half
+	//	evaluates on demand inside the queries below, the action maps evaluate once per
+	//	frame per component.
 
 	// queries
 	bool  Down(const std::string& action) const;     // any bound source active
@@ -145,7 +173,12 @@ private:
 	float bindingAxis(const InputBinding& b) const;      // signed contribution for Axis()
 	bool gated(const InputBinding& b) const;             // true => ignore this source this frame
 
-	std::unordered_map<std::string, InputAction> actions_;
+	// Seeds the "Player" and "UI" maps into Actions(). Called by LoadDefaults(),
+	//	before st::App::OnKeyRegister() gets the registry.
+	void LoadDefaultActionMaps();
+
+	std::unordered_map<std::string, InputAction> actions_; // legacy flat keymap
+	st::input::Registry actions_registry_;                 // the action-map model
 
 	XMFLOAT2 mouseDelta_   = XMFLOAT2(0, 0);
 	bool     mouseCaptured_ = false;

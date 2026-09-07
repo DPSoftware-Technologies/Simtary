@@ -1,4 +1,5 @@
 #include "stAudioComponents.h"
+#include "stAudioGeometry.h"
 #include "wiScene.h"
 #include "wiRenderer.h"
 #include "wiBacklog.h"
@@ -678,21 +679,28 @@ namespace st
 			return;
 		registered = true;
 
+		// Group "Framework" / badge "ST": these are the engine's components, not the game's,
+		// and the editor's Add Component list is one section per group.
 		RegisterNativeComponent("stAudioEmitter",
 			[] { return std::unique_ptr<NativeComponent>(new AudioEmitterComponent()); },
-			GetNativeTypeID<AudioEmitterComponent>());
+			GetNativeTypeID<AudioEmitterComponent>(), "Framework", "ST", "Audio");
 		RegisterNativeComponent("stAudioCollector",
 			[] { return std::unique_ptr<NativeComponent>(new AudioCollectorComponent()); },
-			GetNativeTypeID<AudioCollectorComponent>());
+			GetNativeTypeID<AudioCollectorComponent>(), "Framework", "ST", "Audio");
 
 		// Speaker/Microphone are the vocabulary these components were asked for. An
 		// alias costs one entry in the registry and makes both spellings work in the
 		// editor's Add Component list and in an already-saved scene.
 		RegisterNativeComponent("stSpeaker",
 			[] { return std::unique_ptr<NativeComponent>(new AudioEmitterComponent()); },
-			GetNativeTypeID<AudioEmitterComponent>());
+			GetNativeTypeID<AudioEmitterComponent>(), "Framework", "ST", "Audio");
 		RegisterNativeComponent("stMicrophone",
 			[] { return std::unique_ptr<NativeComponent>(new AudioCollectorComponent()); },
-			GetNativeTypeID<AudioCollectorComponent>());
+			GetNativeTypeID<AudioCollectorComponent>(), "Framework", "ST", "Audio");
+
+		// The walls and rooms those emitters are heard through. Same linker reasoning as
+		// above, one file further out: nothing else references stAudioGeometry.cpp, so this
+		// call is what pulls it out of the static library.
+		RegisterAudioGeometryComponents();
 	}
 }

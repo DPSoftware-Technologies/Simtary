@@ -339,5 +339,5 @@ public:
 	}
 };
 
-ST_REGISTER_NATIVE_COMPONENT_AS(StMirrorComponent, "sticMirror")
-ST_REGISTER_NATIVE_COMPONENT_AS(StLensComponent, "sticLens")
+ST_REGISTER_FRAMEWORK_COMPONENT_AS(StMirrorComponent, "sticMirror", "Optical")
+ST_REGISTER_FRAMEWORK_COMPONENT_AS(StLensComponent, "sticLens", "Optical")

@@ -2,6 +2,7 @@
 #include "version.h"   // generated: ST_APP_VERSION / ST_APP_BUILD_NUMBER / ST_APP_BUILD_DATE
 #include "wiVersion.h" // engine (Simtary) version + credits
 #include "devui/imaudio.h"
+#include "devui/iminput.h"
 
 void st::App::DevUIMenuBar() {
     if (ImGui::BeginMainMenuBar()) {
@@ -48,6 +49,8 @@ void st::App::DevUIMenuBar() {
             ImGui::Separator();
             ImGui::MenuItem("Faust DSP", NULL, &showFaustDSP);
             ImGui::MenuItem("Audio Mixer", NULL, &showAudioMixer);
+            ImGui::MenuItem("Gamepad Analog", NULL, &showGamepadAnalog);
+            ImGui::MenuItem("Input Actions", NULL, &showInputActions);
             ImGui::Separator();
             if (ImGui::MenuItem("Crash")) {
                 volatile int* p = nullptr;
@@ -241,6 +244,8 @@ void st::App::DevUIRender() {
     if (showHierarchy || showProperties) DevUIHierarchy();
     if (showFaustDSP) faustManager.DrawPanel("Faust DSP", &showFaustDSP);
     if (showAudioMixer) st::devui::AudioMixerWindow(&showAudioMixer);
+    if (showGamepadAnalog) st::devui::GamepadAnalogWindow(&showGamepadAnalog);
+    if (showInputActions) st::devui::InputActionsWindow(&showInputActions);
 
     // Project hook: the game's own developer panels.
     RenderDevUI();

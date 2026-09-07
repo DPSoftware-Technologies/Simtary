@@ -8,10 +8,13 @@
 // Everything is decoded up front to interleaved float at the ENGINE's mix rate, so
 // the mixer never resamples and never converts formats on the audio thread. That
 // trades memory for a mixer that cannot stall: a minute of 48 kHz stereo float is
-// ~23 MB, which is the wrong deal for music - stream those through an Emitter's
-// AudioBuffer instead of loading them as a clip.
+// ~23 MB, which is the wrong deal for music - use st::audio::StreamPlayer
+// (stAudioStream.h) for those, which keeps the compressed bytes and decodes a block
+// at a time through the very same decoders.
 //
-// Formats: RIFF/WAVE (PCM 8/16/24/32-bit integer and 32-bit float) and Ogg Vorbis.
+// Formats are whatever stAudioDecoder.h reads: RIFF/WAVE (PCM 8/16/24/32-bit
+// integer, 32-bit float, MS-ADPCM and IMA ADPCM), Ogg Vorbis, QOA, and Ogg-Opus
+// when the engine was built with libopus.
 
 #include "stAudioBuffer.h"
 
