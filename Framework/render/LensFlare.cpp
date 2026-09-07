@@ -41,7 +41,13 @@ void LensFlare::Init() {
 	desc.bs = wi::renderer::GetBlendState(wi::enums::BSTYPE_ADDITIVE);
 	desc.pt = wi::graphics::PrimitiveTopology::TRIANGLELIST;
 
-	wi::graphics::GetDevice()->CreatePipelineState(&desc, &pso_);
+	// A root signature the VS and PS do not agree on, or a missing root parameter, fails
+	// here and nowhere else - and the only symptom would be a flare that silently never
+	// draws again, since Draw() early-outs on an invalid PSO.
+	if (!wi::graphics::GetDevice()->CreatePipelineState(&desc, &pso_) || !pso_.IsValid()) {
+		wi::backlog::post("[LensFlare] pipeline state creation failed - lens flare disabled.",
+		                  wi::backlog::LogLevel::Error);
+	}
 }
 
 void LensFlare::Update(const wi::scene::Scene& scene, const wi::scene::CameraComponent& camera, float dt) {
@@ -119,15 +125,31 @@ void LensFlare::Update(const wi::scene::Scene& scene, const wi::scene::CameraCom
 	constants_.starburstIntensity = settings.starburstIntensity;
 	constants_.time = time_;
 	constants_.occlusion = occlusion;
+	// The scene-depth half of the fade is decided on the GPU in the vertex shader, which
+	// is the only place the depth buffer is available - see LensFlareSunVisibility().
+	constants_.depthTest = settings.depthOcclusion ? 1.0f : 0.0f;
+	constants_.occlusionRadius = std::max(0.0f, settings.occlusionRadius);
 }
 
-void LensFlare::Draw(const wi::Canvas& canvas, wi::graphics::CommandList cmd) {
+void LensFlare::Draw(const wi::Canvas& canvas, wi::graphics::CommandList cmd,
+                     const wi::graphics::Texture* sceneDepth) {
 	// Update() zeroes occlusion whenever there is nothing to draw (disabled, no sun,
 	// sun behind the camera, fully faded), so this one test covers every case.
 	if (constants_.occlusion <= 0.001f || !pso_.IsValid()) return;
 
 	wi::graphics::GraphicsDevice* device = wi::graphics::GetDevice();
 	device->EventBegin("LensFlare", cmd);
+
+	// The depth copy rests in SHADER_RESOURCE_COMPUTE - the post-process chain reads it
+	// from compute shaders - and this is a pixel/vertex-stage read, which is a different
+	// state on DX12. Move it for the draw and put it back, so nothing downstream has to
+	// know this pass ran.
+	const bool useDepth = sceneDepth != nullptr && sceneDepth->IsValid() &&
+	                      constants_.depthTest > 0.5f;
+	if (useDepth) {
+		device->Barrier(wi::graphics::GPUBarrier::Image(
+			sceneDepth, sceneDepth->desc.layout, wi::graphics::ResourceState::SHADER_RESOURCE), cmd);
+	}
 
 	const float width = (float)canvas.GetPhysicalWidth();
 	const float height = (float)canvas.GetPhysicalHeight();
@@ -147,8 +169,19 @@ void LensFlare::Draw(const wi::Canvas& canvas, wi::graphics::CommandList cmd) {
 	device->BindScissorRects(1, &scissor, cmd);
 
 	device->BindPipelineState(&pso_, cmd);
-	device->BindDynamicConstantBuffer(constants_, 0, cmd);
+	// With no depth to test against the shader must not touch t0 at all - depthTest = 0
+	// returns before the first Load(), and the binder fills the unbound slot with a null
+	// descriptor. BindResource dereferences its argument, so it is not called at all here.
+	Constants constants = constants_;
+	if (useDepth) device->BindResource(sceneDepth, 0, cmd);
+	else          constants.depthTest = 0.0f;
+	device->BindDynamicConstantBuffer(constants, 0, cmd);
 	device->Draw(3, 0, cmd);
+
+	if (useDepth) {
+		device->Barrier(wi::graphics::GPUBarrier::Image(
+			sceneDepth, wi::graphics::ResourceState::SHADER_RESOURCE, sceneDepth->desc.layout), cmd);
+	}
 
 	device->EventEnd(cmd);
 }
@@ -172,6 +205,8 @@ void LensFlare::SaveTo(st::nbt::Tag& out) const {
 	out.putFloat("horizonFadeLow", s.horizonFadeLow);
 	out.putFloat("horizonFadeHigh", s.horizonFadeHigh);
 	out.putFloat("offscreenFade", s.offscreenFade);
+	out.putBool ("depthOcclusion", s.depthOcclusion);
+	out.putFloat("occlusionRadius", s.occlusionRadius);
 	// Manual sun direction - only meaningful with followSun off, but harmless to keep.
 	out.putFloat("sunDirX", sunDirection.x);
 	out.putFloat("sunDirY", sunDirection.y);
@@ -197,6 +232,8 @@ void LensFlare::LoadFrom(const st::nbt::Tag& in) {
 	s.horizonFadeLow     = in.getFloat("horizonFadeLow", s.horizonFadeLow);
 	s.horizonFadeHigh    = in.getFloat("horizonFadeHigh", s.horizonFadeHigh);
 	s.offscreenFade      = in.getFloat("offscreenFade", s.offscreenFade);
+	s.depthOcclusion     = in.getBool ("depthOcclusion", s.depthOcclusion);
+	s.occlusionRadius    = in.getFloat("occlusionRadius", s.occlusionRadius);
 	settings = s;
 
 	sunDirection.x = in.getFloat("sunDirX", sunDirection.x);
@@ -236,10 +273,15 @@ void LensFlare::GUI() {
 	ImGui::SliderFloat("Horizon Low", &settings.horizonFadeLow, -0.5f, 0.5f);
 	ImGui::SliderFloat("Horizon High", &settings.horizonFadeHigh, -0.5f, 0.5f);
 	ImGui::SliderFloat("Offscreen Fade", &settings.offscreenFade, 0.01f, 1.0f);
+	ImGui::Checkbox("Hidden by geometry", &settings.depthOcclusion);
+	ImGui::BeginDisabled(!settings.depthOcclusion);
+	ImGui::SliderFloat("Sun disc radius", &settings.occlusionRadius, 0.0f, 0.1f, "%.3f UV");
+	ImGui::EndDisabled();
 
 	ImGui::SeparatorText("State");
 	ImGui::Text("Sun UV:    %.3f, %.3f", constants_.sunUV.x, constants_.sunUV.y);
-	ImGui::Text("Occlusion: %.3f", constants_.occlusion);
+	ImGui::Text("Fade:      %.3f", constants_.occlusion);
+	ImGui::TextDisabled("The geometry test happens on the GPU (nine depth taps in the\nvertex shader), so it does not show up here.");
 }
 
 } // namespace st

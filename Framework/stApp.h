@@ -25,6 +25,7 @@
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
 #include "SceneManager.h"
+#include "scene/DayNight.h"
 #include "ZmqHandler.h"
 #include "devui/imbacklog.h"
 #include "devui/imgraphicsettings.h"
@@ -91,6 +92,21 @@ struct AppConfig {
 
     // Scene loaded once RegisterScenes() has run. Empty = start with no scene.
     std::string startupScene;
+
+    // Where maps live. Scanned after RegisterScenes() when sceneAutoDiscover is on, so a
+    // .stsd / .wiscene dropped in there is selectable in the Scene Manager with no C++.
+    // A C++ scene wins any name clash, and a map a C++ scene declares through
+    // Scene::SceneFiles() is not registered a second time.
+    std::string sceneFolder      = "assets/scenes";
+    bool        sceneAutoDiscover = true;
+
+    // Daylight / time-of-day (st::DayNight). What a scene load binds the system to:
+    //   Off    - nothing; the game, or a "sticDayNight" component, binds it itself
+    //   Adopt  - take over the scene's first directional light, if it has one
+    //   Create - the same, and build a sun + weather when the scene has neither
+    // Off is the default because a map whose sun was aimed by hand in the editor must
+    // not be silently re-aimed on load.
+    st::DayNightMode dayNight = st::DayNightMode::Off;
 
     // Background ZMQ subscriber; messages are re-published on the main thread as
     // the "zmq.message" event. Empty = do not start the bridge.
@@ -362,6 +378,7 @@ private:
     void DevUIMenuBar();
     void DevUISceneSelector();
     void DevUISceneManager();   // dockable window: list/select/load scenes + reload from scratch
+    void DevUIDayNight();       // dockable window: the daylight system's clock, place and look
     void DevUIAbout(bool *show);
     void DevUIHierarchy();      // Hierarchy (Explorer) + Properties (Inspector) windows
 
@@ -385,6 +402,7 @@ private:
     bool showGraphicsSettings = false;
     bool showAbout = false;
     bool showSceneManager = false;
+    bool showDayNight = false;
     bool showHierarchy = false;
     bool showProperties = false;
     bool showFaustDSP = false;
@@ -417,6 +435,10 @@ private:
 
     // Highlighted (not yet loaded) scene in the Scene Manager window.
     std::string selectedScene_;
+
+    // "New scene" name box in the Scene Manager window.
+    char newSceneName_[64] = "Untitled";
+    bool newSceneLighting_  = true;
 
     bool isStop = false;
 

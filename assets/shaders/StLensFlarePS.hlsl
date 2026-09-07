@@ -2,10 +2,11 @@
 
 // Procedural screen-space lens flare.
 //
-// Everything is generated from the sun's screen position - no scene colour or depth
-// is sampled, so the pass costs one fullscreen triangle and reads no textures. It is
-// blended additively over the composed frame (BSTYPE_ADDITIVE = SRC_ALPHA/ONE, so the
-// shader returns alpha = 1 to contribute fully).
+// Everything is generated from the sun's screen position, so the pass costs one
+// fullscreen triangle and reads nothing but nine depth texels - taken in the vertex
+// shader, which is where `input.visibility` comes from. It is blended additively over the
+// composed frame (BSTYPE_ADDITIVE = SRC_ALPHA/ONE, so the shader returns alpha = 1 to
+// contribute fully).
 //
 // The flare is built from five layers, each modelling a different real lens artifact:
 //   1. glow      - light scattering in the lens right at the source
@@ -121,9 +122,9 @@ float4 main(VertexOutput input) : SV_TARGET
 	float haloWeight = saturate(1.0 - length(AspectCorrect(sunUV - screenCentre)) * 1.5);
 	col += tint * halo * haloWeight * 0.16;
 
-	// `occlusion` folds in the CPU-side fades (sun behind the camera, sun off the
-	// edge of the frame, sun below the horizon).
-	col *= intensity * occlusion;
+	// `occlusion` folds in the CPU-side fades (sun behind the camera, sun off the edge of
+	// the frame, sun below the horizon); `visibility` is the scene depth in front of it.
+	col *= intensity * occlusion * input.visibility;
 
 	return float4(col, 1.0);
 }

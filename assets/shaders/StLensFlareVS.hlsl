@@ -18,5 +18,10 @@ VertexOutput main(uint vertexID : SV_VertexID)
 	// UV space (y down, origin top-left) -> clip space (y up, origin centre).
 	output.pos = float4(output.uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
 
+	// Is anything standing in front of the sun? The answer is the same for all three
+	// vertices, and the interpolant is nointerpolation, so the depth taps happen three
+	// times a frame instead of once per pixel.
+	output.visibility = LensFlareSunVisibility();
+
 	return output;
 }

@@ -40,7 +40,10 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `stProject.h.in` | Template for the generated `stProject.h` (`ST_PROJECT_NAME` / `_ORGANIZATION` / `_COPYRIGHT` / `_VERSION`), filled from the `.stpd` manifest at configure time. |
 | `stRun.h/.cpp` | `st::Run(argc, argv, config, app)` — window, splash, SDL event loop, input routing, shutdown. The project owns `main()`; this owns everything after it. |
 | `stScene.h/.cpp` | `Scene` base class: `Load` / `Update` / `OnGUI` / `OnDevGUI` / `Unload`, plus `ReportProgress()`. |
-| `SceneManager.*` | Named scene registry with deferred transitions + load/unload callbacks. |
+| `SceneManager.*` | Named scene registry with deferred transitions + load/unload callbacks. Also `DiscoverScenes(folder)` (register every map in the scene folder as a scene of its own), `NewScene(name)` (an empty `st::RuntimeScene`) and `OriginOf(name)` (C++ / folder / runtime). |
+| `scene/SceneFile.*` | `st::LoadSceneFileFlat()` - load a `.stsd` / `.wiscene` so its own top-level nodes land at the ROOT of the hierarchy instead of under one wrapper entity, and hand back every entity it created so `st::UnloadSceneFile()` can remove the lot. `ResolveSceneFile()` picks the packed `.stsd` over the source `.wiscene`. |
+| `scene/FileScene.*` | `st::FileScene` - a scene that is nothing but a map file, loaded flat. What `DiscoverScenes()` registers for each map it finds. |
+| `scene/RuntimeScene.*` | `st::RuntimeScene` - the empty scene the Scene Manager's "New scene" creates: a sun and a sky, and an `Unload()` that removes everything added while it was active. |
 | `ImguiHelper.cpp` | The hand-rolled ImGui backend and the per-frame UI ordering. |
 | `devui.cpp`, `devui/` | **DevUI** — developer tooling, not game UI: menu bar, backlog, graphics settings, hierarchy/properties, scene manager, About. Gated by `AppConfig::devUI`. |
 | `devui/imassets.*` | **Resource Explorer** — browse a mounted package (which part, what offset, which codec, what hash), and edit one: add / remove / rename / recompress assets and write it back. Lives ONLY in Editor mode, docked along the bottom. Reached through `App::Resources()`. |
@@ -53,7 +56,7 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `input/InputComponent.*` | The `"stInput"` NATIVE COMPONENT — Simtary's `PlayerInput`. Attach it to the entity that should receive input (`NCA_0_actionMap`, `NCA_0_playerIndex`), and sibling components read the actions off it as a local component instead of out of a singleton. |
 | `input/InputSystem.*` | Owns the `Registry` (`Actions()`), the ImGui/editor device gating, and SDL relative-mouse ownership. Also still carries the ORIGINAL flat keymap (`Down("Sprint")`, `Axis("MoveX")`, `MoveVector()`) unchanged, for the scenes written against it. |
 | `crash/CrashHandler.*` | sentry-native + Crashpad, offline only; launches `SimtaryCrashReporter`. |
-| `render/LensFlare.*` | Procedural screen-space flare (`assets/shaders/StLensFlare*`). |
+| `render/LensFlare.*` | Procedural screen-space flare (`assets/shaders/StLensFlare*`). Hidden by whatever stands in front of the sun: the vertex shader takes nine taps of the render path's depth copy at the sun's screen position and the fraction that is still sky fades the whole flare. |
 | `render/Projector.*` | `st::Projector` + `st::ProjectorSystem` — SQUARE (or rect/ellipse/rounded) image projection with projector optics: throw ratio, aspect, lens shift, keystone, barrel/pincushion, edge softness, vignette, plus a rectangular volumetric beam. `opticBounces` reflects the image off `st::Mirror` and images it through `st::Lens` by uploading a virtual projector clipped to that element's aperture. Runs as a `RenderPath3D` custom post process (`assets/shaders/StProjectorCS.hlsl`), plus one depth-only pass per shadow-casting projector (`RenderShadows()`, driven from `st::App::Render()` BEFORE the render path so the command list is recorded ahead of the pass that samples it). Reach it anywhere via `st::ProjectorSystem::Get()`. |
 | `render/ProjectorComponent.cpp` | The `"Projector"` NATIVE COMPONENT — attach `st::Projector` to a spot light from the editor (`NCI_0 = "Projector"`, optics as `NCA_0_*` args). Follows its own entity, takes the image off it (video / camera render / material base colour, pinned with `NCA_0_imageSource`), and zeroes that light by default since the light IS the circle. |
 | `render/Laser.*` | `st::Laser` + `st::LaserSystem` — traced laser beams. Millimetre-thin core plus a wide halo, both integrated ANALYTICALLY per pixel (`assets/shaders/StLaserCS.hlsl`) rather than ray marched. Walks the beam through the optics below and stops it on the first surface `st::Raycast` reports, so one laser can be several straight legs. The impact spot leaves a fading persistence trail, which is what makes a moving beam draw a line instead of blinking a dot. `LaserArray` turns one laser into a grid/ring/fan/cross/spiral of rays (off by default — each ray is a full trace). `st::LaserSystem::Get().Path(id)->hit` is what the beam is on. |
@@ -61,6 +64,8 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `render/Optics.*` | `st::Mirror` + `st::Lens` + `st::OpticsSystem` — flat apertures a beam reflects off (`d' = d - 2(d·n)n`) or bends through. `Lens::Type` covers Spherical / Cylindrical / Toric / Aspheric / Axicon / Prism / Window, all one paraxial ray transfer with a different deviation term. `Mirror::dichroic` splits the beam in two (reflect one band, transmit the rest), which is why `Trace()` walks a stack of branches rather than a single chain. `Trace()` is the sequential walk that turns one ray into a list of legs; it lives on the CPU because leg N+1 depends on where leg N landed, which a per-pixel pass cannot discover. Draws nothing, and carries its own “is a beam reaching me” diagnostics because a silent element is otherwise undebuggable. |
 | `render/OpticsComponents.cpp` | The `"sticMirror"` / `"sticLens"` native components. |
 | `scene/Ray.*` | `st::Raycast` / `st::RayHit` / `st::RayQuery` — one raycast over either backend: `Mesh` (`Scene::Intersects`, hits anything drawn, no body needed), `Physics` (`wi::physics::Intersects`, Jolt bodies only), `Both` (nearer wins) or `None`. Also `st::LocalAxes` — the ONE forward-axis table, shared by the projector, laser, ray and optics. |
+| `scene/DayNight.*` | `st::DayNight` - the daylight / time-of-day system. One clock drives one directional light plus the scene's weather: the sun's arc, its colour and intensity, the ambient level, the stars and the sky exposure. The sun is placed ASTRONOMICALLY by default (NOAA solar position from latitude, longitude, time zone and day of year), so it rises in the east and the day is the right length for the place and season; `geographic` off falls back to the simple overhead hoop a hand-rolled cycle usually is. `AppConfig::dayNight` (Off / Adopt / Create) decides what a scene load binds it to. Reach it anywhere via `st::DayNight::Get()`, panel in `Simtary > Day / Night`. |
+| `scene/DayNightComponent.cpp` | The `"sticDayNight"` NATIVE COMPONENT - the same system attached from the editor, so place, date, clock speed and look are scene data that saves with the map and needs no game code. |
 | `scene/RayComponent.*` | The `"sticRay"` native component: a raycast bolted to an entity, re-cast every frame. The shared seam for a laser sight, a rangefinder, an interaction prompt and an “am I aiming at it” HUD. |
 | `render/Framebuffer.*` | `st::gfx::Framebuffer` — an off-screen surface you draw into and hand to a material, a light mask or a projector. CPU mode wraps libgfx (`GFXcanvas`) and owns the staging texture, row pitch and flip; GPU mode is a render target you draw into with `wi::image`/`wi::font` between `Begin()`/`End()`. |
 | `display/DisplaySettings.*` | Player-facing video options: window mode, monitor, resolution, refresh rate, v-sync, frame cap, render scale. NOT DevUI — `st::App::Display().GUI(app)` drops into a game's own options menu, and DevUI renders the same panel in its Display tab. Sole owner of v-sync and the frame cap; `GraphicsSettings` deliberately no longer carries them. |
@@ -222,6 +227,49 @@ project that registers nothing still has something to attach. `Map()`/`Action()`
 the EXISTING entry when the name is taken, so re-registering over a default appends
 bindings - call `input.Clear()` first to start from empty.
 
+**A map loaded AS THE SCENE goes in flat; a model IMPORTED into one keeps its root.**
+`wi::scene::LoadModel(..., attached = true)` parents everything it reads to one fresh
+entity, which is right for the editor's import path (it is the thing you then select,
+move or undo) and wrong for a scene's own map - the Hierarchy showed the whole world as
+a single nameless "Entity 3" row that had to be expanded before anything was visible.
+`st::LoadSceneFileFlat` loads with `attached = false` instead, so the map's own top-level
+nodes ARE the hierarchy's top-level rows. The cost is that there is no single handle to
+delete on the way out, which is why it returns EVERY entity the file created rather than
+just the roots: a map also brings in mesh, material and animation-data entities that have
+no transform and therefore no parent.
+
+**A map in the scene folder is a scene, unless C++ already speaks for it.**
+`SceneManager::DiscoverScenes()` runs after `RegisterScenes()` and registers one
+`st::FileScene` per `.stsd` / `.wiscene` it finds, named after the file, so dropping a map
+into `assets/scenes/` makes it loadable with no code. Two things stop it: a scene of that
+name already exists (case-insensitively), so the C++ class overrides the file; or a
+registered scene declares it through `Scene::SceneFiles()`, so the map a C++ scene already
+loads is not offered a second time under its own name. Declaring is by STEM, which is why
+`"assets/scenes/s1map"` covers both the packed `.stsd` and the source `.wiscene`.
+`AppConfig::sceneFolder` / `sceneAutoDiscover` control it; the Scene Manager window can
+rescan on demand.
+
+**The daylight system runs BEFORE the scene update, and that ordering is the feature.**
+`Scene::Update` is what runs the engine's light update system, and that is where a
+directional light's `direction` is recomputed from its world matrix and copied into
+`WeatherComponent::sunDirection`. So `st::DayNight::Update` aims the sun in
+`st::App::Update` ahead of `sceneManager.Update`; aiming it afterwards leaves the sky
+lit by the previous frame's sun, which is invisible at noon and obvious at dawn. It
+writes the light's TRANSFORM, not `LightComponent::direction`, for the same reason -
+the direction field is overwritten from the transform on the next scene update.
+
+A directional light shines along its entity's local **+Y** (`RunLightUpdateSystem` in
+`wiScene.cpp`), so the rotation that puts the sun at an elevation and an azimuth is
+`RollPitchYaw(90 deg - elevation, azimuth, 0)`. World axes are the engine's: +Y up, and
+the system treats +Z as north, with `northYaw` to turn the compass for a map that was
+built facing some other way.
+
+**`AppConfig::dayNight` defaults to Off on purpose.** Adopt would take over the first
+directional light of every scene that loads - including a map whose sun was aimed by
+hand in the editor, which would be silently re-aimed to whatever the clock said. A game
+opts in (Milistry does), a scene can call `Create()`/`Adopt()` itself, or a
+`"sticDayNight"` component in the map can bind the system with the map's own settings.
+
 **Scene update runs exactly once per frame.** `st::App::Initialize` calls
 `renderPath.setSceneUpdateEnabled(false)`; scenes call `scene.Update(dt)` themselves
 from `SceneManager::Update`. A second update per frame swaps `MeshComponent`'s
@@ -315,6 +363,24 @@ into a D16 depth map, and the shader compares against it (reverse-Z, 2x2 PCF). T
 gate matrix comes from that same CameraComponent, so the two can never drift apart.
 `Projector::occlusion` is the old screen-space march, kept only as the fallback when
 `shadows` is off — it cannot see a blocker the camera does not render.
+
+**The lens flare is occluded on the GPU, in the VERTEX shader, and both halves of that
+matter.** A flare is light that reached the LENS, so it must not survive the object
+standing in front of the sun - drawn additively over the composed frame with no test, it
+painted a sun straight through a vehicle. The test is nine `Load()` taps of
+`RenderPath3D::depthBuffer_Copy` in a small aspect-corrected disc at the sun's screen
+position: depth is reverse-Z, so the far plane and therefore the sky read exactly 0 and
+anything greater is geometry in the way, which is why this needs no camera matrices and no
+linearisation. Nine taps rather than one because a single tap pops the entire flare on and
+off as an edge crosses it.
+
+It happens in the vertex shader and arrives at the pixel shader as a `nointerpolation`
+interpolant, so the taps cost three invocations a frame instead of one set per pixel of a
+fullscreen triangle. The depth copy rests in `SHADER_RESOURCE_COMPUTE` - the post-process
+chain reads it from compute - so `Draw()` brackets itself with a barrier to
+`SHADER_RESOURCE` and back; a graphics-stage read of it is a different state on DX12.
+`settings.depthOcclusion` off restores the old draw-over-everything behaviour, and with no
+depth texture passed the shader never touches `t0` at all.
 
 **A mirror has to WIN the tie against its own mesh, and the test is OWNERSHIP, not
 distance.** `st::Mirror` is a bare plane; what makes it visible is a mesh in the same
@@ -809,7 +875,7 @@ puts it under **[ST] Framework** in that category;
 `ST_REGISTER_NATIVE_COMPONENT_IN(TYPE, NAME, GROUP, TAG, CATEGORY)` invents any other
 section a game wants. The framework's categories are **Audio** (emitter, collector,
 speaker, microphone, geometry/wall/room), **Optical** (laser, mirror, lens, projector)
-and **Scene** (ray).
+and **Scene** (ray, day/night).
 
 Only Project is open by default; categories inside an opened group are open but
 collapsible; typing in the search box forces open exactly the sections and categories

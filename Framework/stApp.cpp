@@ -223,9 +223,24 @@ void st::App::Initialize() {
     st::AssetSystem::Get().SetLoadProgressCallback(&st::App::OnAssetLoadProgress, this);
 
     // Scene transitions reach the project as OnSceneLoaded / OnSceneUnloaded.
+    //
+    // The daylight system is bound and released here rather than by the scenes: its target
+    // is an entity, and every entity a scene owns is gone by the time OnSceneUnloaded
+    // returns. Binding runs BEFORE the project hook so a game's OnSceneLoaded can already
+    // retune the cycle it was given.
     sceneManager.SetCallbacks(
-        [this](const std::string& name) { OnSceneLoaded(name); },
-        [this](const std::string& name) { OnSceneUnloaded(name); });
+        [this](const std::string& name) {
+            switch (Config().dayNight) {
+                case st::DayNightMode::Adopt:  st::DayNight::Get().Adopt(wi::scene::GetScene()); break;
+                case st::DayNightMode::Create: st::DayNight::Get().Create(wi::scene::GetScene()); break;
+                case st::DayNightMode::Off:    break;
+            }
+            OnSceneLoaded(name);
+        },
+        [this](const std::string& name) {
+            OnSceneUnloaded(name);
+            st::DayNight::Get().Detach();
+        });
 
     // loading system assets
     m_loadingScreen.SetStatusText("loading system assets");
@@ -290,6 +305,7 @@ void st::App::Initialize() {
     projectors_.LoadFrom(st::SettingsManager::Get().SubCompound("projectors"));
     optics_.LoadFrom(st::SettingsManager::Get().SubCompound("optics"));
     lasers_.LoadFrom(st::SettingsManager::Get().SubCompound("lasers"));
+    st::DayNight::Get().LoadFrom(st::SettingsManager::Get().SubCompound("daynight"));
 
     // Centralized input: install the default keymap before any scene updates. This
     // seeds both halves - the legacy flat keymap AND the default "Player"/"UI" action
@@ -311,6 +327,16 @@ void st::App::Initialize() {
     // Project hook: every scene the game owns is registered here, before the
     // starting scene is loaded below.
     RegisterScenes(sceneManager);
+
+    // Folder scan, after the C++ registrations on purpose: whatever RegisterScenes() put
+    // in wins both the name and its own map files, and everything else in the folder is
+    // added next to it. See SceneManager::DiscoverScenes.
+    if (Config().sceneAutoDiscover && !Config().sceneFolder.empty()) {
+        m_loadingScreen.SetStatusText("scanning scenes");
+        const int discovered = sceneManager.DiscoverScenes(Config().sceneFolder);
+        wi::backlog::post("SceneManager: scanned " + Config().sceneFolder + ", " +
+                          std::to_string(discovered) + " scene(s) added");
+    }
 
     // Background ZMQ receiver. It only enqueues bytes; messages are drained and
     // re-published on the main thread in Update() so scene subscribers stay
@@ -374,6 +400,11 @@ void st::App::Update(float dt) {
         m_loadingScreen.SetStatusText(loading_.status);
         m_loadingScreen.Show();
     }
+
+    // Before the scene update, not after: the scene's light system is what copies the
+    // sun's direction and colour into the weather, so a sun aimed afterwards would reach
+    // the sky a frame late - which reads as the sky lagging behind the sun at dawn.
+    st::DayNight::Get().Update(wi::scene::GetScene(), dt);
 
     sceneManager.Update(dt);
 
@@ -459,7 +490,9 @@ void st::App::Compose(wi::graphics::CommandList cmd) {
 
     // Between the two: additively over the composed 3D frame, but under the UI, so
     // the flare never washes out ImGui windows.
-    lensFlare.Draw(canvas, cmd);
+    // The render path's depth copy goes with it: the flare is light that reached the
+    // lens, so it has to be hidden by whatever is standing in front of the sun.
+    lensFlare.Draw(canvas, cmd, &renderPath.depthBuffer_Copy);
 
     OnCompose(cmd);
 
@@ -480,6 +513,7 @@ void st::App::Exit() {
     projectors_.SaveTo(st::SettingsManager::Get().SubCompound("projectors"));
     optics_.SaveTo(st::SettingsManager::Get().SubCompound("optics"));
     lasers_.SaveTo(st::SettingsManager::Get().SubCompound("lasers"));
+    st::DayNight::Get().SaveTo(st::SettingsManager::Get().SubCompound("daynight"));
     st::SettingsManager::Get().Save();
     zmqHandler.Stop(); // join receiver thread before tearing anything else down
     faustManager.Unload(); // join audio thread + close OpenAL before teardown

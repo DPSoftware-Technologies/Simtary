@@ -21,6 +21,7 @@ void st::App::DevUIMenuBar() {
             ImGui::Separator();
             if (ImGui::BeginMenu("Window")) {
                 ImGui::MenuItem("Scene Manager", NULL, &showSceneManager);
+                ImGui::MenuItem("Day / Night", NULL, &showDayNight);
                 ImGui::MenuItem("Hierarchy", NULL, &showHierarchy);
                 ImGui::MenuItem("Properties", NULL, &showProperties);
                 ImGui::EndMenu();
@@ -130,6 +131,21 @@ void st::App::DevUISceneManager() {
     ImGui::Text("Active scene: %s", cur.empty() ? "(none)" : cur.c_str());
     ImGui::Separator();
 
+    // New scene. st::RuntimeScene is empty apart from a sun and a sky, and SceneManager
+    // unloads whatever is active before it loads, so this is a clean world to build in.
+    // Save it with Scene > Save As; a .stsd in the scene folder comes back on the next
+    // run as a scene of its own.
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 110.0f);
+    ImGui::InputText("##newscenename", newSceneName_, sizeof(newSceneName_));
+    ImGui::SameLine();
+    if (ImGui::Button("New scene", ImVec2(100, 0)))
+        selectedScene_ = sceneManager.NewScene(newSceneName_, newSceneLighting_);
+    ImGui::Checkbox("with sun + sky", &newSceneLighting_);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(name is made unique if taken)");
+
+    ImGui::Separator();
+
     // Scene list. Single-click highlights, double-click loads immediately. All
     // switching goes through SceneManager::Load, which defers the Unload()/Load()
     // to the next Update(), so triggering from inside ImGui here is safe.
@@ -144,6 +160,15 @@ void st::App::DevUISceneManager() {
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
                     sceneManager.Load(name);
             }
+            // Where the scene came from: a C++ class, the scene folder, or this session.
+            const char* origin = "c++";
+            switch (sceneManager.OriginOf(name)) {
+                case SceneManager::Origin::Folder:  origin = "folder"; break;
+                case SceneManager::Origin::Runtime: origin = "new";    break;
+                default: break;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("[%s]", origin);
             if (isActive) {
                 ImGui::SameLine();
                 ImGui::TextDisabled("(active)");
@@ -169,9 +194,37 @@ void st::App::DevUISceneManager() {
         sceneManager.Reload();
     ImGui::EndDisabled();
 
+    // Pick up a map dropped into the scene folder while the game was running.
+    // Additive - nothing already registered is disturbed.
+    if (ImGui::Button("Rescan scene folder")) {
+        const int discovered = sceneManager.DiscoverScenes(Config().sceneFolder);
+        wi::backlog::post("Scene Manager: rescan added " + std::to_string(discovered) +
+                          " scene(s) from " + Config().sceneFolder);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", Config().sceneFolder.c_str());
+
+    // Only an unsaved runtime scene can be dropped, and only while it is not the
+    // active one - a folder or C++ scene would just come back on the next scan or run.
+    const bool canForget = hasSel && selectedScene_ != cur &&
+                           sceneManager.OriginOf(selectedScene_) == SceneManager::Origin::Runtime;
+    ImGui::BeginDisabled(!canForget);
+    if (ImGui::Button("Forget selected new scene")) {
+        if (sceneManager.Unregister(selectedScene_))
+            selectedScene_.clear();
+    }
+    ImGui::EndDisabled();
+
     ImGui::TextDisabled("Reload re-runs Unload/Load; scene object (and its\nEventBus subscription) is reused by design.");
+    ImGui::TextDisabled("[folder] scenes are maps found in the scene folder. A C++\nscene of the same name, or one that declares it loads that\nmap, overrides them.");
 
     ImGui::End();
+}
+
+void st::App::DevUIDayNight() {
+    // The window is the system's own - st::App only owns the flag that opens it, the same
+    // split the other subsystem panels use.
+    st::DayNight::Get().DevGUI(&showDayNight);
 }
 
 void st::App::DevUIAbout(bool *show) {
@@ -241,6 +294,7 @@ void st::App::DevUIRender() {
     if (showGraphicsSettings) graphicsSettings.render(&showGraphicsSettings, renderPath, *this, lensFlare, displaySettings_, projectors_, lasers_, optics_);
     if (showAbout) DevUIAbout(&showAbout);
     if (showSceneManager) DevUISceneManager();
+    if (showDayNight) DevUIDayNight();
     if (showHierarchy || showProperties) DevUIHierarchy();
     if (showFaustDSP) faustManager.DrawPanel("Faust DSP", &showFaustDSP);
     if (showAudioMixer) st::devui::AudioMixerWindow(&showAudioMixer);

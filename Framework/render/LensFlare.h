@@ -15,7 +15,7 @@ namespace st {
 // Usage from Milistry:
 //   Init()               once, after the graphics device exists
 //   Update(dt)           each frame, before Compose: finds the sun, projects it
-//   Draw(canvas, cmd)    inside Compose, after the render path, before ImGui
+//   Draw(canvas, cmd, depth)  inside Compose, after the render path, before ImGui
 class LensFlare {
 public:
 	struct Settings {
@@ -50,6 +50,14 @@ public:
 		// How far past the edge of the frame (in UV units) the sun may drift before
 		// the flare is fully gone. Real ghosts persist a little past the edge.
 		float offscreenFade = 0.35f;
+
+		// Test the sun against the scene's depth buffer, so the flare goes out when
+		// something is standing in front of the sun. Off draws it over everything,
+		// which is what this pass did before the test existed.
+		bool  depthOcclusion = true;
+		// Radius of the nine depth taps, in UV units - the sun's apparent size as far
+		// as occlusion is concerned. Larger fades earlier and more gradually.
+		float occlusionRadius = 0.02f;
 	};
 	Settings settings;
 
@@ -59,7 +67,11 @@ public:
 
 	void Init();
 	void Update(const wi::scene::Scene& scene, const wi::scene::CameraComponent& camera, float dt);
-	void Draw(const wi::Canvas& canvas, wi::graphics::CommandList cmd);
+	// `sceneDepth` is the render path's single-sampled depth copy, used to hide the flare
+	// behind whatever is in front of the sun. Pass nullptr and the flare draws over
+	// everything, as it did before the test existed.
+	void Draw(const wi::Canvas& canvas, wi::graphics::CommandList cmd,
+	          const wi::graphics::Texture* sceneDepth = nullptr);
 	void GUI();
 
 	// Persistence: (de)serialize `settings` (+ the manual sunDirection) into an NBT
@@ -89,8 +101,13 @@ private:
 		float    starburstIntensity = 0.35f;
 		float    time = 0.0f;
 		float    occlusion = 0.0f;
+
+		float    depthTest = 1.0f;
+		float    occlusionRadius = 0.02f;
+		float    pad0 = 0.0f;
+		float    pad1 = 0.0f;
 	};
-	static_assert(sizeof(Constants) == 64, "Constants must match LensFlareCB's four 16-byte rows");
+	static_assert(sizeof(Constants) == 80, "Constants must match LensFlareCB's five 16-byte rows");
 
 	Constants constants_;
 	float     time_ = 0.0f;

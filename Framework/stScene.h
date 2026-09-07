@@ -10,10 +10,16 @@
 // so reset any cached entity handles in Unload().
 
 #include <string>
+#include <vector>
 
 class Scene {
 public:
     virtual ~Scene() = default;
+
+    // The map files this scene loads itself, if any - "assets/scenes/s1map.wiscene", or
+    // just "s1map". SceneManager::DiscoverScenes() reads this: a file a C++ scene already
+    // owns is not offered a second time as a folder scene of its own.
+    virtual std::vector<std::string> SceneFiles() const { return {}; }
 
     // Build the scene's entities. Runs on the main thread.
     virtual void Load() {}
