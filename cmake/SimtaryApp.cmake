@@ -233,7 +233,8 @@ endfunction()
 function(simtary_add_app)
     set(_opts NO_SHADER_WARM NO_CRASH_REPORTER PACK_ASSETS PACK_ONLY MODULE)
     set(_one  NAME ORGANIZATION ICON SOURCE_DIR ASSETS_DIR CONTENT_SUBDIR SCENE_SUBDIR
-              PACK_NAME PACK_PART_SIZE PACK_LEVEL MODULE_NAME)
+              RESOURCE_SUBDIR PACK_NAME PACK_PART_SIZE PACK_LEVEL PACK_ON_CONFLICT
+              MODULE_NAME)
     set(_multi EXTRA_SOURCES EXTRA_INCLUDES EXTRA_LIBS)
     cmake_parse_arguments(APP "${_opts}" "${_one}" "${_multi}" ${ARGN})
 
@@ -259,6 +260,33 @@ function(simtary_add_app)
     set(APP_SCENE_DIR "")
     if (APP_SCENE_SUBDIR AND EXISTS ${APP_ASSETS_DIR}/${APP_SCENE_SUBDIR})
         set(APP_SCENE_DIR ${APP_ASSETS_DIR}/${APP_SCENE_SUBDIR})
+    endif()
+
+    # assets/resources/ - loose resource FILES merged into the package at pack time,
+    # under the same relative names the maps ask for.
+    #
+    # This is what makes hand-swapping a map work. A .stsd is metadata plus an entity
+    # blob; the textures and meshes it references are NOT in it, they are in the package
+    # its .wiscene was converted alongside. Drop a .stsd in from somewhere else and the
+    # package has nothing for it to load. Put that map's resources here and the packer
+    # merges them in, so the swap is a swap and not a map that renders untextured.
+    #
+    # Singular "resource" is accepted too, because that is what people type.
+    if (NOT DEFINED APP_RESOURCE_SUBDIR)
+        set(APP_RESOURCE_SUBDIR "resources")
+    endif()
+    set(APP_RESOURCE_DIR "")
+    if (EXISTS ${APP_ASSETS_DIR}/resource AND NOT EXISTS ${APP_ASSETS_DIR}/${APP_RESOURCE_SUBDIR})
+        # Singular, because someone already made that folder and meant it.
+        set(APP_RESOURCE_DIR ${APP_ASSETS_DIR}/resource)
+    elseif (APP_RESOURCE_SUBDIR AND EXISTS ${APP_ASSETS_DIR})
+        # Made rather than merely detected: the packer MIRRORS every map resource into it
+        # on the way past (see PACK_MIRROR below), and a folder that only exists once
+        # someone thinks to create it is a folder that is empty on the one build where it
+        # mattered - which is exactly how a .wiscene leaves a project and takes the whole
+        # map's textures with it.
+        set(APP_RESOURCE_DIR ${APP_ASSETS_DIR}/${APP_RESOURCE_SUBDIR})
+        file(MAKE_DIRECTORY ${APP_RESOURCE_DIR})
     endif()
     # project descriptor
     # assets/project.stpd is the build-time manifest (identity, icon, version). It is
@@ -950,6 +978,9 @@ function(simtary_add_app)
             CONTENT_DIR   ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR}
             SCENE_SRC_DIR ${APP_SCENE_DIR}
             SCENE_SUBDIR  ${APP_SCENE_SUBDIR}
+            RESOURCE_DIR  ${APP_RESOURCE_DIR}
+            MIRROR_DIR    ${APP_RESOURCE_DIR}
+            ON_CONFLICT   ${APP_PACK_ON_CONFLICT}
             NAME          ${APP_PACK_NAME}
             PART_SIZE     ${APP_PACK_PART_SIZE}
             LEVEL         ${APP_PACK_LEVEL}
@@ -965,6 +996,9 @@ endfunction()
 #
 #   simtary_pack_assets(TARGET Milistry CONTENT_DIR .../assets/contents
 #                       [SCENE_SRC_DIR .../assets/scenes]
+#                       [RESOURCE_DIR .../assets/resources ...]
+#                       [MIRROR_DIR .../assets/resources]
+#                       [ON_CONFLICT override|add|keep]
 #                       [NAME content] [PART_SIZE 50] [LEVEL 9]
 #                       [PACK_SUBDIR resources] [SCENE_SUBDIR scenes])
 #
@@ -987,6 +1021,15 @@ endfunction()
 # exception-free and stops a 37 MB map from also shipping loose. Maps left inside
 # CONTENT_DIR are still converted, so an older project layout keeps working.
 #
+# A .stsd sitting among those sources is NOT converted - it already IS the converted
+# form. It is copied through to the scene folder untouched, and the packer reports which
+# of the resources it references the package will not hold. RESOURCE_DIR is where those
+# resources come from: a loose tree merged into the package under the same relative
+# names, so replacing a map means dropping in its .stsd plus its resources instead of
+# rebuilding the world. ON_CONFLICT says who wins when such a file collides with a
+# resource a map already embedded - override (default), add (keep both, the loose one
+# renamed) or keep (ignore the loose one).
+#
 # Unlike <APP>_Assets, this is a real add_custom_command with real DEPENDS rather than
 # an always-out-of-date target. It has to be: repacking 76 MB of maps through zstd on
 # every build, whether or not a single asset changed, is tens of seconds per build. The
@@ -996,8 +1039,10 @@ endfunction()
 # The stamp file exists because the real outputs are N part files whose count is not
 # known until the packer has run, and CMake needs one name it can depend on.
 function(simtary_pack_assets)
-    set(_one TARGET CONTENT_DIR SCENE_SRC_DIR NAME PART_SIZE LEVEL PACK_SUBDIR SCENE_SUBDIR)
-    cmake_parse_arguments(PACK "" "${_one}" "" ${ARGN})
+    set(_one   TARGET CONTENT_DIR SCENE_SRC_DIR NAME PART_SIZE LEVEL PACK_SUBDIR
+               SCENE_SUBDIR ON_CONFLICT MIRROR_DIR)
+    set(_multi RESOURCE_DIR)
+    cmake_parse_arguments(PACK "" "${_one}" "${_multi}" ${ARGN})
 
     if (NOT PACK_TARGET)
         message(FATAL_ERROR "simtary_pack_assets: TARGET is required")
@@ -1025,12 +1070,44 @@ function(simtary_pack_assets)
 
     file(GLOB_RECURSE _pack_inputs CONFIGURE_DEPENDS ${PACK_CONTENT_DIR}/*)
 
-    # The scene sources are inputs too, or editing a map would not repack it.
+    # The scene sources are inputs too, or editing a map would not repack it. Both
+    # spellings count: a .wiscene is a map to convert, a .stsd is one that was converted
+    # already and passes through - and dropping a new .stsd in has to repack, because the
+    # resources it needs come out of the package this step builds.
     set(_scene_src_args "")
     if (PACK_SCENE_SRC_DIR AND EXISTS ${PACK_SCENE_SRC_DIR})
-        file(GLOB_RECURSE _scene_inputs CONFIGURE_DEPENDS ${PACK_SCENE_SRC_DIR}/*.wiscene)
+        file(GLOB_RECURSE _scene_inputs CONFIGURE_DEPENDS
+             ${PACK_SCENE_SRC_DIR}/*.wiscene ${PACK_SCENE_SRC_DIR}/*.stsd)
         list(APPEND _pack_inputs ${_scene_inputs})
         set(_scene_src_args --scene-src ${PACK_SCENE_SRC_DIR})
+    endif()
+
+    # The loose resource trees, merged into the package under their relative names. One
+    # --resource-dir per tree; the packer decides collisions with --on-conflict.
+    set(_resource_args "")
+    foreach(_res IN LISTS PACK_RESOURCE_DIR)
+        if (EXISTS ${_res})
+            file(GLOB_RECURSE _res_inputs CONFIGURE_DEPENDS ${_res}/*)
+            list(APPEND _pack_inputs ${_res_inputs})
+            list(APPEND _resource_args --resource-dir ${_res})
+        endif()
+    endforeach()
+    if (PACK_ON_CONFLICT)
+        list(APPEND _resource_args --on-conflict ${PACK_ON_CONFLICT})
+    endif()
+
+    # Mirroring: every resource a converted .wiscene embeds gets a loose copy here, and
+    # a file already present is left alone. This is what makes a map's SOURCE removable -
+    # the project holds its own copy of the textures from the first build, so archiving
+    # the .wiscene, or replacing it with the .stsd the editor saved, does not empty the
+    # package. It is deliberately the same directory as RESOURCE_DIR: what is mirrored
+    # out on one build is what gets merged back in on the next.
+    #
+    # NOTE: the first build that mirrors a new map writes files under a CONFIGURE_DEPENDS
+    # glob, so CMake re-configures once afterwards and packs a second time. The second
+    # pass writes nothing new and produces the same package - it converges.
+    if (PACK_MIRROR_DIR)
+        list(APPEND _resource_args --mirror-resources ${PACK_MIRROR_DIR})
     endif()
 
     if (NOT _pack_inputs)
@@ -1050,6 +1127,7 @@ function(simtary_pack_assets)
                 --out ${_pack_dir}
                 --scene-dir ${_scene_dir}
                 ${_scene_src_args}
+                ${_resource_args}
                 --name ${PACK_NAME}
                 --part-size ${PACK_PART_SIZE}
                 --level ${PACK_LEVEL}
@@ -1078,6 +1156,7 @@ function(simtary_pack_assets)
                 --out ${_pack_dir}
                 --scene-dir ${_scene_dir}
                 ${_scene_src_args}
+                ${_resource_args}
                 --name ${PACK_NAME}
                 --part-size ${PACK_PART_SIZE}
                 --level ${PACK_LEVEL}

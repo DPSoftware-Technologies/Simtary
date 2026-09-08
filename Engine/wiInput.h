@@ -235,6 +235,21 @@ namespace wi::input
 		float stick_saturation = 0.95f; // magnitude treated as full deflection (worn sticks rarely reach 1)
 		float trigger_deadzone = 0.06f;
 		float trigger_saturation = 0.98f;
+
+		// Which way is up on the RIGHT stick.
+		//
+		//	The backends store the left stick up-positive and the right stick
+		//	DOWN-positive, and that asymmetry is deliberate: the right stick drives the
+		//	camera, mouse delta Y is down-positive, and matching them lets look code add
+		//	both into one pitch with one sign. It is also a trap - the same physical push
+		//	reads with opposite signs on the two sticks, and anything that treats the
+		//	right stick as a direction rather than as a mouse gets it backwards.
+		//
+		//	Turn this on and the right stick reads up-positive like the left one, at the
+		//	GetAnalog boundary, for every backend at once. Look code that was adding
+		//	stick.y into pitch alongside mouse delta then needs its sign flipped (in
+		//	Milistry that is PlayerMovement's `pitchSign`).
+		bool right_stick_up_positive = false;
 	};
 	AnalogSettings& GetAnalogSettings();
 
@@ -253,6 +268,33 @@ namespace wi::input
 	// Backend that owns this slot ("XInput", "RawInput", "SDL", "PS5", "Apple",
 	//	"disconnected"), or nullptr when the index is out of range.
 	const char* GetControllerBackend(int playerindex);
+
+	// Which low-level backends are allowed to claim a gamepad.
+	//
+	//	On Windows every one of them is compiled in, and they overlap: an XInput pad is
+	//	seen by XInput and by SDL, and a plain HID pad is seen by RawInput and by SDL.
+	//	The XInput/SDL overlap is resolved by matching user indices; RawInput has no such
+	//	handle to match on - it is a generic HID parser that knows nothing about which SDL
+	//	joystick is the same physical device - so one pad ends up in two player slots,
+	//	with RawInput taking the LOWER one because it registers first. Player 0 then reads
+	//	the generic HID parse (no mapping database, its own axis signs and deadzones)
+	//	instead of SDL's mapped controller.
+	//
+	//	Auto is the fix and the default: RawInput is used only when neither XInput nor SDL
+	//	found anything, so it stays what it is useful as - a fallback for a pad SDL has no
+	//	mapping for - instead of shadowing the good backend.
+	enum class GamepadBackend
+	{
+		Auto,          // XInput + SDL, and RawInput only when those two find nothing
+		All,           // every backend claims what it sees (the original behaviour)
+		SdlOnly,       // ignore XInput and RawInput pads
+		RawInputOnly,  // ignore XInput and SDL pads
+	};
+	// Changing this rebuilds the player slots from scratch on the next Update(), so a pad
+	//	that was player 1 behind a RawInput duplicate becomes player 0.
+	void SetGamepadBackend(GamepadBackend policy);
+	GamepadBackend GetGamepadBackend();
+	const char* ToString(GamepadBackend policy);
 	// Full state of a slot, processed AND raw. Returns false for an out-of-range index.
 	bool GetControllerState(ControllerState* state, int playerindex);
 	// send various feedback to the controller

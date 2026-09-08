@@ -47,6 +47,15 @@ struct DayNightComponent : wi::scene::NativeComponent {
     float starsDay         = 0.00f;
     float skyExposure      = 1.00f;
 
+    // Weather, by NAME. A map says "Overcast" and the system expands that into the
+    // twenty-odd cloud, fog, wind and rain numbers - which is the point of the presets,
+    // and what keeps this component's parameter list something a level designer reads
+    // rather than a copy of every knob in WeatherComponent.
+    int   weatherPreset      = int(WeatherPreset::Fair);
+    bool  autoWeather        = false;
+    float autoIntervalHours  = 6.0f;
+    float transitionSeconds  = 8.0f;
+
     void Start () override {
         Bind(timeOfDay, "timeOfDay");
         Bind(running, "running");
@@ -67,6 +76,10 @@ struct DayNightComponent : wi::scene::NativeComponent {
         Bind(starsNight, "starsNight");
         Bind(starsDay, "starsDay");
         Bind(skyExposure, "skyExposure");
+        Bind(weatherPreset, "weatherPreset");
+        Bind(autoWeather, "autoWeather");
+        Bind(autoIntervalHours, "autoIntervalHours");
+        Bind(transitionSeconds, "transitionSeconds");
 
         Apply();
 
@@ -109,6 +122,15 @@ struct DayNightComponent : wi::scene::NativeComponent {
         s.starsNight       = starsNight;
         s.starsDay         = starsDay;
         s.skyExposure      = skyExposure;
+        s.autoWeather      = autoWeather;
+        s.autoIntervalHours = autoIntervalHours;
+        s.transitionSeconds = transitionSeconds;
+
+        // Snapped, not blended: this runs at scene load, and a map that opens in a storm
+        // should open IN the storm rather than fading into one over the first ten
+        // seconds of play.
+        if (weatherPreset >= 0 && weatherPreset < int(WeatherPreset::Count))
+            DayNight::Get().SetWeather(WeatherPreset(weatherPreset), 0.0f);
     }
 
     void DrawDebug () override {
@@ -147,6 +169,22 @@ struct DayNightComponent : wi::scene::NativeComponent {
         dirty |= ImGui::SliderFloat("Sky exposure",  &skyExposure,  0.0f, 4.0f, "%.2f");
         ImGui::EndDisabled();
 
+        ImGui::SeparatorText("Weather");
+        if (ImGui::BeginCombo("Preset", ToString(WeatherPreset(weatherPreset)))) {
+            for (int i = 0; i < int(WeatherPreset::Count); ++i) {
+                if (ImGui::Selectable(ToString(WeatherPreset(i)), weatherPreset == i)) {
+                    weatherPreset = i;
+                    dirty = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        dirty |= ImGui::SliderFloat("Transition", &transitionSeconds, 0.0f, 60.0f, "%.1f s");
+        dirty |= ImGui::Checkbox("Change on its own", &autoWeather);
+        ImGui::BeginDisabled(!autoWeather);
+        dirty |= ImGui::SliderFloat("Every", &autoIntervalHours, 0.25f, 48.0f, "%.2f game hours");
+        ImGui::EndDisabled();
+
         if (dirty) {
             Apply();
             SaveBoundParams();
@@ -156,7 +194,7 @@ struct DayNightComponent : wi::scene::NativeComponent {
         if (DayNight::Get().SunEntity() != entity)
             ImGui::TextDisabled("Another sticDayNight has taken the system over.");
         else
-            ImGui::TextDisabled("Driving this entity's light. Full controls: Simtary > Day / Night.");
+            ImGui::TextDisabled("Driving this entity's light. Full controls: Simtary > Day / Night & Weather.");
     }
 };
 

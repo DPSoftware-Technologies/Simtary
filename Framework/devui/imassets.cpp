@@ -176,8 +176,10 @@ void AssetExplorer::ProcessQueuedImports () {
             }
             continue;
         }
-        if (LowerExtNoDot(path) == "wiscene") AddFromWiscene(path);
-        else                                  AddFromFile(path);
+        const std::string ext = LowerExtNoDot(path);
+        if      (ext == "wiscene") AddFromWiscene(path);
+        else if (ext == "stsd")    AddFromStsd(path);
+        else                       AddFromFile(path);
     }
 
     const size_t added = entries_.size() - before;
@@ -217,6 +219,59 @@ void AssetExplorer::AddFromFile (const std::string& path) {
         entry.note = "could not be read";
     }
     AddEntry(std::move(entry));
+}
+
+void AssetExplorer::AddFromStsd (const std::string& path) {
+    // Dropping a .stsd is a map SWAP, not an import. There is no resource block left in
+    // it to lift out - that happened when it was made - so converting it again is not a
+    // thing that can be done, and re-serialising it would hand back a file the author
+    // did not write. It goes in byte for byte, under the scenes/ path a map lives at.
+    //
+    // What is worth saying out loud is what it will NOT find: the map references
+    // resources by name, those resources are in whatever package it was built against,
+    // and a swap that brings only the map leaves every one of them unresolved. The row's
+    // note is that count.
+    std::vector<uint8_t> bytes;
+    if (!ReadWholeFile(path, bytes)) {
+        SetStatus(path + " could not be read", true);
+        return;
+    }
+
+    std::string error;
+    asset::SceneDescriptor scene;
+    if (!asset::ParseSceneDescriptor(bytes.data(), bytes.size(), scene, false, &error)) {
+        SetStatus(U8Path(path).filename().string() + ": " + error, true);
+        return;
+    }
+
+    size_t missing = 0;
+    for (const asset::SceneAssetRef& ref : scene.assets) {
+        bool present = false;
+        for (const Entry& e : entries_)
+            if (!e.removed && asset::AssetIdFromPath(e.logicalPath) == ref.id) { present = true; break; }
+        if (!present) ++missing;
+    }
+
+    const std::string name = scene.name.empty() ? U8Path(path).stem().string() : scene.name;
+
+    Entry map;
+    map.origin      = Entry::Origin::Memory;
+    map.logicalPath = asset::NormalizePath("scenes/" + name + ".stsd");
+    map.bytes       = std::move(bytes);
+    map.size        = map.bytes.size();
+    map.contentHash = asset::Hash64(map.bytes.data(), map.bytes.size());
+    map.type        = asset::AssetType::Scene;
+    map.codec       = asset::Codec::None;   // the entity blob inside is already compressed
+    map.autoCodec   = false;
+    map.note        = missing == 0
+                    ? std::to_string(scene.assets.size()) + " resources, all present"
+                    : std::to_string(missing) + " of " + std::to_string(scene.assets.size()) +
+                      " resources missing - add them before saving";
+    AddEntry(std::move(map));
+
+    if (missing != 0)
+        SetStatus(name + ".stsd needs " + std::to_string(missing) +
+                  " resource(s) this package does not have", true);
 }
 
 void AssetExplorer::AddFromWiscene (const std::string& path) {

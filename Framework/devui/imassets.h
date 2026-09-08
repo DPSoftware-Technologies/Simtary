@@ -146,6 +146,10 @@ private:
     void ProcessQueuedImports ();
     void AddFromFile (const std::string& path);
     void AddFromWiscene (const std::string& path);
+    // A .stsd is already the converted form, so it is taken as it is - the split that
+    // AddFromWiscene performs has nothing left to do. Its reference list is read only to
+    // say, on the row, how many of the resources it needs the working set is missing.
+    void AddFromStsd (const std::string& path);
     void AddEntry (Entry entry);
 
     bool SaveWorkingSet (const std::string& outDir, const std::string& baseName,

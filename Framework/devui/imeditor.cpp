@@ -1,5 +1,7 @@
 #include "imeditor.h"
 
+#include "scene/PlayControl.h"
+
 #include "io/asset/AssetSystem.h"
 #include "io/model/ModelImporter.h"
 #include "io/asset/SceneDescriptor.h"
@@ -767,6 +769,13 @@ void st::EditorUI::DrawToolbar()
 		default:               ImGui::DragFloat("##snap", &snapTranslate_, 0.05f, 0.01f, 100.0f, "%.2f"); break;
 		}
 	}
+
+	// The transport, on the editor's own toolbar rather than on the DevUI menu bar above
+	// it. It belongs with the gizmo buttons: both are "what am I doing to this scene
+	// right now". The bar above is the application's menus, and five buttons plus a
+	// slider across it pushed Help and the fps readout off the end.
+	ImGui::Separator();
+	st::PlayControl::Get().GUI(/*compact*/ true);
 
 	if (!lastSaveMessage_.empty())
 	{

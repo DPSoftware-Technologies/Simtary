@@ -307,6 +307,26 @@ void st::App::Initialize() {
     lasers_.LoadFrom(st::SettingsManager::Get().SubCompound("lasers"));
     st::DayNight::Get().LoadFrom(st::SettingsManager::Get().SubCompound("daynight"));
 
+    // Reset is a scene reload, and PlayControl has no business knowing what a
+    // SceneManager is. Installed here, where both are in scope.
+    st::PlayControl::Get().SetResetHook([this]() { sceneManager.Reload(); });
+
+    // Gamepad backend policy: the project's default, overridden by whatever the player
+    // (or a developer in the Gamepad Analog panel) last chose. Applied before the first
+    // Update, so the very first frame already registers the pads the chosen way rather
+    // than registering them twice and re-shuffling the player slots a frame later.
+    {
+        const int stored = st::SettingsManager::Get().SubCompound("input")
+                               .getInt("gamepadBackend", int(Config().gamepadBackend));
+        const int clamped = (stored < 0 || stored > int(wi::input::GamepadBackend::RawInputOnly))
+                          ? int(Config().gamepadBackend) : stored;
+        wi::input::SetGamepadBackend(wi::input::GamepadBackend(clamped));
+
+        wi::input::GetAnalogSettings().right_stick_up_positive =
+            st::SettingsManager::Get().SubCompound("input")
+                .getBool("rightStickUpPositive", Config().rightStickUpPositive);
+    }
+
     // Centralized input: install the default keymap before any scene updates. This
     // seeds both halves - the legacy flat keymap AND the default "Player"/"UI" action
     // maps - and then hands the registry to the project.
@@ -401,12 +421,19 @@ void st::App::Update(float dt) {
         m_loadingScreen.Show();
     }
 
+    // The transport decides how much time the SCENE sees. Everything above this line -
+    // input, the loading screen, the standby cap - ran on the real frame delta, and
+    // everything the DevUI does still will: a paused world is one you can still look
+    // around, click on and drive the editor camera through.
+    const float sceneDt = st::PlayControl::Get().Apply(dt);
+
     // Before the scene update, not after: the scene's light system is what copies the
     // sun's direction and colour into the weather, so a sun aimed afterwards would reach
     // the sky a frame late - which reads as the sky lagging behind the sun at dawn.
-    st::DayNight::Get().Update(wi::scene::GetScene(), dt);
+    // On the scene's clock too, or a paused world would keep moving through its own day.
+    st::DayNight::Get().Update(wi::scene::GetScene(), sceneDt);
 
-    sceneManager.Update(dt);
+    sceneManager.Update(sceneDt);
 
     if (transitioning) {
         m_loadingScreen.Hide();
@@ -514,6 +541,10 @@ void st::App::Exit() {
     optics_.SaveTo(st::SettingsManager::Get().SubCompound("optics"));
     lasers_.SaveTo(st::SettingsManager::Get().SubCompound("lasers"));
     st::DayNight::Get().SaveTo(st::SettingsManager::Get().SubCompound("daynight"));
+    st::SettingsManager::Get().SubCompound("input")
+        .putInt("gamepadBackend", int(wi::input::GetGamepadBackend()));
+    st::SettingsManager::Get().SubCompound("input")
+        .putBool("rightStickUpPositive", wi::input::GetAnalogSettings().right_stick_up_positive);
     st::SettingsManager::Get().Save();
     zmqHandler.Stop(); // join receiver thread before tearing anything else down
     faustManager.Unload(); // join audio thread + close OpenAL before teardown

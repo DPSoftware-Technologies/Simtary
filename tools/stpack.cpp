@@ -6,10 +6,12 @@
 // rather than something the game has to be running to do.
 //
 //   stpack pack   <contentDir> --out <dir> [--scene-dir <dir>] [--scene-src <dir>]
+//                 [--resource-dir <dir>]... [--on-conflict override|add|keep]
 //                 [--name content] [--part-size 50] [--chunk 256] [--level 9] [--stored]
-//                 [--aggressive]
+//                 [--aggressive] [--strict]
 //   stpack unpack <index.strd> --out <dir> [--filter <substring>] [--rebuild-scenes]
 //   stpack scene  <map.stsd> --out <map.wiscene> [--pack <index.strd>]
+//   stpack resources <map.wiscene | map.stsd> --out <dir> [--pack <index.strd>]...
 //   stpack info   <index.strd | map.stsd> [--assets]
 //   stpack verify <index.strd>
 //
@@ -23,6 +25,30 @@
 // reverse, and they exist because a format you cannot get back out of is a format
 // nobody should adopt.
 //
+// A .stsd found among the sources is NOT converted. It is already the converted form -
+// there is nothing left to split - so it passes through byte for byte to --scene-dir
+// (or into the package when there is no --scene-dir), and only its reference list is
+// read, to report which of the resources it needs the package will not hold. That is
+// what makes "drop a new .stsd in and rebuild" a swap of one map instead of a build
+// that quietly ships a map with no textures.
+//
+// --resource-dir is the other half of that swap: a loose tree of the resource FILES a
+// hand-placed map needs, merged into the package under the same relative names the map
+// asks for. `resources` is what fills that tree - it writes out the files one map needs,
+// either straight out of the .wiscene that embeds them or out of the package a .stsd was
+// packed alongside, so moving a map between projects is copying two things instead of
+// moving a 39 MB .wiscene. --on-conflict decides what happens when such a file has the same logical
+// path as a resource a map already embedded:
+//
+//   override  the loose file wins - it is added first, and the map's embedded copy is
+//             skipped. Every reference to that path, in every map, resolves to the new
+//             bytes. This is the default: a resource tree exists to be authoritative.
+//   add       both are kept - the loose file is packed under the first free
+//             "<name>.<n>.<ext>". Existing objects keep pointing at the embedded copy;
+//             the renamed asset is there to be pointed at deliberately, because the
+//             names inside a map's entity blob cannot be rewritten from out here.
+//   keep      the loose file is ignored. Nothing in the package changes.
+//
 // Exit code is 0 on success, 1 on any failure, so CMake stops the build on a bad pack.
 
 #include <algorithm>
@@ -30,6 +56,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -103,6 +130,12 @@ struct Args {
         for (const auto& o : options) if (o.first == key) return o.second;
         return def;
     }
+    // For options that may be repeated - --resource-dir is given once per tree.
+    std::vector<std::string> GetAll (const std::string& key) const {
+        std::vector<std::string> all;
+        for (const auto& o : options) if (o.first == key) all.push_back(o.second);
+        return all;
+    }
     uint64_t GetUint (const std::string& key, uint64_t def) const {
         const std::string v = Get(key);
         if (v.empty()) return def;
@@ -112,7 +145,7 @@ struct Args {
 
 // Flags that stand alone; everything else takes the next token as its value.
 bool IsBooleanFlag (const std::string& key) {
-    return key == "stored" || key == "aggressive" ||
+    return key == "stored" || key == "aggressive" || key == "strict" ||
            key == "rebuild-scenes" || key == "assets" || key == "quiet" || key == "verify";
 }
 
@@ -149,10 +182,14 @@ void PrintUsage () {
         "stpack - build and inspect Simtary asset packages\n"
         "\n"
         "  stpack pack   <contentDir> --out <dir> [--scene-dir <dir>] [--scene-src <dir>]\n"
+        "                [--resource-dir <dir>]... [--on-conflict override|add|keep]\n"
+        "                [--mirror-resources <dir>]\n"
         "                [--name content] [--part-size 50] [--chunk 256] [--level 9]\n"
-        "                [--stored] [--aggressive]\n"
+        "                [--stored] [--aggressive] [--strict]\n"
         "  stpack unpack <index.strd> --out <dir> [--filter <substring>] [--rebuild-scenes]\n"
         "  stpack scene  <map.stsd>    --out <map.wiscene> [--pack <index.strd>]\n"
+        "  stpack resources <map.wiscene | map.stsd> --out <dir>\n"
+        "                  [--pack <index.strd>]...  (a .stsd needs --pack)\n"
         "  stpack info   <index.strd | map.stsd> [--assets]\n"
         "  stpack verify <index.strd>\n"
         "\n"
@@ -166,11 +203,82 @@ void PrintUsage () {
         "  --scene-src   an EXTRA directory searched for .wiscene sources, for a project\n"
         "                that keeps its maps outside the packed content tree. Their\n"
         "                resources still go into the package; only the sources live\n"
-        "                elsewhere. Nothing but .wiscene is read from it\n"
+        "                elsewhere. A .stsd found there passes through unconverted\n"
+        "  --resource-dir a loose tree of resource FILES merged into the package under\n"
+        "                their relative names - what a hand-placed .stsd needs to find.\n"
+        "                May be given more than once\n"
+        "  --on-conflict what to do when a --resource-dir file has the same logical path\n"
+        "                as a resource a map already embedded:\n"
+        "                  override  the loose file wins; every reference resolves to it\n"
+        "                            (default)\n"
+        "                  add       keep both; the loose file is packed as <name>.<n>.<ext>\n"
+        "                  keep      ignore the loose file\n"
+        "  --mirror-resources  write a loose copy of every resource a converted\n"
+        "                .wiscene embeds into this directory, skipping the files\n"
+        "                already there. Point it at --resource-dir and the project\n"
+        "                keeps its own copy of every map resource, so a .wiscene\n"
+        "                can later leave without taking its textures with it\n"
+        "  --strict      fail the pack when a passed-through .stsd references a resource\n"
+        "                the package does not hold, instead of warning\n"
         "  -q            print nothing but errors\n");
 }
 
 // pack
+
+// What to do when a file under --resource-dir carries the same logical path as
+// something already in the package - all but always a resource a map embedded.
+enum class Conflict { Override, Add, Keep };
+
+const char* ToString (Conflict c) {
+    switch (c) {
+        case Conflict::Add:  return "add";
+        case Conflict::Keep: return "keep";
+        default:             return "override";
+    }
+}
+
+bool ParseConflict (const std::string& text, Conflict& out) {
+    if (text.empty() || text == "override" || text == "replace") { out = Conflict::Override; return true; }
+    if (text == "add"  || text == "rename")                      { out = Conflict::Add;      return true; }
+    if (text == "keep" || text == "skip")                        { out = Conflict::Keep;     return true; }
+    return false;
+}
+
+// Every regular file under `root`, sorted, so two builds of the same tree produce the
+// same pack. Directory iteration order is not specified, and an index that reshuffles
+// every build defeats any attempt at shipping a delta patch.
+void ListFilesSorted (const fs::path& root, std::vector<fs::path>& out) {
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
+         it != end; it.increment(ec)) {
+        if (ec) break;
+        if (!it->is_regular_file(ec)) continue;
+        out.push_back(it->path());
+    }
+    std::sort(out.begin(), out.end());
+}
+
+// "textures/wall.dds" -> "textures/wall.1.dds", the first suffix nothing answers to.
+// Conflict::Add keeps both copies, and two assets cannot share a logical path.
+std::string FreeName (const AssetPackWriter& writer, const std::string& logical) {
+    const size_t slash  = logical.find_last_of('/');
+    const size_t dot    = logical.find_last_of('.');
+    const bool   hasExt = dot != std::string::npos && (slash == std::string::npos || dot > slash);
+    const std::string stem = hasExt ? logical.substr(0, dot) : logical;
+    const std::string ext  = hasExt ? logical.substr(dot)    : std::string();
+    for (int n = 1; n < 10000; ++n) {
+        const std::string candidate = NormalizePath(stem + "." + std::to_string(n) + ext);
+        if (!writer.Contains(candidate)) return candidate;
+    }
+    return {};
+}
+
+// A map that arrived already converted, kept aside so its references can be checked
+// once the whole package is known - not while it is still half built.
+struct PassedMap {
+    std::string     where;    // where it ended up, for the report
+    SceneDescriptor scene;
+};
 
 int CommandPack (const Args& args) {
     if (args.positional.empty()) { PrintUsage(); return Fail("pack needs a content directory"); }
@@ -179,7 +287,13 @@ int CommandPack (const Args& args) {
     const std::string sceneDir   = args.Get("scene-dir");
     const std::string sceneSrc   = args.Get("scene-src");
     const std::string baseName   = args.Get("name", "content");
+    const std::vector<std::string> resourceDirs = args.GetAll("resource-dir");
+    const std::string mirrorDir = args.Get("mirror-resources");
     if (outDir.empty()) return Fail("pack needs --out <dir>");
+
+    Conflict conflict = Conflict::Override;
+    if (!ParseConflict(args.Get("on-conflict"), conflict))
+        return Fail("--on-conflict takes override, add or keep");
 
     std::error_code ec;
     if (!fs::is_directory(U8Path(contentDir), ec)) return Fail(contentDir + " is not a directory");
@@ -200,47 +314,102 @@ int CommandPack (const Args& args) {
     AssetPackWriter writer;
     if (!writer.Begin(outDir, baseName, options, &error)) return Fail(error);
 
-    // Sorted so two builds of the same tree produce the same pack. Directory iteration
-    // order is not specified, and an index that reshuffles every build defeats any
-    // attempt at shipping a delta patch.
     const fs::path root = U8Path(contentDir);
     std::vector<fs::path> files;
-    for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
-         it != end; it.increment(ec)) {
-        if (ec) break;
-        if (!it->is_regular_file(ec)) continue;
-        files.push_back(it->path());
-    }
-    std::sort(files.begin(), files.end());
+    ListFilesSorted(root, files);
 
-    uint32_t sceneCount = 0;
+    uint32_t sceneCount   = 0;
     uint64_t wisceneBytes = 0;
 
-    // Every .wiscene to convert, each paired with the root its relative path is measured
-    // against: the content tree, plus --scene-src for a project that keeps its maps
-    // outside it. Both end up in the same package, so where the SOURCE sits changes
-    // nothing about the output.
-    std::vector<std::pair<fs::path, fs::path>> sceneFiles;
+    // The maps, each paired with the root its relative path is measured against: the
+    // content tree, plus --scene-src for a project that keeps its maps outside it. Both
+    // end up in the same package, so where the SOURCE sits changes nothing.
+    //
+    // .wiscene and .stsd are sorted apart here because they are not two spellings of the
+    // same input. A .wiscene is a source to convert; a .stsd is that conversion's OUTPUT,
+    // and running the converter over one is not possible - there is no resource block
+    // left in it to lift out. It passes through instead.
+    std::vector<std::pair<fs::path, fs::path>> sceneFiles;   // .wiscene
+    std::vector<std::pair<fs::path, fs::path>> sceneMaps;    // .stsd
     for (const fs::path& p : files) {
-        if (LowerExtNoDot(p) == "wiscene") sceneFiles.emplace_back(p, root);
+        const std::string ext = LowerExtNoDot(p);
+        if      (ext == "wiscene") sceneFiles.emplace_back(p, root);
+        else if (ext == "stsd")    sceneMaps.emplace_back(p, root);
     }
     if (!sceneSrc.empty()) {
         const fs::path sceneRoot = U8Path(sceneSrc);
         if (!fs::is_directory(sceneRoot, ec)) return Fail(sceneSrc + " is not a directory");
 
         std::vector<fs::path> found;
-        for (fs::recursive_directory_iterator it(sceneRoot, fs::directory_options::skip_permission_denied, ec), end;
-             it != end; it.increment(ec)) {
-            if (ec) break;
-            if (!it->is_regular_file(ec)) continue;
-            if (LowerExtNoDot(it->path()) != "wiscene") continue;
-            found.push_back(it->path());
+        ListFilesSorted(sceneRoot, found);
+        for (const fs::path& p : found) {
+            const std::string ext = LowerExtNoDot(p);
+            if      (ext == "wiscene") sceneFiles.emplace_back(p, sceneRoot);
+            else if (ext == "stsd")    sceneMaps.emplace_back(p, sceneRoot);
         }
-        std::sort(found.begin(), found.end()); // same reason as above: a reproducible pack
-        for (const fs::path& p : found) sceneFiles.emplace_back(p, sceneRoot);
     }
 
-    // Scenes first. Converting a map registers its resources, so a later loose copy of
+    // The loose resource trees: resource FILES under the same relative names the maps
+    // ask for. This is the other half of hand-swapping a .stsd, whose resources are not
+    // inside it and have to come from somewhere.
+    std::vector<std::pair<fs::path, fs::path>> resourceFiles;
+    for (const std::string& dir : resourceDirs) {
+        const fs::path resRoot = U8Path(dir);
+        if (!fs::is_directory(resRoot, ec)) return Fail(dir + " is not a directory");
+        std::vector<fs::path> found;
+        ListFilesSorted(resRoot, found);
+        for (const fs::path& p : found) resourceFiles.emplace_back(p, resRoot);
+    }
+
+    uint32_t resourceCount = 0, resourceRenamed = 0, resourceSkipped = 0;
+    bool     resourceFailed = false;
+
+    // Called once, either before the maps or after them - and that ordering IS the
+    // conflict policy. Going first means the writer already holds the path when a map
+    // offers its embedded copy, so the existing skip-if-present rule drops the copy and
+    // every reference to that path resolves to the loose bytes, in every map, without
+    // rewriting anything. Going last means the map's copy is the one in the way.
+    auto AddResourceTrees = [&] () {
+        for (const auto& entry : resourceFiles) {
+            std::error_code rel;
+            const std::string logical =
+                NormalizePath(fs::relative(entry.first, entry.second, rel).generic_string());
+            if (rel || logical.empty()) continue;
+
+            std::string target = logical;
+            if (writer.Contains(logical)) {
+                if (conflict == Conflict::Keep) { ++resourceSkipped; continue; }
+                if (conflict == Conflict::Add) {
+                    target = FreeName(writer, logical);
+                    if (target.empty()) {
+                        error          = logical + ": no free name left for --on-conflict add";
+                        resourceFailed = true;
+                        return;
+                    }
+                    ++resourceRenamed;
+                    Say("  resource  " + logical + " -> " + target + "  (both kept)");
+                } else {
+                    // Override, and the path is taken already: a second resource tree, or
+                    // the same file twice. First one wins, or the result would depend on
+                    // the order the directories were listed in.
+                    ++resourceSkipped;
+                    continue;
+                }
+            }
+            if (!writer.AddFile(target, entry.first.string(), AssetFlag_None, &error)) {
+                resourceFailed = true;
+                return;
+            }
+            ++resourceCount;
+        }
+    };
+
+    if (conflict == Conflict::Override) {
+        AddResourceTrees();
+        if (resourceFailed) return Fail(error);
+    }
+
+    // Scenes next. Converting a map registers its resources, so a later loose copy of
     // the same texture is recognised as a duplicate and skipped instead of stored twice.
     for (const auto& entry : sceneFiles) {
         const fs::path& p         = entry.first;
@@ -255,6 +424,54 @@ int CommandPack (const Args& args) {
         // is deserialised from MEMORY, so wi::Archive has no source directory and the
         // engine asks for exactly the relative names it stored.
         if (!BuildSceneDescriptor(full, "", &writer, scene, &error)) return Fail(error);
+
+        // Keep a loose copy of everything this map embeds, next to the project's other
+        // resources.
+        //
+        //	The resources of a .wiscene exist in exactly ONE place: inside that file. Move
+        //	it out of the project - archive it, hand it to someone, replace it with the
+        //	.stsd the editor saved - and the next pack has nothing to pack, the map ships
+        //	naming textures no package holds, and the world comes up white. Mirroring here
+        //	means the project keeps its own copy from the first build onwards, so the map
+        //	source becomes something that can leave.
+        //
+        //	A file that is already there is never rewritten: it may be a deliberate
+        //	override (that is what --on-conflict override is for), and rewriting 33 MB of
+        //	textures every build to produce the bytes that are already on disk is time
+        //	spent for nothing. The descriptor lists the names, so the common case - all
+        //	present - costs a handful of stat() calls and the .wiscene is not touched again.
+        if (!mirrorDir.empty()) {
+            std::vector<std::string> missing;
+            for (const SceneAssetRef& ref : scene.assets) {
+                std::error_code stat;
+                if (!fs::exists(U8Path(mirrorDir + "/" + ref.path), stat))
+                    missing.push_back(ref.path);
+            }
+            if (!missing.empty()) {
+                std::vector<uint8_t> source;
+                if (!ReadWholeFile(full, source, &error)) return Fail(error);
+
+                WisceneSplit split;
+                if (!SplitWiscene(source.data(), source.size(), split, &error))
+                    return Fail(full + ": " + error);
+
+                uint32_t written = 0;
+                uint64_t writtenBytes = 0;
+                for (const EmbeddedResource& r : split.resources) {
+                    const std::string logical = NormalizePath(r.name);
+                    if (logical.empty()) continue;
+                    if (std::find(missing.begin(), missing.end(), logical) == missing.end()) continue;
+                    if (!WriteWholeFile(mirrorDir + "/" + logical,
+                                        split.Bytes() + r.offset, r.size, &error))
+                        return Fail(error);
+                    ++written;
+                    writtenBytes += r.size;
+                }
+                if (written > 0)
+                    Say("  mirror  " + std::to_string(written) + " resource(s) of " + scene.name +
+                        " -> " + mirrorDir + "  " + FormatBytes(writtenBytes));
+            }
+        }
 
         std::vector<uint8_t> stsd;
         if (!SerializeSceneDescriptor(scene, stsd, sceneOptions, &error)) return Fail(error);
@@ -292,16 +509,102 @@ int CommandPack (const Args& args) {
         ++sceneCount;
     }
 
+    // Maps that arrive already converted. Nothing is converted and nothing is
+    // re-serialised - the bytes are copied through exactly as they came, because a .stsd
+    // out of the editor or another build is the authored artefact, and rewriting it here
+    // would hand the author back a file they did not write. Its reference list is read
+    // for one reason only: to report, further down, what it needs and will not find.
+    std::vector<PassedMap> passed;
+    for (const auto& entry : sceneMaps) {
+        const fs::path& p         = entry.first;
+        const fs::path& sceneRoot = entry.second;
+
+        std::vector<uint8_t> bytes;
+        if (!ReadWholeFile(p.string(), bytes, &error)) return Fail(error);
+
+        PassedMap map;
+        if (!ParseSceneDescriptor(bytes.data(), bytes.size(), map.scene, false, &error))
+            return Fail(p.string() + ": " + error);
+
+        std::string relDir = fs::relative(p.parent_path(), sceneRoot, ec).generic_string();
+        if (relDir == ".") relDir.clear();
+
+        const std::string name = p.filename().string();
+        if (sceneDir.empty()) {
+            const std::string logical =
+                NormalizePath((relDir.empty() ? std::string() : relDir + "/") + name);
+            if (writer.Contains(logical)) {
+                Say("  map     " + logical + "  (already in the package, skipped)");
+                continue;
+            }
+            // Codec::None: the entity blob inside is compressed already, and a second
+            // pass over it buys nothing but build time.
+            if (!writer.Add(logical, bytes.data(), bytes.size(), AssetType::Scene,
+                            Codec::None, AssetFlag_None, &error))
+                return Fail(error);
+            map.where = logical;
+        } else {
+            std::string sub = relDir;
+            if (sub == "scenes")                   sub.clear();
+            else if (sub.rfind("scenes/", 0) == 0) sub.erase(0, 7);
+
+            const std::string outPath =
+                sceneDir + "/" + (sub.empty() ? std::string() : sub + "/") + name;
+            // Copying a file onto itself truncates it mid-read, which is what would
+            // happen on a project whose scene folder IS the scene output folder.
+            std::error_code same;
+            if (!fs::equivalent(p, U8Path(outPath), same)) {
+                if (!WriteWholeFile(outPath, bytes.data(), bytes.size(), &error)) return Fail(error);
+            }
+            map.where = outPath;
+        }
+        Say("  map     " + map.where + "  (passed through, " +
+            std::to_string(map.scene.assets.size()) + " resources)");
+        passed.push_back(std::move(map));
+    }
+
+    if (conflict != Conflict::Override) {
+        AddResourceTrees();
+        if (resourceFailed) return Fail(error);
+    }
+
     // Then everything else. The .wiscene sources are skipped - they have been converted,
-    // and shipping both would double the size for no gain.
+    // and shipping both would double the size for no gain. The .stsd maps are skipped
+    // too: they went through above, as maps rather than as files.
     uint32_t fileCount = 0;
     for (const fs::path& p : files) {
-        if (LowerExtNoDot(p) == "wiscene") continue;
+        const std::string ext = LowerExtNoDot(p);
+        if (ext == "wiscene" || ext == "stsd") continue;
         const std::string logical = NormalizePath(fs::relative(p, root, ec).generic_string());
         if (ec || logical.empty()) continue;
         if (writer.Contains(logical)) continue;   // already pulled in as a scene resource
         if (!writer.AddFile(logical, p.string(), AssetFlag_None, &error)) return Fail(error);
         ++fileCount;
+    }
+
+    // What a passed-through map asks for that the package will not hold. This is the
+    // whole reason the pass-through reads a reference list at all: a hand-swapped map
+    // whose resources nobody supplied loads into a world with no textures, and finding
+    // that out at build time beats finding it out in the game.
+    uint32_t missingTotal = 0;
+    for (const PassedMap& map : passed) {
+        std::vector<std::string> missing;
+        for (const SceneAssetRef& ref : map.scene.assets)
+            if (!writer.Contains(ref.path)) missing.push_back(ref.path);
+        if (missing.empty()) continue;
+
+        missingTotal += static_cast<uint32_t>(missing.size());
+        std::fprintf(stderr, "stpack: %s needs %zu resource%s the package does not have:\n",
+                     map.where.c_str(), missing.size(), missing.size() == 1 ? "" : "s");
+        for (size_t i = 0; i < missing.size() && i < 8; ++i)
+            std::fprintf(stderr, "          %s\n", missing[i].c_str());
+        if (missing.size() > 8)
+            std::fprintf(stderr, "          ... and %zu more\n", missing.size() - 8);
+        std::fprintf(stderr, "        put them under --resource-dir, or pack the .wiscene they came from\n");
+    }
+    if (missingTotal && args.Has("strict")) {
+        writer.Abort();
+        return Fail(std::to_string(missingTotal) + " scene resources are missing from the package");
     }
 
     if (!writer.Finish(&error)) return Fail(error);
@@ -311,6 +614,14 @@ int CommandPack (const Args& args) {
         (s.partCount == 1 ? "" : "s") + ", " + std::to_string(s.assetCount) + " assets");
     Say("  scenes converted  " + std::to_string(sceneCount) +
         (wisceneBytes ? "  (" + FormatBytes(wisceneBytes) + " of .wiscene)" : ""));
+    if (!passed.empty())
+        Say("  maps passed       " + std::to_string(passed.size()) + "  (.stsd, unconverted)" +
+            (missingTotal ? "  - " + std::to_string(missingTotal) + " resources MISSING" : ""));
+    if (!resourceFiles.empty())
+        Say("  resources merged  " + std::to_string(resourceCount) +
+            "  (" + std::string(ToString(conflict)) + ": " +
+            std::to_string(resourceRenamed) + " renamed, " +
+            std::to_string(resourceSkipped) + " skipped)");
     Say("  loose files       " + std::to_string(fileCount));
     Say("  payload           " + FormatBytes(s.originalBytes) + " -> " + FormatBytes(s.storedBytes) +
         (s.originalBytes ? "  (" + std::to_string(int(100.0 * double(s.storedBytes) /
@@ -411,6 +722,103 @@ int CommandScene (const Args& args) {
 
     Say("stpack: " + outPath + "  " + FormatBytes(wiscene.size()) + "  (" +
         std::to_string(scene.assets.size()) + " resources embedded)");
+    return 0;
+}
+
+// resources (materialise one map's resources as loose files)
+
+// The companion to the pass-through. A .stsd carries no resource bytes - it names them,
+// and the bytes live in the package it was converted alongside. So a map copied out of
+// one project into another references a set of files the new project has never seen,
+// and the swap ships a world with no textures.
+//
+// This writes exactly the files that map names, under exactly the names it uses, which
+// is the layout --resource-dir expects. Copy the map into assets/scenes/, fill
+// assets/resources/ from here, and the map is portable: its .wiscene source never has to
+// stay in the project, and the next pack merges the resources back in.
+//
+// Two sources, because both are things a person actually has:
+//
+//   a .wiscene   the resources are INSIDE it. Nothing else is needed - this is the one
+//                to use when the map's source is on hand, including the case of moving
+//                a .wiscene out of a project and wanting its textures to stay behind
+//   a .stsd      the map names its resources but does not carry them, so --pack says
+//                which package to lift them out of
+int CommandResources (const Args& args) {
+    if (args.positional.empty()) { PrintUsage(); return Fail("resources needs a .stsd or .wiscene"); }
+    const std::string mapPath = args.positional[0];
+    const std::string outDir  = args.Get("out");
+    const std::vector<std::string> packPaths = args.GetAll("pack");
+    if (outDir.empty()) return Fail("resources needs --out <dir>");
+
+    std::string error;
+
+    // A .wiscene is self-contained: split it and write the resource block out as files.
+    if (LowerExtNoDot(U8Path(mapPath)) == "wiscene") {
+        std::vector<uint8_t> source;
+        if (!ReadWholeFile(mapPath, source, &error)) return Fail(error);
+
+        WisceneSplit split;
+        if (!SplitWiscene(source.data(), source.size(), split, &error))
+            return Fail(U8Path(mapPath).filename().string() + ": " + error);
+
+        uint64_t bytes = 0;
+        for (const EmbeddedResource& r : split.resources) {
+            const std::string logical = NormalizePath(r.name);
+            if (logical.empty()) continue;
+            if (!WriteWholeFile(outDir + "/" + logical, split.Bytes() + r.offset, r.size, &error))
+                return Fail(error);
+            bytes += r.size;
+            Say("  " + logical + "  " + FormatBytes(r.size));
+        }
+        Say("stpack: " + std::to_string(split.resources.size()) + " resources -> " + outDir +
+            "  " + FormatBytes(bytes));
+        return 0;
+    }
+
+    if (packPaths.empty())
+        return Fail("resources needs --pack <index.strd> for a .stsd (a .wiscene carries its own)");
+    SceneDescriptor scene;
+    if (!ReadSceneDescriptor(mapPath, scene, false, &error)) return Fail(error);
+
+    // Several packages are allowed because a game can ship a base package and patches
+    // over it, and a map may name resources from either. First one holding the id wins,
+    // which is the order they were given on the command line.
+    std::vector<std::unique_ptr<AssetPack>> packs;
+    for (const std::string& path : packPaths) {
+        auto pack = std::unique_ptr<AssetPack>(new AssetPack());
+        if (!pack->Open(path, &error)) return Fail(error);
+        packs.push_back(std::move(pack));
+    }
+
+    uint32_t written = 0, missing = 0;
+    uint64_t bytes   = 0;
+    for (const SceneAssetRef& ref : scene.assets) {
+        const AssetPack* from  = nullptr;
+        const StrdAsset* found = nullptr;
+        for (const auto& pack : packs) {
+            found = pack->Find(ref.id);
+            if (found != nullptr) { from = pack.get(); break; }
+        }
+        if (found == nullptr) {
+            std::fprintf(stderr, "stpack: %s is in no given package\n", ref.path.c_str());
+            ++missing;
+            continue;
+        }
+
+        std::vector<uint8_t> data;
+        if (!from->Read(*found, data, &error)) return Fail(error);
+        if (!WriteWholeFile(outDir + "/" + ref.path, data.data(), data.size(), &error))
+            return Fail(error);
+        ++written;
+        bytes += data.size();
+        Say("  " + ref.path + "  " + FormatBytes(data.size()));
+    }
+
+    Say("stpack: " + std::to_string(written) + " of " + std::to_string(scene.assets.size()) +
+        " resources -> " + outDir + "  " + FormatBytes(bytes));
+    if (missing)
+        return Fail(std::to_string(missing) + " resource(s) were in none of the packages given");
     return 0;
 }
 
@@ -543,6 +951,7 @@ int main (int argc, char** argv) {
     if (args.command == "pack")   return CommandPack(args);
     if (args.command == "unpack") return CommandUnpack(args);
     if (args.command == "scene")  return CommandScene(args);
+    if (args.command == "resources") return CommandResources(args);
     if (args.command == "info")   return CommandInfo(args);
     if (args.command == "verify") return CommandVerify(args);
     if (args.command == "help" || args.command == "--help" || args.command == "-h") {

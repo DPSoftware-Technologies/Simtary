@@ -42,6 +42,55 @@ enum class DayNightMode {
     Create,  // adopt, and make a sun + weather when the scene has none
 };
 
+// A named sky. The presets are the whole point of the weather half of this system: a
+// game asks for "Storm", not for a cloud coverage of 0.98 and a fog density of 0.11, and
+// a designer picking a mood should not have to know which of eleven cloud parameters is
+// the one that makes it look like rain.
+enum class WeatherPreset {
+    Clear,      // barely a cloud
+    Fair,       // scattered fair-weather cloud - the default
+    Cloudy,     // broken cover, some wind
+    Overcast,   // solid grey lid, flat light
+    Rain,       // overcast and raining
+    Storm,      // heavy rain, hard wind, dark
+    Fog,        // thick ground fog, still air
+    Count
+};
+
+const char* ToString (WeatherPreset preset);
+
+// The continuous weather parameters, all of them interpolatable. Weather changes by
+// blending one of these into another over a few seconds - which is why every field here
+// is a plain float and why the flags (clouds on, height fog on) live in Settings
+// instead: a bool cannot be half way through a transition.
+struct WeatherState {
+    // sky
+    float cloudiness    = 0.35f;   // 0 empty sky .. 1 solid cover
+    float cloudDarkness = 0.0f;    // 0 white cloud .. 1 slate grey
+    float exposureScale = 1.0f;    // multiplies Settings::skyExposure
+    float ambientScale  = 1.0f;    // multiplies the ambient the sun computes
+
+    // fog
+    float fogDensity     = 0.0f;   // 0 none .. ~0.5 pea soup
+    float fogStart       = 100.0f; // metres before fog begins
+    float fogHeightStart = 0.0f;   // world Y the height-fog band starts at
+    float fogHeightEnd   = 40.0f;  // and ends at
+
+    // wind. One heading and one speed, because that is how weather is described;
+    // the vector the engine wants is built from them.
+    float windSpeed      = 2.0f;   // metres per second
+    float windDegrees    = 90.0f;  // compass heading the wind blows TOWARDS
+    float windTurbulence = 5.0f;   // WeatherComponent::windRandomness
+    float windWaveSize   = 1.0f;
+
+    // precipitation
+    float rain      = 0.0f;        // 0 dry .. 1 downpour
+    float rainSpeed = 1.0f;
+};
+
+// Blend of two states. `t` is 0 at `a`, 1 at `b`.
+WeatherState Blend (const WeatherState& a, const WeatherState& b, float t);
+
 // Where the sun is right now.
 struct SolarPosition {
     float    elevation = 0.0f;                  // radians above the horizon; negative at night
@@ -92,6 +141,26 @@ public:
         float starsNight   = 0.60f;
         float starsDay     = 0.00f;
         float skyExposure  = 1.00f;
+
+        // The weather being blended TOWARDS. Written here directly - by a slider, by
+        // game code - it shows at once; asked for through SetWeather() it eases in over
+        // `transitionSeconds`, which is what makes a storm roll in instead of appearing.
+        WeatherState weather;
+        float        transitionSeconds = 8.0f;   // 0 = snap
+
+        // Switches, not values: a flag cannot be half transitioned, so these apply at
+        // once and stay out of WeatherState.
+        bool clouds       = true;    // volumetric clouds on the weather component
+        bool cloudShadows = false;   // they cost real time, so off by default
+        bool heightFog    = true;    // fog banded by altitude rather than filling the world
+
+        // Automatic weather: every `autoIntervalHours` of GAME time, pick another of the
+        // allowed presets and start blending. Tied to the clock rather than to real
+        // seconds so it follows the same speed the day does.
+        bool     autoWeather       = false;
+        float    autoIntervalHours = 6.0f;
+        uint32_t autoPresets       = 0x7Fu;   // bit per WeatherPreset; default all
+        uint32_t autoSeed          = 1u;      // same seed, same weather - repeatable
     };
     Settings settings;
 
@@ -139,6 +208,25 @@ public:
     // Where the sun was at the last Update().
     const SolarPosition& Sun () const { return sun_position_; }
 
+    // weather
+
+    // Start a change. `blendSeconds` < 0 uses Settings::transitionSeconds; 0 snaps.
+    // Setting a preset also writes Settings::weather, so the UI and a save file see the
+    // target a game asked for rather than the state it happens to be passing through.
+    void SetWeather (WeatherPreset preset, float blendSeconds = -1.0f);
+    void SetWeather (const WeatherState& state, float blendSeconds = -1.0f);
+
+    // What the scene is showing THIS frame - part way between two states while a
+    // transition runs. This, not Settings::weather, is what gameplay should read when it
+    // asks "is it raining".
+    const WeatherState& Weather () const { return weather_now_; }
+    // 1 while a transition is in flight, 0 when it has settled.
+    float WeatherBlend () const { return blendTotal_ > 0.0f ? 1.0f - blend_ : 0.0f; }
+    // The last preset asked for. Count means the state was set field by field.
+    WeatherPreset CurrentPreset () const { return preset_; }
+
+    static WeatherState Preset (WeatherPreset preset);
+
     // Sunrise / sunset for the current day and place, in hours. False when the sun does
     // not cross the horizon at all that day - a polar summer or winter, which is a real
     // answer at a high enough latitude and not an error.
@@ -168,6 +256,20 @@ private:
     bool            owned_   = false;   // Create() made them, so Destroy() may remove them
 
     SolarPosition sun_position_;
+
+    // The weather transition. `weather_from_` is where the blend started,
+    // Settings::weather is where it is going, and `blend_` walks 0 -> 1.
+    WeatherState  weather_now_;
+    WeatherState  weather_from_;
+    float         blend_      = 1.0f;
+    float         blendTotal_ = 0.0f;
+    WeatherPreset preset_     = WeatherPreset::Count;
+
+    float    autoHours_ = 0.0f;   // game hours since the last automatic change
+    uint32_t rng_       = 0u;     // 0 = not seeded yet
+
+    void ApplyWeather (wi::scene::Scene& scene);
+    void StepAutoWeather (float gameHoursAdvanced);
 };
 
 } // namespace st

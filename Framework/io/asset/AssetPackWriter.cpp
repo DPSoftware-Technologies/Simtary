@@ -525,6 +525,21 @@ bool AssetPackWriter::Finish (std::string* error) {
     if (!FlushPart(error)) { Abort(); return false; }
     if (!WriteIndex(error)) { Abort(); return false; }
 
+    // Sweep the part files a PREVIOUS pack of the same name left behind. The packer
+    // never writes fewer files than it needs, but it also never used to remove the ones
+    // it no longer needs, so a build whose content shrank left content.stafp2 sitting
+    // next to a one-part index: megabytes of orphan that no index references, that no
+    // reader will ever open, and that makes an output folder look like it still holds
+    // assets the package has actually lost.
+    {
+        std::error_code ec;
+        for (uint32_t number = stats_.partCount + 1; number < stats_.partCount + 64; ++number) {
+            const fs::path stale = U8Path(outDir_) / U8Path(PartFileName(baseName_, number));
+            if (!fs::exists(stale, ec)) break;   // parts are numbered without gaps
+            fs::remove(stale, ec);
+        }
+    }
+
     const PackStats stats = stats_;
     writtenFiles_.clear();   // keep them: the build succeeded
     Abort();

@@ -116,6 +116,15 @@ namespace wi::input
 	AnalogSettings analog_settings;
 	AnalogSettings& GetAnalogSettings() { return analog_settings; }
 
+	// How far the right stick is pushed AWAY from the player, always up-positive,
+	//	whichever convention GetAnalog is currently handing out. The stick-as-button
+	//	tests read this so "Right Stick Up" means the same thing either way.
+	static float RightStickUpAmount(int playerindex)
+	{
+		const float y = GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_R, playerindex).y;
+		return analog_settings.right_stick_up_positive ? y : -y;
+	}
+
 	XMFLOAT2 ApplyStickDeadzone(const XMFLOAT2& value)
 	{
 		const AnalogSettings& s = analog_settings;
@@ -188,6 +197,11 @@ namespace wi::input
 	};
 	wi::vector<Controller> controllers;
 	std::atomic_bool initialized{ false };
+
+	// Which backends may claim a pad, and which policy the current slot list was built
+	//	under. They differ for exactly one Update(), the one that rebuilds the slots.
+	GamepadBackend gamepad_backend = GamepadBackend::Auto;
+	GamepadBackend gamepad_backend_applied = GamepadBackend::Auto;
 
 	void Initialize()
 	{
@@ -284,8 +298,63 @@ namespace wi::input
 		mouse.position.x = canvas.PhysicalToLogical(mouse.position.x);
 		mouse.position.y = canvas.PhysicalToLogical(mouse.position.y);
 
+		// Which backends may register a pad this frame.
+		//
+		//	Auto keeps RawInput as a FALLBACK: it registers only while XInput and SDL have
+		//	found nothing at all. Anything else and RawInput would take the lower player
+		//	slot for a pad SDL is already handling properly, because it registers first.
+		bool allow_xinput = true, allow_rawinput = true, allow_sdl = true;
+		{
+			int xinput_live = 0, sdl_live = 0;
+			for (int i = 0; i < wi::input::xinput::GetMaxControllerCount(); ++i)
+				if (wi::input::xinput::GetControllerState(nullptr, i)) xinput_live++;
+			for (int i = 0; i < wi::input::sdlinput::GetMaxControllerCount(); ++i)
+				if (wi::input::sdlinput::GetControllerState(nullptr, i)) sdl_live++;
+
+			switch (gamepad_backend)
+			{
+			case GamepadBackend::All:
+				break;
+			case GamepadBackend::SdlOnly:
+				allow_xinput = false;
+				allow_rawinput = false;
+				break;
+			case GamepadBackend::RawInputOnly:
+				allow_xinput = false;
+				allow_sdl = false;
+				break;
+			case GamepadBackend::Auto:
+			default:
+				allow_rawinput = (xinput_live == 0 && sdl_live == 0);
+				break;
+			}
+		}
+
+		// A slot held by a backend that is no longer allowed cannot simply be marked
+		//	disconnected: it would sit at player 0 as a dead slot and the good pad would
+		//	stay at player 1, which is the whole problem this policy exists to fix. The
+		//	list is thrown away instead and rebuilt below, in backend order, this frame.
+		{
+			bool stale = gamepad_backend != gamepad_backend_applied;
+			for (const Controller& c : controllers)
+			{
+				if ((c.deviceType == Controller::XINPUT   && !allow_xinput) ||
+					(c.deviceType == Controller::RAWINPUT && !allow_rawinput) ||
+					(c.deviceType == Controller::SDLINPUT && !allow_sdl))
+				{
+					stale = true;
+					break;
+				}
+			}
+			if (stale)
+			{
+				controllers.clear();
+				gamepad_backend_applied = gamepad_backend;
+			}
+		}
+
 		// Check if low-level XINPUT controller is not registered for playerindex slot and register:
-		for (int i = 0; i < wi::input::xinput::GetMaxControllerCount(); ++i)
+		for (int i = 0; allow_xinput && i < wi::input::xinput::GetMaxControllerCount(); ++i)
 		{
 			if (wi::input::xinput::GetControllerState(nullptr, i))
 			{
@@ -316,7 +385,7 @@ namespace wi::input
 		}
 
 		// Check if low-level RAWINPUT controller is not registered for playerindex slot and register:
-		for (int i = 0; i < wi::input::rawinput::GetMaxControllerCount(); ++i)
+		for (int i = 0; allow_rawinput && i < wi::input::rawinput::GetMaxControllerCount(); ++i)
 		{
 			if (wi::input::rawinput::GetControllerState(nullptr, i))
 			{
@@ -347,7 +416,7 @@ namespace wi::input
 		}
 
 		// Check if low-level SDLINPUT controller is not registered for playerindex slot and register:
-		for (int i = 0; i < wi::input::sdlinput::GetMaxControllerCount(); ++i)
+		for (int i = 0; allow_sdl && i < wi::input::sdlinput::GetMaxControllerCount(); ++i)
 		{
 			if (wi::input::sdlinput::GetControllerState(nullptr, i))
 			{
@@ -616,9 +685,14 @@ namespace wi::input
 				case GAMEPAD_ANALOG_THUMBSTICK_L_AS_BUTTON_LEFT: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_L, playerindex).x < -0.5f;
 				case GAMEPAD_ANALOG_THUMBSTICK_L_AS_BUTTON_DOWN: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_L, playerindex).y < -0.5f;
 				case GAMEPAD_ANALOG_THUMBSTICK_L_AS_BUTTON_RIGHT: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_L, playerindex).x > 0.5f;
-				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_UP: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_R, playerindex).y > 0.5f;
+				// UP means the stick is pushed AWAY from the player, whichever sign the
+				//	right stick is reading in. These two were plain copies of the left
+				//	stick's tests, so with the default down-positive convention "Right
+				//	Stick Up" fired when the stick was pushed DOWN - the one place in the
+				//	engine where the asymmetry was not accounted for.
+				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_UP: return RightStickUpAmount(playerindex) > 0.5f;
 				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_LEFT: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_R, playerindex).x < -0.5f;
-				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_DOWN: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_R, playerindex).y < -0.5f;
+				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_DOWN: return RightStickUpAmount(playerindex) < -0.5f;
 				case GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_RIGHT: return GetAnalog(GAMEPAD_ANALOG_THUMBSTICK_R, playerindex).x > 0.5f;
 				case GAMEPAD_ANALOG_TRIGGER_L_AS_BUTTON: return GetAnalog(GAMEPAD_ANALOG_TRIGGER_L, playerindex).x > 0.5f;
 				case GAMEPAD_ANALOG_TRIGGER_R_AS_BUTTON: return GetAnalog(GAMEPAD_ANALOG_TRIGGER_R, playerindex).x > 0.5f;
@@ -1214,7 +1288,12 @@ namespace wi::input
 			switch (analog)
 			{
 			case GAMEPAD_ANALOG_THUMBSTICK_L: return XMFLOAT4(state.thumbstick_L.x, state.thumbstick_L.y, 0, 0);
-			case GAMEPAD_ANALOG_THUMBSTICK_R: return XMFLOAT4(state.thumbstick_R.x, state.thumbstick_R.y, 0, 0);
+			case GAMEPAD_ANALOG_THUMBSTICK_R:
+				// The one place the right stick's sign convention is decided, so every
+				//	backend and every reader agree without any of them knowing about it.
+				return XMFLOAT4(state.thumbstick_R.x,
+					analog_settings.right_stick_up_positive ? -state.thumbstick_R.y
+					                                        :  state.thumbstick_R.y, 0, 0);
 			case GAMEPAD_ANALOG_TRIGGER_L: return XMFLOAT4(state.trigger_L, 0, 0, 0);
 			case GAMEPAD_ANALOG_TRIGGER_R: return XMFLOAT4(state.trigger_R, 0, 0, 0);
 			}
@@ -1242,6 +1321,28 @@ namespace wi::input
 		default: break;
 		}
 		return "disconnected";
+	}
+
+	void SetGamepadBackend(GamepadBackend policy)
+	{
+		gamepad_backend = policy;
+	}
+
+	GamepadBackend GetGamepadBackend()
+	{
+		return gamepad_backend;
+	}
+
+	const char* ToString(GamepadBackend policy)
+	{
+		switch (policy)
+		{
+		case GamepadBackend::All: return "All backends";
+		case GamepadBackend::SdlOnly: return "SDL only";
+		case GamepadBackend::RawInputOnly: return "RawInput only";
+		case GamepadBackend::Auto:
+		default: return "Auto (RawInput as fallback)";
+		}
 	}
 
 	bool GetControllerState(ControllerState* state, int playerindex)

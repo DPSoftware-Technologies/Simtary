@@ -154,8 +154,12 @@ void DrawTrace(const char* label, const Ring& raw, const Ring& processed,
 
 // The 2D stick gate. This is the view that makes a drifting or square-deadzoned
 // stick obvious at a glance, which a pair of time traces does not.
+// `y_sign` is what the plotted values have to be multiplied by to put a stick pushed
+// AWAY from the player at the top of the pad. It is -1 for the right stick under the
+// engine's down-positive convention: without it the dot travels the opposite way to the
+// thumb, which reads as a broken stick rather than as a sign convention.
 void DrawStickPad(const char* label, const Ring& rx, const Ring& ry,
-                  const Ring& px, const Ring& py, float side = 150.0f) {
+                  const Ring& px, const Ring& py, float side = 150.0f, float y_sign = 1.0f) {
 	ImDrawList* dl = ImGui::GetWindowDrawList();
 	const ImVec2 p0 = ImGui::GetCursorScreenPos();
 	const ImVec2 size(side, side);
@@ -181,14 +185,14 @@ void DrawStickPad(const char* label, const Ring& rx, const Ring& ry,
 		const int idx = rx.count - trail + i;
 		const float a = (float)(i + 1) / (float)trail;
 		const ImVec2 pt(c.x + std::clamp(rx.at(idx), -1.0f, 1.0f) * r,
-		                c.y - std::clamp(ry.at(idx), -1.0f, 1.0f) * r);
+		                c.y - std::clamp(ry.at(idx) * y_sign, -1.0f, 1.0f) * r);
 		dl->AddCircleFilled(pt, 1.5f, IM_COL32(120, 160, 255, (int)(a * 110.0f)));
 	}
 
 	const ImVec2 raw_pt(c.x + std::clamp(rx.newest(), -1.0f, 1.0f) * r,
-	                    c.y - std::clamp(ry.newest(), -1.0f, 1.0f) * r);
+	                    c.y - std::clamp(ry.newest() * y_sign, -1.0f, 1.0f) * r);
 	const ImVec2 out_pt(c.x + std::clamp(px.newest(), -1.0f, 1.0f) * r,
-	                    c.y - std::clamp(py.newest(), -1.0f, 1.0f) * r);
+	                    c.y - std::clamp(py.newest() * y_sign, -1.0f, 1.0f) * r);
 	dl->AddLine(c, out_pt, IM_COL32(120, 255, 140, 120), 1.0f);
 	dl->AddCircleFilled(raw_pt, 3.5f, IM_COL32(120, 160, 255, 255));
 	dl->AddCircleFilled(out_pt, 4.5f, IM_COL32(120, 255, 140, 255));
@@ -254,6 +258,31 @@ void GamepadAnalogWindow(bool* show) {
 		ImGui::TextDisabled("backends have claimed it and player 1 may be reading the wrong one.");
 	}
 
+	// The fix for exactly that, in the window that reports it. On Windows a plain HID pad
+	// is seen by RawInput AND by SDL; RawInput registers first, so it takes player 0 and
+	// the game reads a generic HID parse - no mapping database, its own axis signs - while
+	// SDL's properly mapped copy sits at player 1. Auto keeps RawInput for the case it is
+	// good for: a pad the other backends cannot see at all.
+	{
+		wi::input::GamepadBackend policy = wi::input::GetGamepadBackend();
+		ImGui::SetNextItemWidth(260);
+		if (ImGui::BeginCombo("Backends", wi::input::ToString(policy))) {
+			for (int i = 0; i <= int(wi::input::GamepadBackend::RawInputOnly); ++i) {
+				const wi::input::GamepadBackend option = wi::input::GamepadBackend(i);
+				if (ImGui::Selectable(wi::input::ToString(option), option == policy))
+					wi::input::SetGamepadBackend(option);
+			}
+			ImGui::EndCombo();
+		}
+		ImGui::SameLine();
+		ImGui::TextDisabled("(?)");
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip("Changing this rebuilds the player slots on the next frame,\n"
+			                  "so the pad behind a duplicate moves down to player 0.\n"
+			                  "Saved with the rest of the settings.");
+		}
+	}
+
 	ImGui::Spacing();
 	ImGui::SetNextItemWidth(120);
 	ImGui::InputInt("Player slot", &selected_slot);
@@ -272,7 +301,14 @@ void GamepadAnalogWindow(bool* show) {
 	ImGui::SeparatorText("Stick gate  (blue = device, green = what the game reads)");
 	DrawStickPad("Left stick", h.lx_raw, h.ly_raw, h.lx, h.ly);
 	ImGui::SameLine();
-	DrawStickPad("Right stick", h.rx_raw, h.ry_raw, h.rx, h.ry);
+	// Drawn thumb-side up whatever the stored sign is, and the caption says which sign
+	// that is - the number in the traces below is the raw one either way.
+	const bool r_up_positive = wi::input::GetAnalogSettings().right_stick_up_positive;
+	DrawStickPad("Right stick", h.rx_raw, h.ry_raw, h.rx, h.ry, 150.0f,
+	             r_up_positive ? 1.0f : -1.0f);
+	ImGui::TextDisabled("Both pads are drawn thumb-side up. R Y is stored %s "
+	                    "(the traces below show the stored number).",
+	                    r_up_positive ? "up-positive" : "DOWN-positive, like mouse delta Y");
 
 	// Traces
 	ImGui::SeparatorText("Traces  (10 s, newest on the right)");
@@ -352,6 +388,18 @@ void GamepadAnalogWindow(bool* show) {
 	ImGui::SeparatorText("Deadzone (live, shared by every backend)");
 	{
 		wi::input::AnalogSettings& cfg = wi::input::GetAnalogSettings();
+		if (ImGui::Checkbox("Right stick reads up-positive", &cfg.right_stick_up_positive)) {
+			// nothing to do - GetAnalog reads the flag every call
+		}
+		ImGui::SameLine();
+		ImGui::TextDisabled("(?)");
+		if (ImGui::IsItemHovered()) {
+			ImGui::SetTooltip(
+				"Off (default): the right stick is DOWN-positive, matching mouse delta Y,"
+				" so look code adds both into pitch with one sign."
+				"\nOn: it reads up-positive like the left stick. Look code that mixes it"
+				" with the mouse then needs its pitch sign flipped.");
+		}
 		ImGui::SliderFloat("Stick deadzone", &cfg.stick_deadzone, 0.0f, 0.5f, "%.3f");
 		ImGui::SliderFloat("Stick saturation", &cfg.stick_saturation, 0.5f, 1.0f, "%.3f");
 		ImGui::SliderFloat("Trigger deadzone", &cfg.trigger_deadzone, 0.0f, 0.5f, "%.3f");

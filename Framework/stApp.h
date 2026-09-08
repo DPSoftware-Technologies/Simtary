@@ -26,6 +26,7 @@
 #include "imgui_impl_sdl2.h"
 #include "SceneManager.h"
 #include "scene/DayNight.h"
+#include "scene/PlayControl.h"
 #include "ZmqHandler.h"
 #include "devui/imbacklog.h"
 #include "devui/imgraphicsettings.h"
@@ -107,6 +108,22 @@ struct AppConfig {
     // Off is the default because a map whose sun was aimed by hand in the editor must
     // not be silently re-aimed on load.
     st::DayNightMode dayNight = st::DayNightMode::Off;
+
+    // Which low-level backends may claim a gamepad.
+    //
+    // On Windows a plain HID pad is seen by RawInput AND by SDL, and RawInput registers
+    // first, so it takes the LOWER player slot - player 0 then reads a generic HID parse
+    // with no mapping database instead of SDL's mapped controller, and the same pad shows
+    // up twice in Simtary > Gamepad Analog. Auto keeps RawInput as a fallback for a pad
+    // the other backends do not see at all, which is what it is actually good for.
+    // The DevUI panel can change it live and the choice is saved.
+    wi::input::GamepadBackend gamepadBackend = wi::input::GamepadBackend::Auto;
+
+    // Which way is up on the right stick. Off - the engine default - is DOWN-positive,
+    // matching mouse delta Y so look code adds stick and mouse into one pitch with one
+    // sign. On makes it up-positive like the left stick, for a game that treats it as a
+    // direction; look code then needs its pitch sign flipped. Saved with the settings.
+    bool rightStickUpPositive = false;
 
     // Background ZMQ subscriber; messages are re-published on the main thread as
     // the "zmq.message" event. Empty = do not start the bridge.

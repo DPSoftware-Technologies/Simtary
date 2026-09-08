@@ -64,8 +64,9 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `render/Optics.*` | `st::Mirror` + `st::Lens` + `st::OpticsSystem` — flat apertures a beam reflects off (`d' = d - 2(d·n)n`) or bends through. `Lens::Type` covers Spherical / Cylindrical / Toric / Aspheric / Axicon / Prism / Window, all one paraxial ray transfer with a different deviation term. `Mirror::dichroic` splits the beam in two (reflect one band, transmit the rest), which is why `Trace()` walks a stack of branches rather than a single chain. `Trace()` is the sequential walk that turns one ray into a list of legs; it lives on the CPU because leg N+1 depends on where leg N landed, which a per-pixel pass cannot discover. Draws nothing, and carries its own “is a beam reaching me” diagnostics because a silent element is otherwise undebuggable. |
 | `render/OpticsComponents.cpp` | The `"sticMirror"` / `"sticLens"` native components. |
 | `scene/Ray.*` | `st::Raycast` / `st::RayHit` / `st::RayQuery` — one raycast over either backend: `Mesh` (`Scene::Intersects`, hits anything drawn, no body needed), `Physics` (`wi::physics::Intersects`, Jolt bodies only), `Both` (nearer wins) or `None`. Also `st::LocalAxes` — the ONE forward-axis table, shared by the projector, laser, ray and optics. |
-| `scene/DayNight.*` | `st::DayNight` - the daylight / time-of-day system. One clock drives one directional light plus the scene's weather: the sun's arc, its colour and intensity, the ambient level, the stars and the sky exposure. The sun is placed ASTRONOMICALLY by default (NOAA solar position from latitude, longitude, time zone and day of year), so it rises in the east and the day is the right length for the place and season; `geographic` off falls back to the simple overhead hoop a hand-rolled cycle usually is. `AppConfig::dayNight` (Off / Adopt / Create) decides what a scene load binds it to. Reach it anywhere via `st::DayNight::Get()`, panel in `Simtary > Day / Night`. |
-| `scene/DayNightComponent.cpp` | The `"sticDayNight"` NATIVE COMPONENT - the same system attached from the editor, so place, date, clock speed and look are scene data that saves with the map and needs no game code. |
+| `scene/DayNight.*` | `st::DayNight` - the daylight / time-of-day system. One clock drives one directional light plus the scene's weather: the sun's arc, its colour and intensity, the ambient level, the stars and the sky exposure. The sun is placed ASTRONOMICALLY by default (NOAA solar position from latitude, longitude, time zone and day of year), so it rises in the east and the day is the right length for the place and season; `geographic` off falls back to the simple overhead hoop a hand-rolled cycle usually is. `AppConfig::dayNight` (Off / Adopt / Create) decides what a scene load binds it to. Reach it anywhere via `st::DayNight::Get()`, panel in `Simtary > Day / Night & Weather`. It also owns the WEATHER: `WeatherState` is the continuous half (cloudiness, cloud darkness, fog density/start/band, wind speed/heading/turbulence, rain, exposure and ambient scaling) and seven named `WeatherPreset`s expand into it. `SetWeather(preset)` eases from what is on screen into the new state over `transitionSeconds`; `Weather()` is what the scene is showing this frame and is what gameplay should read. `autoWeather` re-rolls a preset every `autoIntervalHours` of GAME time from a seeded LCG, so the same seed gives the same weather everywhere. |
+| `scene/PlayControl.*` | `st::PlayControl` - the scene transport. `st::App::Update` hands it the real frame delta and passes what comes back to the scene and the daylight system, so ONE place decides how much time the world sees: `Playing` (realtime x `timeScale`), `PlayingNoPhysics` (animation and logic run, `wi::physics::SetSimulationEnabled(false)`), `Paused` (dt = 0, physics off, `Step()` lets single frames through at `stepDelta`). `Reset()` is a real `SceneManager::Reload()` - Unload + Load - because a scene made of native components holding their own state cannot be rewound. The transport row is drawn on the EDITOR TOOLBAR, beside the gizmo buttons - `GUI(compact)` is the SmallButton form that fits a menu-bar row. It is not on the DevUI menu bar: that is the application's menus, and five buttons plus a slider across it pushed Help and the fps readout off the end. `Simtary > Play/Pause/...` and F5/F6/F7/F8 reach the same transport with no editor open. |
+| `scene/DayNightComponent.cpp` | The `"sticDayNight"` NATIVE COMPONENT - the same system attached from the editor, so place, date, clock speed, look and weather are scene data that saves with the map and needs no game code. `NCA_*_weatherPreset` names the sky, so a map opens in the weather it was designed for. |
 | `scene/RayComponent.*` | The `"sticRay"` native component: a raycast bolted to an entity, re-cast every frame. The shared seam for a laser sight, a rangefinder, an interaction prompt and an “am I aiming at it” HUD. |
 | `render/Framebuffer.*` | `st::gfx::Framebuffer` — an off-screen surface you draw into and hand to a material, a light mask or a projector. CPU mode wraps libgfx (`GFXcanvas`) and owns the staging texture, row pitch and flip; GPU mode is a render target you draw into with `wi::image`/`wi::font` between `Begin()`/`End()`. |
 | `display/DisplaySettings.*` | Player-facing video options: window mode, monitor, resolution, refresh rate, v-sync, frame cap, render scale. NOT DevUI — `st::App::Display().GUI(app)` drops into a game's own options menu, and DevUI renders the same panel in its Display tab. Sole owner of v-sync and the frame cap; `GraphicsSettings` deliberately no longer carries them. |
@@ -124,8 +125,8 @@ counter; only a build of that project does.
 `cmake/SimtaryBootstrap.cmake` is the single include a game needs; it pulls this
 whole workspace in with `add_subdirectory(... EXCLUDE_FROM_ALL)` and exposes:
 
-- `simtary_add_app(NAME ... ORGANIZATION ... ICON ... [SOURCE_DIR] [ASSETS_DIR] [CONTENT_SUBDIR] [EXTRA_SOURCES|INCLUDES|LIBS] [NO_SHADER_WARM] [NO_CRASH_REPORTER] [PACK_ASSETS] [PACK_ONLY] [PACK_NAME] [PACK_PART_SIZE] [PACK_LEVEL] [MODULE] [MODULE_NAME])`
-- `simtary_pack_assets(TARGET ... CONTENT_DIR ... [NAME] [PART_SIZE] [LEVEL] [PACK_SUBDIR] [SCENE_SUBDIR])`
+- `simtary_add_app(NAME ... ORGANIZATION ... ICON ... [SOURCE_DIR] [ASSETS_DIR] [CONTENT_SUBDIR] [SCENE_SUBDIR] [RESOURCE_SUBDIR] [EXTRA_SOURCES|INCLUDES|LIBS] [NO_SHADER_WARM] [NO_CRASH_REPORTER] [PACK_ASSETS] [PACK_ONLY] [PACK_NAME] [PACK_PART_SIZE] [PACK_LEVEL] [PACK_ON_CONFLICT] [MODULE] [MODULE_NAME])`
+- `simtary_pack_assets(TARGET ... CONTENT_DIR ... [SCENE_SRC_DIR] [RESOURCE_DIR ...] [ON_CONFLICT] [NAME] [PART_SIZE] [LEVEL] [PACK_SUBDIR] [SCENE_SUBDIR])`
 - `simtary_compile_shader(TARGET ... SOURCE ... PROFILE ... [ENTRY] [OUTPUT_NAME])`
 - `simtary_faust_regen(NAME ... CLASS ... DSP ... OUTPUT ...)`
 - `Simtary::AppFlags` — the exceptions-off / RTTI-off contract as an INTERFACE target.
@@ -159,6 +160,80 @@ a map left inside `contents/` would be packed AND copied loose, ~37 MB of duplic
 `simtary_add_app(SCENE_SUBDIR ...)` names the folder, `stpack pack --scene-src` is what
 reads it, and its maps' textures still land in the same package. Maps left inside
 `contents/` are still converted, so an older layout keeps working.
+
+**A `.stsd` among the sources is passed through, never converted.** It already IS the
+converted form — the resource block a `.wiscene` carries was lifted out when it was
+made — so the packer copies it to `<exe>/assets/scenes/` byte for byte and reads only
+its reference list, to report which of the resources it names the package will not
+hold. This is what makes "drop a new map in and rebuild" a swap of one map rather than
+a build that silently ships a map with no textures.
+
+**`assets/resources/` is where a swapped map's resources come from.** A `.stsd` is
+metadata plus an entity blob; the textures and meshes it references live in the package
+its `.wiscene` was converted alongside, so a map brought in from elsewhere references
+things this project has never seen. Files under `assets/resources/` are merged into the
+package under their relative names — `assets/resources/textures/wall.dds` becomes
+`textures/wall.dds`, exactly the name the map asks for. `resource/` (singular) is
+accepted as the folder name too. `stpack pack --resource-dir` is the flag;
+`--on-conflict` decides who wins when such a file collides with a resource a map already
+embedded:
+
+| policy | what happens |
+| --- | --- |
+| `override` (default) | the loose file is added FIRST, so the map's embedded copy is skipped by the existing dedup and every reference to that path — in every map — resolves to the new bytes |
+| `add` | both are kept; the loose file is packed as `<name>.<n>.<ext>`. Existing objects keep pointing at the embedded copy, because the names inside a map's entity blob cannot be rewritten from outside the engine |
+| `keep` | the loose file is ignored |
+
+`simtary_add_app(PACK_ON_CONFLICT add)` sets it per project. `stpack pack --strict`
+turns a passed-through map's missing resources from a warning into a failed build.
+
+**Swapping in a map the editor saved.** The editor's `.stsd` references resources by
+name and copies none of them — anything the mounted packages already held stays in those
+packages. So copying only the map into `assets/scenes/` and deleting the `.wiscene`
+leaves the pack with nothing to resolve against, and the map loads white. The recipe:
+
+```
+stpack resources assets/scenes/s1map.wiscene --out assets/resources
+```
+
+which writes the resource block straight out of the map's own source, under the names it
+uses — the layout `--resource-dir` reads. Then the `.wiscene` is free to go. If the
+source has already left, the same command takes the `.stsd` plus the package it was
+packed alongside instead:
+
+```
+stpack resources assets/scenes/s1map.stsd \
+    --pack <exe>/assets/resources/content.strd --out assets/resources
+```
+
+Since the packer MIRRORS as it converts (below), a project that has built once already
+has these files and the recipe is only for a map that arrived from elsewhere.
+
+**Every build mirrors a converted map's resources into `assets/resources/`.**
+`simtary_pack_assets(MIRROR_DIR ...)` - wired to the same folder as `RESOURCE_DIR` by
+`simtary_add_app`, which now CREATES `assets/resources/` rather than merely detecting it.
+A resource of a `.wiscene` exists in exactly one place, inside that file, so a project
+that never copies it out is one `move` away from a package that cannot dress its own map.
+Mirroring costs a stat() per resource on a normal build - the descriptor lists the names,
+a file already present is never rewritten (it may be a deliberate override), and the
+`.wiscene` is re-read only when something is genuinely missing. The first build that
+mirrors a new map writes under a `CONFIGURE_DEPENDS` glob, so CMake re-configures and
+packs once more; the second pass writes nothing and produces the same package.
+
+Moving the `.wiscene` out of the project without either of those is what empties the map. The
+packer builds the package from what it can see; those resources were only ever inside
+that one file, and nothing else in the project holds a copy. The build says so —
+`stpack: ... needs 14 resources the package does not have` — and `--strict` turns that
+warning into a failed build rather than a shipped map with no textures. Keeping both the `.wiscene`
+and the `.stsd` in `assets/scenes/` also works: the map is converted for its resources
+and the hand-placed `.stsd` then passes through over the converted one, so the editor's
+map is what ships.
+
+**A pack sweeps the part files an older, larger pack left behind.** `AssetPackWriter::
+Finish` deletes `<name>.stafp<N>` above the part count it just wrote. Without it a build
+whose content shrank left megabytes of orphan next to a smaller index - no reader would
+ever open them, but an output folder that still looks full is exactly how a package that
+has LOST assets goes unnoticed.
 
 **Assets sync on a custom target, not on POST_BUILD.** `<APP>_Assets` copies
 `assets/` to `<build>/assets` and `assets/contents/` to `<exe>/assets`, and the app
@@ -269,6 +344,58 @@ directional light of every scene that loads - including a map whose sun was aime
 hand in the editor, which would be silently re-aimed to whatever the clock said. A game
 opts in (Milistry does), a scene can call `Create()`/`Adopt()` itself, or a
 `"sticDayNight"` component in the map can bind the system with the map's own settings.
+
+**Weather is a blend between two states, and the flags are deliberately outside it.**
+`WeatherState` holds only floats, because a weather change is a lerp: `SetWeather()`
+records where the sky is NOW as the start, so changing your mind half way through a
+transition carries on from what is on screen instead of snapping back. The switches
+that cannot be half-applied - volumetric clouds on, cloud shadows, height fog - live in
+`Settings` next to it. Two mappings in `ApplyWeather` are worth knowing before touching
+them: cloud cover needs BOTH `coverageAmount` and `coverageMinimum` (amount alone never
+closes the sky, there are always holes where the weather-map noise is low, so only the
+top of the cloudiness range lifts the floor), and `WeatherComponent::windDirection` is a
+vector whose LENGTH is part of the force - emitters use `direction * speed` and springs
+use its magnitude - so the heading becomes a unit vector scaled by `speed / 20`.
+
+**One pad, one player slot - `wi::input::GamepadBackend` decides which backend gets
+it.** On Windows every backend is compiled in and they overlap. XInput and SDL overlap
+is resolved by matching user indices (`sdlinput::GetControllerXInputUserIndex`), but
+RawInput has no handle to match on - it is a generic HID parser that cannot know which
+SDL joystick is the same physical device - so a plain HID pad registers TWICE, and
+RawInput takes the lower slot because its registration loop runs first. Player 0 then
+reads an unmapped HID parse with its own axis signs and deadzones while SDL's mapped
+copy sits at player 1. `GamepadBackend::Auto` (the default, `AppConfig::gamepadBackend`)
+allows RawInput only while XInput and SDL have found nothing, which is the case RawInput
+is actually good for. `All` restores the original behaviour; `SdlOnly` / `RawInputOnly`
+force one. Changing it clears the slot list so it rebuilds in backend order the same
+frame - marking the dead slot disconnected would leave the good pad stranded at player 1,
+which is the bug. The combo is in `Simtary > Gamepad Analog`, saved under `input`.
+
+**The right stick is DOWN-positive on purpose, and that is a trap worth knowing.**
+Every backend stores `thumbstick_L` up-positive and `thumbstick_R` down-positive, so the
+same physical push reads with opposite signs on the two sticks. The reason is camera
+code: mouse delta Y is down-positive, so a look routine can add stick and mouse into one
+pitch with one sign (`PlayerMovement.cpp` does exactly that). Anything that treats the
+right stick as a DIRECTION instead gets it backwards - which is what
+`GAMEPAD_ANALOG_THUMBSTICK_R_AS_BUTTON_UP` did, being a copy of the left stick's test:
+"Right Stick Up" fired when the stick was pushed down. `AnalogSettings::
+right_stick_up_positive` (off by default, `AppConfig::rightStickUpPositive`, saved under
+`input`) flips it at the `GetAnalog` boundary for every backend at once; turn it on and
+look code that mixes stick with mouse needs its pitch sign flipped. The Gamepad Analog
+gates always draw thumb-side up whatever the stored sign is, and say which sign that is.
+
+**Pause is dt = 0, not a skipped update, and the DevUI keeps the real delta.**
+`PlayControl::Apply()` returns the scene's delta; `st::App::Update` gives that to
+`DayNight::Update` and `SceneManager::Update` and nothing else. Input, the standby cap,
+the loading screen and every DevUI window stay on the real frame time, so a paused world
+is one you can still look around, click on and drive the editor camera through - a scene
+that moves a camera from its own `Update()` should use
+`PlayControl::Get().RealDelta()` for it (Scene1's fly camera does). Stepping runs the
+same update path a played frame does, at a fixed `stepDelta`, because a step that took
+the real frame time would advance the world by however long the paused frame happened to
+take. The physics switch is global (`wi::physics::SetSimulationEnabled`), so PlayControl
+writes it only when its own answer changes and a game that turns physics off for its own
+reasons keeps that until the transport actually moves.
 
 **Scene update runs exactly once per frame.** `st::App::Initialize` calls
 `renderPath.setSceneUpdateEnabled(false)`; scenes call `scene.Update(dt)` themselves

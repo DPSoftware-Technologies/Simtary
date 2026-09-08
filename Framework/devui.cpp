@@ -5,6 +5,19 @@
 #include "devui/iminput.h"
 
 void st::App::DevUIMenuBar() {
+    // Transport hotkeys. Checked here rather than through the action maps: these are
+    // DevUI controls, they exist only while the DevUI is drawn, and a game's own keymap
+    // should not have to carry bindings for a tool the player never sees. Skipped while
+    // a text field has the keyboard, or typing "F5" into a rename box would reset the
+    // scene out from under it.
+    if (!ImGui::GetIO().WantCaptureKeyboard) {
+        st::PlayControl& play = st::PlayControl::Get();
+        if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) play.TogglePause();
+        if (ImGui::IsKeyPressed(ImGuiKey_F6, false)) play.Pause();
+        if (ImGui::IsKeyPressed(ImGuiKey_F7, false)) play.Step();
+        if (ImGui::IsKeyPressed(ImGuiKey_F8, false)) play.Reset();
+    }
+
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu(Config().name.c_str())) {
             ImGui::MenuItem("Graphics Settings", NULL, &showGraphicsSettings);
@@ -21,7 +34,7 @@ void st::App::DevUIMenuBar() {
             ImGui::Separator();
             if (ImGui::BeginMenu("Window")) {
                 ImGui::MenuItem("Scene Manager", NULL, &showSceneManager);
-                ImGui::MenuItem("Day / Night", NULL, &showDayNight);
+                ImGui::MenuItem("Day / Night & Weather", NULL, &showDayNight);
                 ImGui::MenuItem("Hierarchy", NULL, &showHierarchy);
                 ImGui::MenuItem("Properties", NULL, &showProperties);
                 ImGui::EndMenu();
@@ -43,6 +56,18 @@ void st::App::DevUIMenuBar() {
                 ImGui::MenuItem("GridHelper", NULL, &STDGridHelper);
                 ImGui::EndMenu();
             }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Play", "F5 toggles", st::PlayControl::Get().State() == st::PlayState::Playing))
+                st::PlayControl::Get().Play();
+            if (ImGui::MenuItem("Play without physics", NULL,
+                                st::PlayControl::Get().State() == st::PlayState::PlayingNoPhysics))
+                st::PlayControl::Get().PlayWithoutPhysics();
+            if (ImGui::MenuItem("Pause", "F6", st::PlayControl::Get().IsPaused()))
+                st::PlayControl::Get().Pause();
+            if (ImGui::MenuItem("Step one frame", "F7", false, st::PlayControl::Get().IsPaused()))
+                st::PlayControl::Get().Step();
+            if (ImGui::MenuItem("Reset scene", "F8"))
+                st::PlayControl::Get().Reset();
             ImGui::Separator();
             DevUISceneSelector();
             ImGui::Separator();
@@ -66,6 +91,11 @@ void st::App::DevUIMenuBar() {
         // Project hook: add your own ImGui::BeginMenu(...) here.
         OnDevUIMenu();
 
+        // The transport is NOT here. It lives on the editor's own toolbar, beside the
+        // gizmo buttons - this bar is the application's menus, and five buttons and a
+        // slider across it pushed Help and the fps readout off the end. The entries
+        // under Simtary and F5..F8 still reach the same transport without the editor.
+
         if (ImGui::BeginMenu("Help")) {
             if (ImGui::MenuItem("About", "")) {
                 showAbout = true;
@@ -79,6 +109,10 @@ void st::App::DevUIMenuBar() {
         char fpsStr[32];
         snprintf(fpsStr, sizeof(fpsStr), "fps: %.1f", ImGui::GetIO().Framerate);
         std::string sceneStr = "scene: " + sceneManager.CurrentName();
+        // A frozen world looks exactly like a still one, so the state is said out loud
+        // next to the frame rate whenever it is not the ordinary case.
+        if (st::PlayControl::Get().State() != st::PlayState::Playing)
+            sceneStr += "  [" + std::string(st::ToString(st::PlayControl::Get().State())) + "]";
         std::string vramStr = "VRAM: " + std::to_string(vram.usage / 1024 / 1024) + "/" + std::to_string(vram.budget / 1024 / 1024) + "MB";
 
         float textWidth = ImGui::CalcTextSize(fpsStr).x 
