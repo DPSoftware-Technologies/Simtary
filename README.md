@@ -1,6 +1,6 @@
 # Simtary
 A High Mobility Multipurpose Workspace Visualizator. Based on Wicked Engine
-<img width="1920" height="1032" alt="image" src="https://github.com/user-attachments/assets/d8e7814f-298e-4022-b648-83c3f410eb04" />
+<img width="1920" height="1032" alt="Screenshot 2026-09-06 035900" src="https://github.com/user-attachments/assets/7c953d28-9f9c-42d9-b6e6-34aceb5f3fb5" />
 
 The shared engine for every game in this workspace.
 ```
