@@ -15,6 +15,7 @@
 #include "input/InputSystem.h"
 
 #include "wiScene.h"
+#include "wiPhysics.h"
 #include "wiRenderer.h"
 #include "wiArchive.h"
 #include "wiHelper.h"
@@ -1035,6 +1036,83 @@ void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3
 	ImGui::End();
 }
 
+// ------------------------------------------------------------- gizmo vs physics ---
+//
+//	Dragging a handle writes a TransformComponent. While the simulation is running that is
+//	not enough on its own: the physics feedback pass rewrites the transform of every ACTIVE
+//	dynamic body from the solver every frame, so the drag is undone as fast as it is made,
+//	and a body that is ASLEEP takes the transform but is never woken by it, so it hangs in
+//	the air wherever it was left.
+//
+//	So a drag on a dynamic body borrows it. KINEMATIC is exactly the right state to borrow
+//	into: the physics update already feeds a kinematic body the scene transform every frame
+//	(MoveKinematic), which means the body tracks the handle for free, keeps its collision
+//	shape, and SHOVES whatever it touches instead of passing through it - dragging a crate
+//	into a stack scatters the stack, which is the point of editing a live simulation.
+//
+//	Nothing here applies to a body the solver is not fighting over: mass 0 (static) and
+//	already-kinematic bodies are fed the transform as-is, and with physics off every body is.
+
+void st::EditorUI::GizmoPhysicsGrab(wi::scene::Scene& scene, Entity entity)
+{
+	gizmoPhysicsGrabbed_ = false;
+	if (!wi::physics::IsSimulationEnabled())
+		return;
+
+	wi::scene::RigidBodyPhysicsComponent* rb = scene.rigidbodies.GetComponent(entity);
+	if (rb == nullptr || rb->physicsobject == nullptr)
+		return;
+	if (rb->mass == 0.0f || rb->IsKinematic())
+		return; // static or already kinematic: the update system follows the transform already
+
+	gizmoGrabWasKinematic_ = rb->IsKinematic();
+	rb->SetKinematic(true);
+	gizmoPhysicsGrabbed_ = true;
+}
+
+void st::EditorUI::GizmoPhysicsRelease(wi::scene::Scene& scene, Entity entity)
+{
+	wi::scene::RigidBodyPhysicsComponent* rb = scene.rigidbodies.GetComponent(entity);
+	if (rb == nullptr)
+	{
+		gizmoPhysicsGrabbed_ = false;
+		return;
+	}
+
+	// A scale drag changed the SHAPE, and the collision shape is built once, at body
+	//	creation, with the transform scale baked in. Without a rebuild the object draws at its
+	//	new size and collides at its old one. This is wanted whether or not the body was
+	//	grabbed - a static collider resized with physics off has the same problem.
+	const bool scaled = gizmoOp_ == ImGuizmo::SCALE;
+	if (scaled)
+	{
+		rb->SetRefreshParametersNeeded();
+	}
+
+	if (!gizmoPhysicsGrabbed_)
+		return;
+	gizmoPhysicsGrabbed_ = false;
+
+	rb->SetKinematic(gizmoGrabWasKinematic_);
+
+	// A rebuild recreates the body at the transform, awake, so the rest would only fight it.
+	if (scaled)
+		return;
+
+	// Hand it back exactly where the handle left it, at rest: MoveKinematic has been carrying
+	//	the velocity needed to chase the pointer, and letting that survive the release would
+	//	fling the object across the level on mouse-up. Waking it is the whole point - it has to
+	//	fall from where it was put.
+	const TransformComponent* t = scene.transforms.GetComponent(entity);
+	if (t != nullptr)
+	{
+		wi::physics::SetPositionAndRotation(*rb, t->GetPosition(), t->GetRotation());
+	}
+	wi::physics::SetLinearVelocity(*rb, XMFLOAT3(0, 0, 0));
+	wi::physics::SetAngularVelocity(*rb, XMFLOAT3(0, 0, 0));
+	wi::physics::SetActivationState(*rb, wi::physics::ActivationState::Active);
+}
+
 bool st::EditorUI::DrawGizmo(wi::scene::Scene& scene, Entity selected, const CameraComponent& cam,
 	ImVec2 imagePos, ImVec2 imageSize)
 {
@@ -1077,6 +1155,7 @@ bool st::EditorUI::DrawGizmo(wi::scene::Scene& scene, Entity selected, const Cam
 		{
 			gizmoDragging_   = true;
 			gizmoDragEntity_ = selected; // Draw() closes the undo step when the drag ends
+			GizmoPhysicsGrab(scene, selected);
 		}
 
 		// Park ImGui's ActiveId on a private id for the duration of the drag, so no item in
@@ -1900,6 +1979,7 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	if (gizmoDragging_ && !ImGuizmo::IsUsingAny())
 	{
 		history_.PushTransform(scene, gizmoDragEntity_, GizmoLabel(), gizmoPreDrag_);
+		GizmoPhysicsRelease(scene, gizmoDragEntity_);
 		gizmoDragging_ = false;
 	}
 

@@ -56,6 +56,7 @@
 #endif // JPH_DEBUG_RENDERER
 
 #include <thread>
+#include <cmath>
 
 // Disable common warnings triggered by Jolt, you can use JPH_SUPPRESS_WARNING_PUSH / JPH_SUPPRESS_WARNING_POP to store and restore the warning state
 JPH_SUPPRESS_WARNINGS
@@ -409,6 +410,9 @@ namespace wi::physics
 			float alpha = 0;
 			bool activate_all_rigid_bodies = false;
 			bool optimize_broadphase = false;
+			// Simulation state as of the previous update, so the OFF->ON edge is visible from
+			//	inside the update. Bodies sleep through a pause; that edge is where they wake.
+			bool prev_simulation_enabled = false;
 			float GetKinematicDT(float dt) const
 			{
 				return clamp(accumulator + dt, 0.0f, TIMESTEP * ACCURACY);
@@ -2457,6 +2461,17 @@ namespace wi::physics
 		PhysicsScene& physics_scene = GetPhysicsScene(scene);
 		physics_scene.physics_system.SetGravity(cast(scene.weather.gravity));
 
+		// Simulation just came back on (Play pressed, a pause lifted, a game switching physics
+		//	back in). Every dynamic body slept through the time it was off - the update below
+		//	feeds a sleeping body the scene transform without waking it - so without this the
+		//	scene resumes frozen and only starts moving where something happens to collide.
+		const bool simulation_enabled = IsSimulationEnabled();
+		if (simulation_enabled && !physics_scene.prev_simulation_enabled)
+		{
+			physics_scene.activate_all_rigid_bodies = true;
+		}
+		physics_scene.prev_simulation_enabled = simulation_enabled;
+
 		if (physics_scene.optimize_broadphase)
 		{
 			physics_scene.optimize_broadphase = false;
@@ -2880,13 +2895,41 @@ namespace wi::physics
 							physics_scene.GetKinematicDT(scene.dt)
 						);
 					}
-					else if (currentMotionType == EMotionType::Static || !is_active)
+					else if (currentMotionType == EMotionType::Static)
 					{
 						body_interface.SetPositionAndRotation(
 							physicsobject.bodyID,
 							m.GetTranslation(),
 							m.GetQuaternion().Normalized(),
 							EActivation::DontActivate
+						);
+					}
+					else if (!is_active)
+					{
+						// A sleeping dynamic body still follows the scene transform, because that
+						//	is how everything outside physics - the editor gizmo, a property field,
+						//	a script - moves it. Following it SILENTLY is what left an object hanging
+						//	in mid-air after being dropped somewhere else: Jolt wakes a sleeping body
+						//	only when something touches it, so nothing fell until an unrelated
+						//	collision happened by. A body moved from outside is woken here instead.
+						const Vec3 target_position = m.GetTranslation();
+						const Quat target_rotation = m.GetQuaternion().Normalized();
+						const Vec3 current_position = body_interface.GetPosition(physicsobject.bodyID);
+						const Quat current_rotation = body_interface.GetRotation(physicsobject.bodyID);
+
+						// 0.1 mm and ~0.25 degrees: well under anything a user can nudge, well over
+						//	the float noise of the interpolated feedback pass that wrote this
+						//	transform from this same body a moment ago. The rotation test is |dot|
+						//	because q and -q are the same orientation.
+						const bool moved =
+							!target_position.IsClose(current_position, 1.0e-8f) ||
+							std::abs(target_rotation.Dot(current_rotation)) < 0.99999f;
+
+						body_interface.SetPositionAndRotation(
+							physicsobject.bodyID,
+							target_position,
+							target_rotation,
+							moved ? EActivation::Activate : EActivation::DontActivate
 						);
 					}
 				}

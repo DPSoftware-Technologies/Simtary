@@ -172,6 +172,11 @@ private:
     XMFLOAT3 SpawnPoint() const;
     // Label the current gizmo operation goes into the undo list under.
     const char* GizmoLabel() const;
+    // Take a rigid body out of the solver's hands for the length of a gizmo drag, and give
+    // it back (at rest, awake) when the drag ends. No-ops on anything the solver is not
+    // fighting the gizmo over: static bodies, already-kinematic bodies, physics switched off.
+    void GizmoPhysicsGrab(wi::scene::Scene& scene, wi::ecs::Entity entity);
+    void GizmoPhysicsRelease(wi::scene::Scene& scene, wi::ecs::Entity entity);
     // Pull the free camera back to where the selected entity fills the view (F over the
     // editor viewport), keeping the current view angle.
     void FrameSelected(wi::scene::Scene& scene, wi::ecs::Entity selected);
@@ -223,6 +228,12 @@ private:
     bool             gizmoDragging_   = false;
     wi::ecs::Entity  gizmoDragEntity_ = wi::ecs::INVALID_ENTITY;
     TransformSnapshot gizmoPreDrag_;
+    // Physics hand-off for a drag on a rigid body while the simulation is RUNNING. The body
+    // is held kinematic for the length of the drag so it tracks the handle instead of being
+    // overwritten by the solver, and is handed back to the solver on release. These remember
+    // what it was before, so a body the game authored as kinematic stays that way.
+    bool             gizmoPhysicsGrabbed_    = false;
+    bool             gizmoGrabWasKinematic_  = false;
     float snapTranslate_    = 0.5f;
     float snapRotateDeg_    = 15.0f;
     float snapScale_        = 0.1f;
