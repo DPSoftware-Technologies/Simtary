@@ -172,6 +172,12 @@ private:
     XMFLOAT3 SpawnPoint() const;
     // Label the current gizmo operation goes into the undo list under.
     const char* GizmoLabel() const;
+    // The debug-draw menu is remembered in options.stad, so turning a draw off survives a
+    // relaunch. Loaded lazily on the first Draw (the settings file is not open yet when the
+    // editor is constructed), written whenever a row in the menu is clicked.
+    void LoadDebugSettings();
+    void SaveDebugSettings() const;
+
     // Take a rigid body out of the solver's hands for the length of a gizmo drag, and give
     // it back (at rest, awake) when the drag ends. No-ops on anything the solver is not
     // fighting the gizmo over: static bodies, already-kinematic bodies, physics switched off.
@@ -258,6 +264,7 @@ private:
         bool voxels        = false;
         int  voxelClipmap  = 1;
     } debug_;
+    bool debugSettingsLoaded_ = false;
 
     // The selection, captured at the end of Draw(). RenderEditorView runs later in the frame,
     // from st::App::Render, and is handed no selection of its own.

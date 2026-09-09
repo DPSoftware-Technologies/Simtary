@@ -924,6 +924,24 @@ void DrawRigidBody(Scene& scene, Entity e, st::EditorHistory* history)
 	refresh |= ImGui::DragFloat("Mass", &c->mass, 0.05f, 0.0f, 100000.0f);
 	track("Set Mass");
 	HelpMarker("0 makes the body static.");
+
+	// A triangle mesh or height field is a wall, not a solid: Jolt can only collide AGAINST
+	//	one, never move one, and two of them never collide with each other. A body given one
+	//	with a mass above 0 falls through the floor, which reads as "physics is broken" long
+	//	before anyone thinks to look at the shape dropdown. Say it where the shape is set.
+	if (c->mass > 0.0f &&
+		(c->shape == RigidBodyPhysicsComponent::CollisionShape::TRIANGLE_MESH ||
+		 c->shape == RigidBodyPhysicsComponent::CollisionShape::HEIGHTFIELD))
+	{
+		ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s",
+			"This shape can only be static.");
+		ImGui::TextWrapped("A %s never collides with another mesh and cannot be moved by the"
+			" solver, so this body will fall through the world. Use Convex hull (or a Box /"
+			" Sphere / Capsule / Cylinder) to make it move, or set Mass to 0 to keep it as a"
+			" static collider.",
+			c->shape == RigidBodyPhysicsComponent::CollisionShape::TRIANGLE_MESH
+				? "triangle mesh" : "height field");
+	}
 	refresh |= ImGui::DragFloat("Friction", &c->friction, 0.005f, 0.0f, 2.0f);
 	track("Set Friction");
 	refresh |= ImGui::DragFloat("Restitution", &c->restitution, 0.005f, 0.0f, 1.0f);
@@ -943,7 +961,14 @@ void DrawRigidBody(Scene& scene, Entity e, st::EditorHistory* history)
 	FlagCheckbox("Disable deactivation", [&] { return c->IsDisableDeactivation(); },
 		[&](bool v) { c->SetDisableDeactivation(v); refresh = true; });
 	FlagCheckbox("Start deactivated", [&] { return c->IsStartDeactivated(); },
-		[&](bool v) { c->SetStartDeactivated(v); refresh = true; });
+		[&](bool v) { c->SetStartDeactivated(v); rebuild = true; });
+	HelpMarker("The body is created ASLEEP. It ignores gravity and holds its position until "
+		"something collides with it. Leave it off unless a prop is meant to hang there.");
+	if (c->IsStartDeactivated() && !c->IsKinematic() && c->mass > 0.0f)
+	{
+		ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.35f, 1.0f), "%s",
+			"Asleep on creation - it will not fall until something hits it.");
+	}
 	FlagCheckbox("Character physics", [&] { return c->IsCharacterPhysics(); },
 		[&](bool v) { c->SetCharacterPhysics(v); rebuild = true; });
 

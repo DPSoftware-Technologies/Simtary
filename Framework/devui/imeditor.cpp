@@ -3,6 +3,7 @@
 #include "scene/PlayControl.h"
 
 #include "io/asset/AssetSystem.h"
+#include "io/SettingsManager.h"
 #include "io/model/ModelImporter.h"
 #include "io/asset/SceneDescriptor.h"
 #include "io/asset/AssetPackWriter.h"
@@ -641,33 +642,36 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 
 			ImGui::TextDisabled("debug draws - editor viewport only");
 			ImGui::Separator();
-			ImGui::MenuItem("Cameras", nullptr, &debug_.cameras);
+			bool debugChanged = false;
+			debugChanged |= ImGui::MenuItem("Cameras", nullptr, &debug_.cameras);
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Wireframe frustum for every Camera component in the scene");
-			ImGui::MenuItem("Active game camera", nullptr, &debug_.gameCamera);
+			debugChanged |= ImGui::MenuItem("Active game camera", nullptr, &debug_.gameCamera);
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("The camera the game renders through. It is a standalone wi::scene::GetCamera(), not a scene component, so the engine's own camera debug pass never draws it.");
 			ImGui::Separator();
-			ImGui::MenuItem("Colliders", nullptr, &debug_.colliders);
-			ImGui::MenuItem("Emitters", nullptr, &debug_.emitters);
-			ImGui::MenuItem("Env probes", nullptr, &debug_.envProbes);
-			ImGui::MenuItem("Force fields", nullptr, &debug_.forceFields);
-			ImGui::MenuItem("Springs", nullptr, &debug_.springs);
-			ImGui::MenuItem("Bone lines", nullptr, &debug_.boneLines);
-			ImGui::MenuItem("Partition tree", nullptr, &debug_.partitionTree);
+			debugChanged |= ImGui::MenuItem("Colliders", nullptr, &debug_.colliders);
+			debugChanged |= ImGui::MenuItem("Emitters", nullptr, &debug_.emitters);
+			debugChanged |= ImGui::MenuItem("Env probes", nullptr, &debug_.envProbes);
+			debugChanged |= ImGui::MenuItem("Force fields", nullptr, &debug_.forceFields);
+			debugChanged |= ImGui::MenuItem("Springs", nullptr, &debug_.springs);
+			debugChanged |= ImGui::MenuItem("Bone lines", nullptr, &debug_.boneLines);
+			debugChanged |= ImGui::MenuItem("Partition tree", nullptr, &debug_.partitionTree);
 			ImGui::Separator();
-			ImGui::MenuItem("Selection highlight", nullptr, &debug_.selection);
+			debugChanged |= ImGui::MenuItem("Selection highlight", nullptr, &debug_.selection);
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Wireframe box around the selected entity and, dimmed, around every "
 					"part under it. An imported model's root has no bounds of its own, which is why "
 					"the subtree is drawn and not just the row you clicked.");
 			ImGui::Separator();
-			ImGui::MenuItem("Grid", nullptr, &debug_.grid);
-			ImGui::MenuItem("Voxel helper", nullptr, &debug_.voxels);
+			debugChanged |= ImGui::MenuItem("Grid", nullptr, &debug_.grid);
+			debugChanged |= ImGui::MenuItem("Voxel helper", nullptr, &debug_.voxels);
 			ImGui::BeginDisabled(!debug_.voxels);
 			ImGui::SetNextItemWidth(90);
-			ImGui::DragInt("clipmap", &debug_.voxelClipmap, 1, 0, 7);
+			debugChanged |= ImGui::DragInt("clipmap", &debug_.voxelClipmap, 1, 0, 7);
 			ImGui::EndDisabled();
+			if (debugChanged)
+				SaveDebugSettings();
 			ImGui::EndMenu();
 		}
 
@@ -1036,6 +1040,61 @@ void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3
 	ImGui::End();
 }
 
+// ------------------------------------------------------------ debug draw prefs ---
+//
+//	A debug draw the user switched off should stay off across a relaunch - it is a workspace
+//	preference, not scene data, so it lives in the options store beside the graphics settings
+//	rather than in the scene file. Flat keys under one prefix: the store is shared with the
+//	rest of the game's options, and "editor.debugdraw." keeps this section to itself.
+
+namespace
+{
+	const char* const kDebugPrefix = "editor.debugdraw.";
+	inline std::string DebugKey(const char* name) { return std::string(kDebugPrefix) + name; }
+}
+
+void st::EditorUI::LoadDebugSettings()
+{
+	const st::NbtStore& store = st::SettingsManager::Get().Store();
+
+	// Each default is the value the member already carries, so a key that was never written
+	//	leaves the built-in default alone - including the two camera draws, which start on.
+	debug_.cameras       = store.GetBool(DebugKey("cameras"),       debug_.cameras);
+	debug_.gameCamera    = store.GetBool(DebugKey("gameCamera"),    debug_.gameCamera);
+	debug_.colliders     = store.GetBool(DebugKey("colliders"),     debug_.colliders);
+	debug_.emitters      = store.GetBool(DebugKey("emitters"),      debug_.emitters);
+	debug_.envProbes     = store.GetBool(DebugKey("envProbes"),     debug_.envProbes);
+	debug_.forceFields   = store.GetBool(DebugKey("forceFields"),   debug_.forceFields);
+	debug_.springs       = store.GetBool(DebugKey("springs"),       debug_.springs);
+	debug_.boneLines     = store.GetBool(DebugKey("boneLines"),     debug_.boneLines);
+	debug_.partitionTree = store.GetBool(DebugKey("partitionTree"), debug_.partitionTree);
+	debug_.selection     = store.GetBool(DebugKey("selection"),     debug_.selection);
+	debug_.grid          = store.GetBool(DebugKey("grid"),          debug_.grid);
+	debug_.voxels        = store.GetBool(DebugKey("voxels"),        debug_.voxels);
+	debug_.voxelClipmap  = store.GetInt (DebugKey("voxelClipmap"),  debug_.voxelClipmap);
+}
+
+void st::EditorUI::SaveDebugSettings() const
+{
+	st::NbtStore& store = st::SettingsManager::Get().Store();
+
+	store.SetBool(DebugKey("cameras"),       debug_.cameras);
+	store.SetBool(DebugKey("gameCamera"),    debug_.gameCamera);
+	store.SetBool(DebugKey("colliders"),     debug_.colliders);
+	store.SetBool(DebugKey("emitters"),      debug_.emitters);
+	store.SetBool(DebugKey("envProbes"),     debug_.envProbes);
+	store.SetBool(DebugKey("forceFields"),   debug_.forceFields);
+	store.SetBool(DebugKey("springs"),       debug_.springs);
+	store.SetBool(DebugKey("boneLines"),     debug_.boneLines);
+	store.SetBool(DebugKey("partitionTree"), debug_.partitionTree);
+	store.SetBool(DebugKey("selection"),     debug_.selection);
+	store.SetBool(DebugKey("grid"),          debug_.grid);
+	store.SetBool(DebugKey("voxels"),        debug_.voxels);
+	store.SetInt (DebugKey("voxelClipmap"),  debug_.voxelClipmap);
+
+	st::SettingsManager::Get().Save();
+}
+
 // ------------------------------------------------------------- gizmo vs physics ---
 //
 //	Dragging a handle writes a TransformComponent. While the simulation is running that is
@@ -1170,6 +1229,27 @@ bool st::EditorUI::DrawGizmo(wi::scene::Scene& scene, Entity selected, const Cam
 			ImGui::SetActiveID(dragID, ImGui::GetCurrentWindow());
 		else
 			ImGui::KeepAliveID(dragID);
+	}
+
+	// TEMP diagnostic: while a drag is live on a body, print what physics actually thinks is
+	//	going on, over the viewport. Remove once the gizmo/physics hand-off is confirmed.
+	if (gizmoDragging_)
+	{
+		if (wi::scene::RigidBodyPhysicsComponent* rb = scene.rigidbodies.GetComponent(selected))
+		{
+			const int dbg = wi::physics::DbgMotionType(*rb);
+			const XMFLOAT3 bp = wi::physics::GetPosition(*rb);
+			const XMFLOAT3 tp = t->GetPosition();
+			char line[256];
+			snprintf(line, sizeof(line),
+				"grab %d | flagKin %d | jolt %d (%s) | body %.2f %.2f %.2f | xform %.2f %.2f %.2f",
+				(int)gizmoPhysicsGrabbed_, (int)rb->IsKinematic(), dbg,
+				dbg >= 10 ? "awake" : "asleep",
+				bp.x, bp.y, bp.z, tp.x, tp.y, tp.z);
+			ImGui::GetWindowDrawList()->AddText(
+				ImVec2(imagePos.x + 8.0f, imagePos.y + 8.0f),
+				IM_COL32(255, 220, 80, 255), line);
+		}
 	}
 
 	if (!changed)
@@ -1873,6 +1953,12 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 {
 	if (!enabled_)
 		return;
+
+	if (!debugSettingsLoaded_)
+	{
+		debugSettingsLoaded_ = true;
+		LoadDebugSettings();
+	}
 
 	wi::scene::Scene& scene = wi::scene::GetScene();
 

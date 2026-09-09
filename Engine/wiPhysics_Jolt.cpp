@@ -882,6 +882,26 @@ namespace wi::physics
 
 				const EMotionType motionType = physicscomponent.mass == 0 ? EMotionType::Static : (physicscomponent.IsKinematic() ? EMotionType::Kinematic : EMotionType::Dynamic);
 
+				// A triangle mesh (and a height field, and a plane) is a one-sided surface with no
+				//	interior, so Jolt can only ever use it as a wall: Shape::MustBeStatic() is true
+				//	for all of them, mesh-against-mesh has no collision detection at all, and the
+				//	inertia a mesh reports is a guess off its bounding box. Handing one to a moving
+				//	body is not a tuning mistake, it is a body that will fall through the world -
+				//	which looks exactly like "physics is broken" from the outside, with nothing in
+				//	the log to say otherwise. So say it, and name the fix.
+				if (motionType != EMotionType::Static && physicsobject.shape->MustBeStatic())
+				{
+					wi::backlog::post(
+						"AddRigidBody: entity " + std::to_string((unsigned)entity) +
+						" has a mass of " + std::to_string(physicscomponent.mass) +
+						" (so it is " + (motionType == EMotionType::Kinematic ? "kinematic" : "dynamic") +
+						") but its collision shape must be static - a triangle mesh, height field or"
+						" plane. It will not collide correctly and can fall through other geometry."
+						" Give it a Box, Sphere, Capsule, Cylinder or Convex hull shape, or set its"
+						" mass to 0 to make it a static collider.",
+						wi::backlog::LogLevel::Warning);
+				}
+
 				BodyCreationSettings settings(
 					physicsobject.shape.GetPtr(),
 					local_offset + physicsobject.prev_position,
