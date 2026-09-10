@@ -514,14 +514,24 @@ namespace st::audio
 				if (!c.enabled.load(std::memory_order_acquire) || !c.renderer.IsValid()) continue;
 				++collectorCount;
 
+				// The renderer writes `channels` planes; the tap was sized once, at
+				// CreateCollector, and cannot be resized here without pulling the ground
+				// out from under a game-thread reader. They agree unless somebody changed
+				// a channel-count setting on a live collector from C++ - stAudioCollector
+				// rebuilds instead - so keep enough planes for both and hand the tap
+				// nulls (which Write() treats as silence) for anything the renderer is
+				// not filling this block.
 				const int channels = c.renderer.GetOutputChannels();
-				if ((int)c.planes.size() != channels)
+				const int tapChannels = c.output.GetChannels();
+				const int planeCount = std::max(channels, tapChannels);
+				if ((int)c.planes.size() != planeCount)
 				{
-					c.planes.assign((size_t)channels, std::vector<float>((size_t)frames, 0.0f));
-					c.planePtrs.resize((size_t)channels);
-					for (int ch = 0; ch < channels; ++ch)
-						c.planePtrs[(size_t)ch] = c.planes[(size_t)ch].data();
+					c.planes.assign((size_t)planeCount, std::vector<float>((size_t)frames, 0.0f));
+					c.planePtrs.resize((size_t)planeCount);
 				}
+				for (int ch = 0; ch < planeCount; ++ch)
+					c.planePtrs[(size_t)ch] = ch < channels ? c.planes[(size_t)ch].data() : nullptr;
+
 				c.renderer.EndBlock(c.planePtrs.data(), frames);
 
 				const float volume = c.volume.load(std::memory_order_relaxed);
@@ -536,12 +546,29 @@ namespace st::audio
 
 				if (c.primary.load(std::memory_order_relaxed) && c.routeToOutput.load(std::memory_order_relaxed))
 				{
-					const float* L = c.planes[0].data();
-					const float* R = c.planes[(size_t)std::min(1, channels - 1)].data();
-					for (int i = 0; i < frames; ++i)
+					// The device bus is stereo, so a 5.0 or 7.0 microphone that is the
+					// player's ears gets folded down here. Read the layout off the
+					// renderer, not off c.settings: the renderer's copy is owned by this
+					// thread, c.settings is written by the game thread every frame.
+					const CollectorSpatialSettings& rs = c.renderer.GetSettings();
+					if (rs.output == SpatialOutput::Ambisonics)
 					{
-						mixL[(size_t)i] += L[i];
-						mixR[(size_t)i] += R[i];
+						// B-format has no stereo pair to fold - W is omnidirectional and
+						// the rest are gradients. Take the first two planes as they are,
+						// which is what this did before layouts existed; a collector set
+						// to Ambisonics is meant to be read from its tap and decoded by
+						// whoever asked for B-format, not routed to the speakers.
+						const float* L = c.planes[0].data();
+						const float* R = c.planes[(size_t)std::min(1, channels - 1)].data();
+						for (int i = 0; i < frames; ++i)
+						{
+							mixL[(size_t)i] += L[i];
+							mixR[(size_t)i] += R[i];
+						}
+					}
+					else
+					{
+						DownmixToStereo(c.planePtrs.data(), rs.layout, frames, mixL.data(), mixR.data());
 					}
 				}
 			}
@@ -1139,15 +1166,19 @@ namespace st::audio
 		return emitter;
 	}
 
-	CollectorRef AudioEngine::CreateCollector(const std::string& name)
+	CollectorRef AudioEngine::CreateCollector(const std::string& name, const CollectorSpatialSettings& settings)
 	{
 		Impl& s = *impl_;
 		CollectorRef collector(new Collector());
 		collector->SetName(name);
+		// Before the renderer, not after: the renderer's bus width and the tap's channel
+		// count both come from these, and neither can be resized once the collector is
+		// live and the game thread is reading it.
+		collector->impl_->settings = settings;
 
 		const int frames = s.config.frameSize > 0 ? s.config.frameSize : 512;
 		collector->impl_->renderer.Create(collector->impl_->settings);
-		const int channels = collector->impl_->renderer.GetOutputChannels();
+		const int channels = CollectorChannels(collector->impl_->settings);
 		collector->impl_->output.Reset(channels, frames * 8, AudioBuffer::Mode::Tap);
 
 		std::lock_guard<std::mutex> lock(s.registryMutex);

@@ -29,6 +29,8 @@
 //	NCI_1                     = "stAudioCollector"
 //	NCA_1_priority            = 100
 //	NCA_1_output              = 0        (0 binaural, 1 panning, 2 ambisonics)
+//	NCA_1_channelLayout       = 2        (0 mono, 1 stereo, 2 surround 5.0, 3 surround 7.0)
+//	NCA_1_invertStereo        = false
 //
 // or from C++ on the same entity:
 //
@@ -201,6 +203,17 @@ namespace st
 
 		// Steam Audio: listener options
 		int   output = (int)audio::SpatialOutput::Binaural;   // 0 binaural, 1 panning, 2 ambisonics
+		// Speaker layout this microphone records in: 0 mono, 1 stereo, 2 surround 5.0,
+		// 3 surround 7.0 - see audio::ChannelLayout for the channel order. Binaural is
+		// an HRTF pair and only applies at stereo; the other layouts pan to their
+		// speakers instead. Ambisonics output ignores this and uses ambisonicsOrder.
+		//
+		// Changing it at runtime rebuilds the collector, because the output buffer's
+		// channel count is fixed when the collector is created.
+		int   channelLayout = (int)audio::ChannelLayout::Stereo;
+		// Mirror the microphone left-to-right: swaps L/R, and the surround pairs too
+		// (5.0 also swaps RL/RR, 7.0 also swaps SL/SR). Ignored for ambisonics.
+		bool  invertStereo = false;
 		int   interpolation = (int)audio::HRTFInterpolation::Bilinear;
 		int   normalization = (int)audio::HRTFNormalization::None; // 0 none, 1 RMS
 		int   ambisonicsOrder = 1;
@@ -211,9 +224,10 @@ namespace st
 		// access
 		const audio::CollectorRef& GetCollector() const { return collector_; }
 
-		// What this microphone hears, updated every audio block. Stereo for
-		// binaural/panning output, (order+1)^2 channels for ambisonics. Peek it for a
-		// level meter, drain it into a file to record, packetize it for a radio.
+		// What this microphone hears, updated every audio block. One channel per speaker
+		// in `channelLayout` for binaural/panning output - 1, 2, 5 or 7 - and
+		// (order+1)^2 channels for ambisonics. Peek it for a level meter, drain it into
+		// a file to record, packetize it for a radio.
 		const audio::AudioBuffer* GetOutputBuffer() const { return collector_ ? &collector_->Output() : nullptr; }
 		audio::AudioBuffer* GetOutputBuffer() { return collector_ ? &collector_->Output() : nullptr; }
 
@@ -229,6 +243,15 @@ namespace st
 		void DescribeParams(wi::vector<NativeParam>& out) override;
 
 	private:
+		// Build the engine-side settings struct from the component's fields. Used both
+		// to create the collector (where the channel-count fields have to be right up
+		// front) and to push changes into a live one.
+		audio::CollectorSpatialSettings MakeSpatialSettings() const;
+		// Create the engine collector and seat it at the entity. Split out of Start()
+		// because a layout change re-runs it, and re-running Start() would re-Bind every
+		// field and undo whatever the caller just changed.
+		void CreateCollector();
+
 		audio::CollectorRef collector_;
 	};
 }

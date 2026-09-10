@@ -191,9 +191,15 @@ namespace st::audio
 		~Collector();
 
 		// The collector's own rendering of the whole scene, filled every block:
-		// stereo for Binaural/Panning output, (order+1)^2 channels for Ambisonics.
-		// A Tap buffer, so reading never steals from another reader - a recorder and a
-		// level meter can watch the same microphone.
+		// ChannelCountFor(layout) channels for Binaural/Panning output - 1, 2, 5 or 7 -
+		// and (order+1)^2 channels for Ambisonics. A Tap buffer, so reading never steals
+		// from another reader - a recorder and a level meter can watch the same
+		// microphone.
+		//
+		// The channel count is FIXED at CreateCollector: a game-thread reader holds
+		// pointers into it, so the audio thread cannot reallocate underneath. Changing
+		// the layout of a live collector means destroying it and creating another, which
+		// is what stAudioCollector does when the field changes.
 		const AudioBuffer& Output() const;
 		AudioBuffer& Output();
 
@@ -261,7 +267,11 @@ namespace st::audio
 		// The engine keeps a reference of its own, so an emitter stays alive and
 		// audible after the caller drops the handle - until Destroy() or auto-destroy.
 		EmitterRef CreateEmitter(const std::string& name = "emitter");
-		CollectorRef CreateCollector(const std::string& name = "collector");
+		// The collector's output buffer is allocated with a fixed channel count, so the
+		// settings that decide that count - layout, output mode, ambisonic order - have
+		// to be handed in here rather than pushed in afterwards.
+		CollectorRef CreateCollector(const std::string& name = "collector",
+			const CollectorSpatialSettings& settings = {});
 		void Destroy(const EmitterRef& emitter);
 		void Destroy(const CollectorRef& collector);
 

@@ -545,6 +545,8 @@ namespace st
 		Bind(routeToOutput, "routeToOutput");
 		Bind(followTransform, "followTransform");
 		Bind(output, "output");
+		Bind(channelLayout, "channelLayout");
+		Bind(invertStereo, "invertStereo");
 		Bind(interpolation, "interpolation");
 		Bind(normalization, "normalization");
 		Bind(ambisonicsOrder, "ambisonicsOrder");
@@ -552,6 +554,26 @@ namespace st
 		Bind(hrtfVolumeGain, "hrtfVolumeGain");
 		Bind(sofaFile, "sofaFile");
 
+		CreateCollector();
+	}
+
+	audio::CollectorSpatialSettings AudioCollectorComponent::MakeSpatialSettings() const
+	{
+		audio::CollectorSpatialSettings s;
+		s.output = ToEnum(output, audio::SpatialOutput::Binaural, 3);
+		s.layout = ToEnum(channelLayout, audio::ChannelLayout::Stereo, 4);
+		s.invertStereo = invertStereo;
+		s.interpolation = ToEnum(interpolation, audio::HRTFInterpolation::Bilinear, 2);
+		s.normalization = ToEnum(normalization, audio::HRTFNormalization::None, 2);
+		s.ambisonicsOrder = std::clamp(ambisonicsOrder, 0, 3);
+		s.binauralReverb = binauralReverb;
+		s.hrtfVolumeGain = hrtfVolumeGain;
+		s.sofaFile = sofaFile;
+		return s;
+	}
+
+	void AudioCollectorComponent::CreateCollector()
+	{
 		audio::AudioEngine& engine = audio::AudioEngine::Get();
 		if (!engine.IsInitialized())
 		{
@@ -561,8 +583,9 @@ namespace st
 		}
 
 		// The renderer's channel count is fixed when the collector is built, so the
-		// spatial settings have to be right before CreateCollector rather than after.
-		collector_ = engine.CreateCollector(componentName + "#" + std::to_string(localID));
+		// spatial settings go in AT CreateCollector rather than being pushed in after.
+		collector_ = engine.CreateCollector(componentName + "#" + std::to_string(localID),
+			MakeSpatialSettings());
 		SyncSettings();
 
 		audio::SpatialTransform t;
@@ -579,14 +602,7 @@ namespace st
 		collector_->SetPriority(priority);
 		collector_->SetRouteToOutput(routeToOutput);
 
-		audio::CollectorSpatialSettings& s = collector_->SpatialSettings();
-		s.output = ToEnum(output, audio::SpatialOutput::Binaural, 3);
-		s.interpolation = ToEnum(interpolation, audio::HRTFInterpolation::Bilinear, 2);
-		s.normalization = ToEnum(normalization, audio::HRTFNormalization::None, 2);
-		s.ambisonicsOrder = std::clamp(ambisonicsOrder, 0, 3);
-		s.binauralReverb = binauralReverb;
-		s.hrtfVolumeGain = hrtfVolumeGain;
-		s.sofaFile = sofaFile;
+		collector_->SpatialSettings() = MakeSpatialSettings();
 		collector_->ApplySpatialSettings();
 	}
 
@@ -594,6 +610,22 @@ namespace st
 	{
 		if (!collector_)
 			return;
+
+		// A change that resizes the collector's output - the speaker layout, the output
+		// mode, the ambisonic order - cannot be pushed into a live collector: its tap
+		// buffer was allocated with the old channel count and the game thread may be
+		// holding pointers into it. Rebuild instead. The comparison is against the
+		// settings the collector is currently holding, so this fires on the one frame
+		// the value actually changed and never again.
+		if (audio::CollectorChannels(MakeSpatialSettings())
+			!= audio::CollectorChannels(collector_->SpatialSettings()))
+		{
+			Destroy();
+			CreateCollector();
+			if (!collector_)
+				return;
+		}
+
 		SyncSettings();
 		if (!followTransform)
 			return;
@@ -636,6 +668,13 @@ namespace st
 
 		out.push_back(NativeParam::Enum("output", &output,
 			"Binaural (HRTF)\0Panning\0Ambisonics\0", nullptr, kListener));
+		out.push_back(NativeParam::Enum("channelLayout", &channelLayout,
+			"Mono\0Stereo\0Surround 5.0\0Surround 7.0\0",
+			"Speakers this microphone records to. Binaural is a pair of ears and only applies "
+			"at stereo; the wider layouts pan instead. Changing it rebuilds the collector.", kListener));
+		out.push_back(NativeParam::Bool("invertStereo", &invertStereo,
+			"Mirror the mic left-to-right. Swaps the surround pairs too; the centre channel "
+			"stays put. Ignored for ambisonics.", kListener));
 		out.push_back(NativeParam::Enum("interpolation", &interpolation,
 			"Nearest\0Bilinear\0", nullptr, kListener));
 		out.push_back(NativeParam::Enum("normalization", &normalization,

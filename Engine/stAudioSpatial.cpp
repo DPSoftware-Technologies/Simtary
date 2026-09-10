@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <utility>
 
 #ifdef SIMTARY_HAS_STEAMAUDIO
 #include <phonon.h>
@@ -29,6 +30,149 @@ namespace st::audio
 		{
 			return XMFLOAT3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
 		}
+
+		// Where each speaker of a layout sits, as a unit vector in the LISTENER's local
+		// space using Steam Audio's convention: +X right, +Y up, -Z ahead. A speaker at
+		// azimuth `a` (degrees, clockwise from the front seen from above) is therefore
+		// (sin a, 0, -cos a). The azimuths are the ITU-R BS.775 placements a real 5.1 /
+		// 7.1 room is set up to, minus the LFE, which has no direction to give.
+		//
+		// The array is static so it outlives any Steam Audio effect built from it: the
+		// SDK keeps the pointer it is handed for a custom layout rather than copying.
+		const XMFLOAT3* SpeakerDirections(ChannelLayout layout)
+		{
+			static const XMFLOAT3 kMono[1] = {
+				XMFLOAT3(0.0000000f, 0.0f, -1.0000000f),   // C      0
+			};
+			static const XMFLOAT3 kStereo[2] = {
+				XMFLOAT3(-0.5000000f, 0.0f, -0.8660254f),  // L    -30
+				XMFLOAT3(0.5000000f, 0.0f, -0.8660254f),   // R    +30
+			};
+			static const XMFLOAT3 kSurround5[5] = {
+				XMFLOAT3(-0.5000000f, 0.0f, -0.8660254f),  // L    -30
+				XMFLOAT3(0.5000000f, 0.0f, -0.8660254f),   // R    +30
+				XMFLOAT3(0.0000000f, 0.0f, -1.0000000f),   // C      0
+				XMFLOAT3(-0.9396926f, 0.0f, 0.3420201f),   // RL  -110
+				XMFLOAT3(0.9396926f, 0.0f, 0.3420201f),    // RR  +110
+			};
+			static const XMFLOAT3 kSurround7[7] = {
+				XMFLOAT3(-0.5000000f, 0.0f, -0.8660254f),  // L    -30
+				XMFLOAT3(0.5000000f, 0.0f, -0.8660254f),   // R    +30
+				XMFLOAT3(0.0000000f, 0.0f, -1.0000000f),   // C      0
+				XMFLOAT3(-0.5000000f, 0.0f, 0.8660254f),   // RL  -150
+				XMFLOAT3(0.5000000f, 0.0f, 0.8660254f),    // RR  +150
+				XMFLOAT3(-1.0000000f, 0.0f, 0.0000000f),   // SL   -90
+				XMFLOAT3(1.0000000f, 0.0f, 0.0000000f),    // SR   +90
+			};
+			switch (layout)
+			{
+			case ChannelLayout::Mono:        return kMono;
+			case ChannelLayout::Surround5_0: return kSurround5;
+			case ChannelLayout::Surround7_0: return kSurround7;
+			default:                         return kStereo;
+			}
+		}
+
+		// invertStereo: swap the channels that are mirror images of each other. Whatever
+		// is not named here (the centre channel, and every channel of a mono feed) lies
+		// on the mirror axis and is already its own reflection.
+		void MirrorChannels(float* const* planes, ChannelLayout layout, int frames)
+		{
+			static const int kStereoPairs[1][2] = { { 0, 1 } };
+			static const int kSurround5Pairs[2][2] = { { 0, 1 }, { 3, 4 } };
+			static const int kSurround7Pairs[3][2] = { { 0, 1 }, { 3, 4 }, { 5, 6 } };
+
+			const int (*pairs)[2] = kStereoPairs;
+			int count = 1;
+			switch (layout)
+			{
+			case ChannelLayout::Mono:        return;
+			case ChannelLayout::Surround5_0: pairs = kSurround5Pairs; count = 2; break;
+			case ChannelLayout::Surround7_0: pairs = kSurround7Pairs; count = 3; break;
+			default: break;
+			}
+			if (planes == nullptr)
+				return;
+			for (int p = 0; p < count; ++p)
+			{
+				float* a = planes[pairs[p][0]];
+				float* b = planes[pairs[p][1]];
+				if (a == nullptr || b == nullptr)
+					continue;
+				for (int i = 0; i < frames; ++i)
+					std::swap(a[i], b[i]);
+			}
+		}
+
+		// Binaural is an HRTF pair - two ears, two channels. It only applies when the
+		// collector is actually rendering a stereo pair; every other layout pans the
+		// direct path to its speakers instead. One predicate so the effect that gets
+		// built, the decode that gets configured and the mix that gets written can never
+		// disagree about which chain this collector is on.
+		inline bool UsesBinaural(const CollectorSpatialSettings& settings)
+		{
+			return settings.output == SpatialOutput::Binaural
+				&& settings.layout == ChannelLayout::Stereo;
+		}
+	}
+
+	void DownmixToStereo(const float* const* planes, ChannelLayout layout, int frames,
+		float* outL, float* outR)
+	{
+		if (planes == nullptr || outL == nullptr || outR == nullptr || frames <= 0)
+			return;
+
+		// -3 dB for anything that has to arrive in both ears, so a centre-panned source
+		// is as loud after the fold as it was before it.
+		const float kShared = 0.7071068f;
+
+		switch (layout)
+		{
+		case ChannelLayout::Mono:
+		{
+			const float* C = planes[0];
+			if (C == nullptr)
+				return;
+			for (int i = 0; i < frames; ++i)
+			{
+				outL[i] += C[i] * kShared;
+				outR[i] += C[i] * kShared;
+			}
+			break;
+		}
+		case ChannelLayout::Surround5_0:
+		case ChannelLayout::Surround7_0:
+		{
+			const bool sevenZero = (layout == ChannelLayout::Surround7_0);
+			const float* L = planes[0];
+			const float* R = planes[1];
+			const float* C = planes[2];
+			const float* RL = planes[3];
+			const float* RR = planes[4];
+			const float* SL = sevenZero ? planes[5] : nullptr;
+			const float* SR = sevenZero ? planes[6] : nullptr;
+			for (int i = 0; i < frames; ++i)
+			{
+				const float centre = C ? C[i] * kShared : 0.0f;
+				outL[i] += (L ? L[i] : 0.0f) + centre
+					+ (RL ? RL[i] * kShared : 0.0f) + (SL ? SL[i] * kShared : 0.0f);
+				outR[i] += (R ? R[i] : 0.0f) + centre
+					+ (RR ? RR[i] * kShared : 0.0f) + (SR ? SR[i] * kShared : 0.0f);
+			}
+			break;
+		}
+		default:
+		{
+			const float* L = planes[0];
+			const float* R = planes[1];
+			for (int i = 0; i < frames; ++i)
+			{
+				outL[i] += L ? L[i] : 0.0f;
+				outR[i] += R ? R[i] : 0.0f;
+			}
+			break;
+		}
+		}
 	}
 
 #ifdef SIMTARY_HAS_STEAMAUDIO
@@ -41,6 +185,35 @@ namespace st::audio
 		// Steam Audio wants a full orthonormal basis, not just forward+up. Building
 		// right from forward x up (rather than trusting the caller's up to be exactly
 		// perpendicular) keeps the basis orthonormal even when a transform has drifted.
+		// Describe a ChannelLayout to Steam Audio, filling `owner` with the direction
+		// vectors a custom layout needs. Mono and Stereo are built into the SDK; 5.0 and
+		// 7.0 are not (it only ships 5.1 and 7.1) so they go through CUSTOM.
+		//
+		// `owner` must outlive every effect created from the returned layout - the SDK
+		// stores the pointer rather than copying the array - which is why it belongs to
+		// the renderer and not to this call.
+		IPLSpeakerLayout MakeSpeakerLayout(ChannelLayout layout, std::vector<IPLVector3>& owner)
+		{
+			const int count = ChannelCountFor(layout);
+			const XMFLOAT3* directions = SpeakerDirections(layout);
+			owner.resize((size_t)count);
+			for (int i = 0; i < count; ++i)
+				owner[(size_t)i] = ToIPL(directions[i]);
+
+			IPLSpeakerLayout result{};
+			switch (layout)
+			{
+			case ChannelLayout::Mono:   result.type = IPL_SPEAKERLAYOUTTYPE_MONO;   break;
+			case ChannelLayout::Stereo: result.type = IPL_SPEAKERLAYOUTTYPE_STEREO; break;
+			default:
+				result.type = IPL_SPEAKERLAYOUTTYPE_CUSTOM;
+				result.numSpeakers = count;
+				result.speakers = owner.data();
+				break;
+			}
+			return result;
+		}
+
 		IPLCoordinateSpace3 ToIPLSpace(const SpatialTransform& t)
 		{
 			const XMFLOAT3 ahead = Normalize(t.forward);
@@ -593,7 +766,8 @@ namespace st::audio
 		struct PerSource
 		{
 			IPLDirectEffect direct = nullptr;
-			IPLBinauralEffect binaural = nullptr;
+			IPLBinauralEffect binaural = nullptr;   // stereo layout, Binaural output
+			IPLPanningEffect panning = nullptr;     // every other speaker layout
 			IPLAmbisonicsEncodeEffect encode = nullptr;
 			IPLReflectionEffect reflection = nullptr;
 			IPLPathEffect path = nullptr;
@@ -601,9 +775,14 @@ namespace st::audio
 		std::unordered_map<SpatialSource*, PerSource> perSource;
 
 		IPLAmbisonicsDecodeEffect decode = nullptr;
+		// The collector's speaker layout, and the direction array it points at for a
+		// custom (5.0 / 7.0) layout. Both live as long as the renderer because Steam
+		// Audio keeps the pointer.
+		IPLSpeakerLayout speakerLayout{};
+		std::vector<IPLVector3> speakers;
 		IPLAudioBuffer monoIn{};       // 1 x frameSize
 		IPLAudioBuffer directOut{};    // 1 x frameSize
-		IPLAudioBuffer spatialOut{};   // 2 or (order+1)^2 x frameSize
+		IPLAudioBuffer spatialOut{};   // busChannels x frameSize
 		IPLAudioBuffer accumulator{};  // the collector's mix bus
 		IPLAudioBuffer ambiBus{};      // reflection / ambisonic accumulation
 		int frameSize = 0;
@@ -616,15 +795,7 @@ namespace st::audio
 	SpatialRenderer::~SpatialRenderer() { Destroy(); }
 	bool SpatialRenderer::IsValid() const { return impl_->valid; }
 
-	int SpatialRenderer::GetOutputChannels() const
-	{
-		if (settings_.output == SpatialOutput::Ambisonics)
-		{
-			const int order = std::max(0, std::min(settings_.ambisonicsOrder, 3));
-			return (order + 1) * (order + 1);
-		}
-		return 2;
-	}
+	int SpatialRenderer::GetOutputChannels() const { return CollectorChannels(settings_); }
 
 	bool SpatialRenderer::Create(const CollectorSpatialSettings& settings)
 	{
@@ -638,16 +809,25 @@ namespace st::audio
 		const int order = std::max(0, std::min(std::max(settings.ambisonicsOrder, g.sim.maxOrder), 3));
 		s.ambiChannels = (order + 1) * (order + 1);
 
+		s.speakerLayout = MakeSpeakerLayout(settings.layout, s.speakers);
+
+		// spatialOut and the accumulator carry exactly the speaker feed: a panning or
+		// decode effect writes numSpeakers channels and Steam Audio will not accept a
+		// buffer of a different width, so a mono collector really does get one plane.
+		const int busChannels = std::max(1, s.busChannels);
 		iplAudioBufferAllocate(g.context, 1, s.frameSize, &s.monoIn);
 		iplAudioBufferAllocate(g.context, 1, s.frameSize, &s.directOut);
-		iplAudioBufferAllocate(g.context, std::max(2, s.busChannels), s.frameSize, &s.spatialOut);
-		iplAudioBufferAllocate(g.context, std::max(2, s.busChannels), s.frameSize, &s.accumulator);
+		iplAudioBufferAllocate(g.context, busChannels, s.frameSize, &s.spatialOut);
+		iplAudioBufferAllocate(g.context, busChannels, s.frameSize, &s.accumulator);
 		iplAudioBufferAllocate(g.context, s.ambiChannels, s.frameSize, &s.ambiBus);
 
+		// Reflections and pathing arrive on the ambisonic bus and are decoded once, to
+		// whatever this collector's speakers are - 5.0 and 7.0 get real surround reverb
+		// rather than a stereo fold sitting in the front pair.
 		IPLAmbisonicsDecodeEffectSettings decodeSettings{};
 		decodeSettings.maxOrder = order;
 		decodeSettings.hrtf = g.hrtf;
-		decodeSettings.speakerLayout.type = IPL_SPEAKERLAYOUTTYPE_STEREO;
+		decodeSettings.speakerLayout = s.speakerLayout;
 		if (iplAmbisonicsDecodeEffectCreate(g.context, &g.audioSettings, &decodeSettings, &s.decode) != IPL_STATUS_SUCCESS)
 		{
 			wilog_warning("stAudioSpatial: iplAmbisonicsDecodeEffectCreate failed - reflections will not be decoded.");
@@ -668,6 +848,7 @@ namespace st::audio
 		{
 			if (entry.second.direct)     iplDirectEffectRelease(&entry.second.direct);
 			if (entry.second.binaural)   iplBinauralEffectRelease(&entry.second.binaural);
+			if (entry.second.panning)    iplPanningEffectRelease(&entry.second.panning);
 			if (entry.second.encode)     iplAmbisonicsEncodeEffectRelease(&entry.second.encode);
 			if (entry.second.reflection) iplReflectionEffectRelease(&entry.second.reflection);
 			if (entry.second.path)       iplPathEffectRelease(&entry.second.path);
@@ -685,7 +866,30 @@ namespace st::audio
 		s.valid = false;
 	}
 
-	void SpatialRenderer::SetSettings(const CollectorSpatialSettings& settings) { settings_ = settings; }
+	void SpatialRenderer::SetSettings(const CollectorSpatialSettings& settings)
+	{
+		// Layout, output mode and ambisonic order decide how wide the bus is and which
+		// effect each source runs, and none of that can be changed on a live IPL effect
+		// - so those three rebuild the renderer instead of being stored. Everything else
+		// (invertStereo, interpolation, gains) is read per block and just lands.
+		//
+		// This runs on the audio thread, and only on the block the value actually
+		// changed: the engine calls SetSettings only when the component marked the
+		// collector dirty. It is the same trade the lazy per-source allocation in
+		// Accumulate already makes - allocate when something changes rather than
+		// pre-build every combination.
+		const bool rebuild = impl_->valid
+			&& (settings.layout != settings_.layout
+				|| settings.output != settings_.output
+				|| settings.ambisonicsOrder != settings_.ambisonicsOrder);
+		if (rebuild)
+		{
+			Destroy();
+			Create(settings);
+			return;
+		}
+		settings_ = settings;
+	}
 
 	void SpatialRenderer::SetTransform(const SpatialTransform& transform)
 	{
@@ -740,11 +944,21 @@ namespace st::audio
 				encodeSettings.maxOrder = std::max(0, std::min(settings_.ambisonicsOrder, 3));
 				iplAmbisonicsEncodeEffectCreate(g.context, &g.audioSettings, &encodeSettings, &ps.encode);
 			}
-			else
+			else if (UsesBinaural(settings_))
 			{
 				IPLBinauralEffectSettings binauralSettings{};
 				binauralSettings.hrtf = g.hrtf;
 				iplBinauralEffectCreate(g.context, &g.audioSettings, &binauralSettings, &ps.binaural);
+			}
+			else
+			{
+				// Mono, 5.0, 7.0, or Panning output at stereo: amplitude-pan the source
+				// to the collector's speakers. No HRTF, so no head colouring - which is
+				// what a microphone feeding a speaker rig should sound like, and the
+				// only thing that makes sense for a layout with no pair of ears in it.
+				IPLPanningEffectSettings panningSettings{};
+				panningSettings.speakerLayout = s.speakerLayout;
+				iplPanningEffectCreate(g.context, &g.audioSettings, &panningSettings, &ps.panning);
 			}
 
 			if (es.reflections && g.sim.reflections)
@@ -832,6 +1046,26 @@ namespace st::audio
 			iplBinauralEffectApply(ps.binaural, &binauralParams, &s.directOut, &s.spatialOut);
 			iplAudioBufferMix(g.context, &s.spatialOut, &s.accumulator);
 		}
+		else if (ps.panning)
+		{
+			IPLPanningEffectParams panningParams{};
+			panningParams.direction = localDirection;
+			iplPanningEffectApply(ps.panning, &panningParams, &s.directOut, &s.spatialOut);
+
+			// The panning effect has no spatialBlend of its own, so do by hand what the
+			// binaural path gets for free: crossfade the panned signal against the same
+			// mono spread evenly over every speaker. blend 1 is fully placed, blend 0 is
+			// the emitter sitting flat in the middle of the rig.
+			const float blend = std::max(0.0f, std::min(es.spatialBlend, 1.0f));
+			if (blend < 1.0f)
+			{
+				const float dry = (1.0f - blend) / std::sqrt((float)std::max(1, s.busChannels));
+				for (int c = 0; c < s.spatialOut.numChannels; ++c)
+					for (int i = 0; i < frames; ++i)
+						s.spatialOut.data[c][i] = s.spatialOut.data[c][i] * blend + s.directOut.data[0][i] * dry;
+			}
+			iplAudioBufferMix(g.context, &s.spatialOut, &s.accumulator);
+		}
 		else if (ps.encode)
 		{
 			IPLAmbisonicsEncodeEffectParams encodeParams{};
@@ -871,7 +1105,9 @@ namespace st::audio
 		if (settings_.output == SpatialOutput::Ambisonics)
 		{
 			// The collector wants B-format: hand back the raw ambisonic bus, mixed with
-			// whatever the encode path already put there.
+			// whatever the encode path already put there. invertStereo does not apply -
+			// see the note on the field: mirroring a sound field is a reflection of the
+			// encoding, not a swap of two planes.
 			const int channels = std::min(GetOutputChannels(), s.ambiBus.numChannels);
 			for (int c = 0; c < channels; ++c)
 				if (out[c]) std::memcpy(out[c], s.ambiBus.data[c], (size_t)frames * sizeof(float));
@@ -879,22 +1115,28 @@ namespace st::audio
 		}
 
 		// Decode the ambisonic bus (reflections, pathing, ambisonically-encoded direct
-		// paths) down to stereo and fold it into the binaural accumulator.
+		// paths) down to this collector's speaker layout and fold it into the accumulator.
 		if (s.decode)
 		{
 			IPLAmbisonicsDecodeEffectParams decodeParams{};
 			decodeParams.order = std::max(0, std::min(std::max(settings_.ambisonicsOrder, g.sim.maxOrder), 3));
 			decodeParams.hrtf = g.hrtf;
 			decodeParams.orientation = ToIPLSpace(transform_);
-			decodeParams.binaural = settings_.binauralReverb ? IPL_TRUE : IPL_FALSE;
+			// The HRTF decode is the same two-eared model as the binaural direct path,
+			// so it is only on the table when this collector really is a stereo pair.
+			// At 5.0 or 7.0 the reverb decodes to the speakers instead.
+			decodeParams.binaural = (settings_.binauralReverb && UsesBinaural(settings_)) ? IPL_TRUE : IPL_FALSE;
 			s.spatialOut.numSamples = frames;
 			iplAmbisonicsDecodeEffectApply(s.decode, &decodeParams, &s.ambiBus, &s.spatialOut);
 			iplAudioBufferMix(g.context, &s.spatialOut, &s.accumulator);
 		}
 
-		for (int c = 0; c < 2; ++c)
-			if (out[c]) std::memcpy(out[c], s.accumulator.data[std::min(c, s.accumulator.numChannels - 1)],
-				(size_t)frames * sizeof(float));
+		const int channels = std::min(s.busChannels, s.accumulator.numChannels);
+		for (int c = 0; c < channels; ++c)
+			if (out[c]) std::memcpy(out[c], s.accumulator.data[c], (size_t)frames * sizeof(float));
+
+		if (settings_.invertStereo)
+			MirrorChannels(out, settings_.layout, frames);
 	}
 
 #else // !SIMTARY_HAS_STEAMAUDIO
@@ -987,7 +1229,7 @@ namespace st::audio
 
 	struct SpatialRenderer::Impl
 	{
-		std::vector<float> accumL, accumR;
+		std::vector<std::vector<float>> accum;   // one plane per output channel
 		bool valid = false;
 	};
 
@@ -997,7 +1239,13 @@ namespace st::audio
 	void SpatialRenderer::Destroy() { impl_->valid = false; }
 	bool SpatialRenderer::IsValid() const { return impl_->valid; }
 	void SpatialRenderer::SetSettings(const CollectorSpatialSettings& settings) { settings_ = settings; }
-	int  SpatialRenderer::GetOutputChannels() const { return 2; }
+
+	// Same answer as the Steam Audio path, including for Ambisonics - the engine sizes
+	// the collector's tap from CollectorChannels() and the two must agree or a layout
+	// change would look like a permanent mismatch. There is no ambisonic encoder here,
+	// so an Ambisonics collector gets its (order+1)^2 planes with only the first
+	// ChannelCountFor(layout) of them carrying anything.
+	int  SpatialRenderer::GetOutputChannels() const { return CollectorChannels(settings_); }
 
 	void SpatialRenderer::SetTransform(const SpatialTransform& transform)
 	{
@@ -1009,8 +1257,11 @@ namespace st::audio
 
 	void SpatialRenderer::BeginBlock(int frames)
 	{
-		impl_->accumL.assign((size_t)frames, 0.0f);
-		impl_->accumR.assign((size_t)frames, 0.0f);
+		const int channels = std::max(1, GetOutputChannels());
+		if ((int)impl_->accum.size() != channels)
+			impl_->accum.resize((size_t)channels);
+		for (auto& plane : impl_->accum)
+			plane.assign((size_t)frames, 0.0f);
 	}
 
 	void SpatialRenderer::Accumulate(SpatialSource& source, const float* monoInput, int frames, float gain)
@@ -1029,27 +1280,82 @@ namespace st::audio
 		const float attenuation = (es.distanceModel == DistanceAttenuationModel::None)
 			? 1.0f : es.minDistance / std::max(distance, es.minDistance);
 
-		// Constant-power pan from the azimuth in the listener's own basis.
-		const XMFLOAT3 ahead = Normalize(transform_.forward);
-		XMFLOAT3 right = Normalize(Cross(ahead, Normalize(transform_.up)));
-		const XMFLOAT3 dir = Normalize(delta);
-		const float pan = std::max(-1.0f, std::min(Dot(dir, right), 1.0f)) * es.spatialBlend;
-		const float angle = (pan + 1.0f) * 0.25f * 3.14159265f;
-		const float gl = std::cos(angle) * attenuation * gain;
-		const float gr = std::sin(angle) * attenuation * gain;
+		// Pan into whichever speakers this collector has. Capped at the widest layout
+		// (7.0); an Ambisonics collector on this path fills only its first
+		// ChannelCountFor(layout) planes, since there is no encoder here to fill the rest.
+		const int channels = std::min({ (int)impl_->accum.size(), ChannelCountFor(settings_.layout), 8 });
+		if (channels <= 0)
+			return;
 
-		for (int i = 0; i < frames; ++i)
+		const XMFLOAT3 ahead = Normalize(transform_.forward);
+		const XMFLOAT3 right = Normalize(Cross(ahead, Normalize(transform_.up)));
+		const XMFLOAT3 dir = Normalize(delta);
+		const float blend = std::max(0.0f, std::min(es.spatialBlend, 1.0f));
+
+		float gains[8] = {};
+		if (channels == 1)
 		{
-			impl_->accumL[(size_t)i] += monoInput[i] * gl;
-			impl_->accumR[(size_t)i] += monoInput[i] * gr;
+			// A mono capsule has no direction to pan to: it hears the level and nothing
+			// about where the sound came from. spatialBlend has nothing to fade between.
+			gains[0] = 1.0f;
+		}
+		else if (settings_.layout == ChannelLayout::Stereo)
+		{
+			// Constant-power pan from the azimuth in the listener's own basis - the
+			// original two-channel law, kept exactly so the default layout does not
+			// change sound on a build without the SDK.
+			const float pan = std::max(-1.0f, std::min(Dot(dir, right), 1.0f)) * blend;
+			const float angle = (pan + 1.0f) * 0.25f * 3.14159265f;
+			gains[0] = std::cos(angle);
+			gains[1] = std::sin(angle);
+		}
+		else
+		{
+			// Dot-product panner over the layout's speaker directions, normalised to
+			// constant power: only the speakers the source is in front of get any of it.
+			// Crude next to VBAP, but this whole branch is the no-SDK stand-in.
+			const XMFLOAT3 up = Normalize(Cross(right, ahead));
+			const XMFLOAT3 local(Dot(dir, right), Dot(dir, up), -Dot(dir, ahead));
+			const XMFLOAT3* speakers = SpeakerDirections(settings_.layout);
+			const float even = 1.0f / std::sqrt((float)channels);
+
+			float energy = 0.0f;
+			for (int c = 0; c < channels; ++c)
+			{
+				gains[c] = std::max(0.0f, Dot(local, speakers[c]));
+				energy += gains[c] * gains[c];
+			}
+			const float norm = energy > 1e-9f ? 1.0f / std::sqrt(energy) : 0.0f;
+			for (int c = 0; c < channels; ++c)
+			{
+				// blend 0 spreads the source evenly over the rig - the same "flat in the
+				// middle of the room" the binaural path's spatialBlend 0 gives.
+				const float placed = norm > 0.0f ? gains[c] * norm : even;
+				gains[c] = placed * blend + even * (1.0f - blend);
+			}
+		}
+
+		const float scale = attenuation * gain;
+		for (int c = 0; c < channels; ++c)
+		{
+			if (gains[c] == 0.0f)
+				continue;
+			float* plane = impl_->accum[(size_t)c].data();
+			const float g = gains[c] * scale;
+			for (int i = 0; i < frames; ++i)
+				plane[i] += monoInput[i] * g;
 		}
 	}
 
 	void SpatialRenderer::EndBlock(float* const* out, int frames)
 	{
-		if (out == nullptr) return;
-		if (out[0]) std::memcpy(out[0], impl_->accumL.data(), (size_t)frames * sizeof(float));
-		if (out[1]) std::memcpy(out[1], impl_->accumR.data(), (size_t)frames * sizeof(float));
+		if (out == nullptr || frames <= 0) return;
+		const int channels = (int)impl_->accum.size();
+		for (int c = 0; c < channels; ++c)
+			if (out[c]) std::memcpy(out[c], impl_->accum[(size_t)c].data(), (size_t)frames * sizeof(float));
+
+		if (settings_.invertStereo && settings_.output != SpatialOutput::Ambisonics)
+			MirrorChannels(out, settings_.layout, frames);
 	}
 
 #endif // SIMTARY_HAS_STEAMAUDIO

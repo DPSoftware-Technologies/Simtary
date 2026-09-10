@@ -101,6 +101,43 @@ namespace st::audio
 		Ambisonics,   // B-format at `ambisonicsOrder`, decoded by the collector
 	};
 
+	// How many speakers a collector renders to, and in what order.
+	//
+	// Steam Audio ships MONO, STEREO, QUADRAPHONIC, 5.1 and 7.1. The two surround
+	// entries here are its 5.1 and 7.1 placements with the LFE channel removed, built
+	// as custom layouts: a game engine has no bass-management stage to derive an LFE
+	// from, so a synthetic .1 would be a plane of silence that every consumer of
+	// Collector::Output() then has to know to skip.
+	//
+	// Channel order matches Steam Audio's own standard layouts minus LFE, so a plane
+	// index means here what it means in a WAV file:
+	//
+	//	Mono         C
+	//	Stereo       L  R
+	//	Surround5_0  L  R  C  RL  RR          (RL/RR at -110 / +110 degrees)
+	//	Surround7_0  L  R  C  RL  RR  SL  SR  (RL/RR at -150 / +150, SL/SR at -90 / +90)
+	//
+	// APPEND ONLY: the integer is stored in scene metadata by stAudioCollector, so
+	// renumbering would silently relayout every microphone already placed.
+	enum class ChannelLayout
+	{
+		Mono,         // 1 channel  - what a real mono capsule records
+		Stereo,       // 2 channels - the default, and the only layout Binaural applies to
+		Surround5_0,  // 5 channels - 5.1 without the LFE
+		Surround7_0,  // 7 channels - 7.1 without the LFE
+	};
+
+	inline int ChannelCountFor(ChannelLayout layout)
+	{
+		switch (layout)
+		{
+		case ChannelLayout::Mono:        return 1;
+		case ChannelLayout::Surround5_0: return 5;
+		case ChannelLayout::Surround7_0: return 7;
+		default:                         return 2;
+		}
+	}
+
 	// per-emitter settings
 	// Everything Steam Audio lets you set per source. Defaults are the SDK's own
 	// defaults, so a component that touches nothing behaves like a stock IPLSource.
@@ -155,6 +192,21 @@ namespace st::audio
 	struct CollectorSpatialSettings
 	{
 		SpatialOutput output = SpatialOutput::Binaural;
+		// The speaker layout this microphone renders to. Binaural is a two-eared model
+		// and only means anything at Stereo; at Mono, 5.0 or 7.0 the direct path is
+		// panned to the speakers instead, because there is no HRTF for a seven-eared
+		// head. Ambisonics output ignores this entirely - its channel count comes from
+		// ambisonicsOrder.
+		ChannelLayout layout = ChannelLayout::Stereo;
+		// Mirror the microphone left-to-right. The WHOLE layout mirrors, not just the
+		// front pair: 5.0 also swaps RL/RR and 7.0 also swaps SL/SR. The centre channel
+		// sits on the mirror axis and stays put. For a capsule wired backwards, or for
+		// a mic that hears the room reversed without moving the entity.
+		//
+		// Ignored for Ambisonics output: mirroring B-format is a reflection of the
+		// encoded sound field, not a swap of two planes - mirror the collector's
+		// transform instead.
+		bool invertStereo = false;
 		HRTFInterpolation interpolation = HRTFInterpolation::Bilinear;
 		HRTFNormalization normalization = HRTFNormalization::None;
 		int  ambisonicsOrder = 1;        // 1 = 4 channels, 2 = 9, 3 = 16
@@ -162,6 +214,29 @@ namespace st::audio
 		float hrtfVolumeGain = 0.0f;     // dB applied to the HRTF itself
 		std::string sofaFile;            // optional custom HRTF (.sofa); empty = built-in
 	};
+
+	// How many planes a collector with these settings renders, without needing a live
+	// SpatialRenderer to ask. Mirrors SpatialRenderer::GetOutputChannels() exactly, and
+	// has to keep doing so: the engine sizes the collector's tap buffer from this
+	// before the renderer exists, and the component compares it against the tap to
+	// decide when a layout change needs the collector rebuilt.
+	inline int CollectorChannels(const CollectorSpatialSettings& settings)
+	{
+		if (settings.output == SpatialOutput::Ambisonics)
+		{
+			const int order = settings.ambisonicsOrder < 0 ? 0
+				: (settings.ambisonicsOrder > 3 ? 3 : settings.ambisonicsOrder);
+			return (order + 1) * (order + 1);
+		}
+		return ChannelCountFor(settings.layout);
+	}
+
+	// Fold one collector's speaker feed into a stereo bus, ADDING to what is already
+	// there. ITU-style: a channel that has to reach both ears arrives at -3 dB in each.
+	// `planes` holds ChannelCountFor(layout) pointers; a null plane counts as silence.
+	// Not for Ambisonics output - a B-format bus is not a speaker feed.
+	void DownmixToStereo(const float* const* planes, ChannelLayout layout, int frames,
+		float* outL, float* outR);
 
 	// global simulation settings
 	// These size the ray tracer and cannot change without rebuilding the simulator,
@@ -312,12 +387,16 @@ namespace st::audio
 		void Destroy();
 		bool IsValid() const;
 
+		// Push new settings. A change that resizes the bus or swaps the per-source
+		// effect chain (layout, output, ambisonic order) rebuilds the renderer in
+		// place; anything else is stored and takes effect on the next block.
 		void SetSettings(const CollectorSpatialSettings& settings);
+		const CollectorSpatialSettings& GetSettings() const { return settings_; }
 		void SetTransform(const SpatialTransform& transform);
 		const SpatialTransform& GetTransform() const { return transform_; }
 
-		// Number of channels Render() writes: 2 for Binaural/Panning, (order+1)^2 for
-		// Ambisonics.
+		// Number of channels Render() writes: ChannelCountFor(layout) for
+		// Binaural/Panning, (order+1)^2 for Ambisonics.
 		int GetOutputChannels() const;
 
 		// Begin an audio block: clears the accumulation bus. Audio thread.
