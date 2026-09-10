@@ -25,6 +25,7 @@
 //               where `resolution` and `refreshRate` change the actual signal)
 
 #include "io/Nbt.h"
+#include "render/GraphicsAPI.h"
 
 #include <string>
 #include <vector>
@@ -71,6 +72,17 @@ public:
     // Render at a fraction of the output resolution and let the engine upscale.
     // 1.0 = native. Drives wi::Application::SetRenderResolution.
     float       renderScale  = 1.0f;
+
+    // graphics backend
+    // Which API the NEXT launch uses: Auto (the platform default - DirectX 12 on
+    // Windows, Vulkan elsewhere), DirectX12 or Vulkan. A device owns every resource
+    // the engine has, so this cannot be switched while the process runs - the panel
+    // says so, and offers a restart. Unlike the rest of the class it is not staged
+    // behind Apply(), because there is nothing to apply: it is persisted as edited and
+    // read back by st::ResolveGraphicsAPI() on the next start. The "vulkan" / "dx12"
+    // command line arguments outrank it, so a machine whose saved choice will not start
+    // is still recoverable.
+    GraphicsAPI graphicsAPI = GraphicsAPI::Auto;
 
     // standby frame rate
     // Drop the frame cap when nobody is watching: the window lost focus, or the

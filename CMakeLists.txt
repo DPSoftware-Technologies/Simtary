@@ -647,6 +647,55 @@ else()
     set_source_files_properties(tools/stpack_zstd.cpp PROPERTIES COMPILE_OPTIONS "-w")
 endif()
 
+# stshaderc: the framework's shader compiler
+# One HLSL file -> DXIL or SPIR-V, through wi::shadercompiler and the dxcompiler.dll
+# vendored in Engine/. It replaced a direct dxc.exe call in simtary_compile_shader for
+# two reasons: the Windows SDK's dxc.exe cannot emit SPIR-V at all, which left a Windows
+# machine with no Vulkan SDK unable to build the framework's shaders for a Vulkan run;
+# and the DX12 root signature and Vulkan binding shifts now come from the engine's own
+# constants instead of a copy of them in CMake.
+#
+# Outside SIMTARY_BUILD_TESTS for the same reason stpack is: a game adds this workspace
+# EXCLUDE_FROM_ALL, and its shader step depends on this tool.
+add_executable(stshaderc tools/stshaderc.cpp)
+target_link_libraries(stshaderc PRIVATE Simtary::AppFlags Simtary_ext_shaders)
+set_target_properties(stshaderc PROPERTIES FOLDER "Simtary/Tools")
+
+# dxcompiler is loaded BY NAME at runtime (wiShaderCompiler.cpp), and the loader looks
+# in the calling executable's own directory first - which is this one, not the Engine
+# binary directory the engine's own copy lands in. Named by file rather than through
+# Engine's `dxcompiler` imported target: that target is not GLOBAL, so it does not
+# exist in this scope.
+if (WIN32)
+    set(SIMTARY_DXCOMPILER "${CMAKE_CURRENT_SOURCE_DIR}/Engine/dxcompiler.dll")
+elseif (APPLE)
+    set(SIMTARY_DXCOMPILER "${CMAKE_CURRENT_SOURCE_DIR}/Engine/libdxcompiler.dylib")
+else()
+    set(SIMTARY_DXCOMPILER "${CMAKE_CURRENT_SOURCE_DIR}/Engine/libdxcompiler.so")
+endif()
+# It links the engine, so its import table pulls in the engine's own runtime libraries
+# even though a shader compile touches neither audio nor a window. They go next to the
+# tool rather than being found through a working directory, because the working
+# directory a shader build step runs in is this one (see simtary_compile_shader).
+add_custom_command(TARGET stshaderc POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${SIMTARY_DXCOMPILER}" $<TARGET_FILE_DIR:stshaderc>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:stshaderc>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:OpenAL> $<TARGET_FILE_DIR:stshaderc>
+    COMMENT "Copying dxcompiler + runtime libraries next to stshaderc"
+    VERBATIM
+)
+if (TARGET SteamAudio)
+    add_custom_command(TARGET stshaderc POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${SIMTARY_STEAMAUDIO_RUNTIME}" $<TARGET_FILE_DIR:stshaderc>
+        COMMENT "Copying Steam Audio runtime library next to stshaderc"
+        VERBATIM
+    )
+endif()
+
 # Framework tests + tools
 # Small console executables exercising self-contained framework modules under the
 # same /EHsc- /GR- flags as a game. Run via the exe or `ctest`.

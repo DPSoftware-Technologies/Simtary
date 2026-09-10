@@ -297,6 +297,83 @@ bool MergeWiscene (const uint8_t* ecsArchive, uint64_t ecsSize,
     return true;
 }
 
+// resource export
+
+namespace {
+
+// Would writing `logical` under a folder land somewhere else? Names come out of a scene
+// file and this writes into a source tree, so an absolute path, a drive letter or a ".."
+// segment is refused rather than followed. NormalizePath has already collapsed
+// separators and stripped a leading "/" and "./", so what is left to check is a drive
+// prefix and the segments themselves.
+bool EscapesFolder (const std::string& logical) {
+    if (logical.empty()) return true;
+    if (logical.size() >= 2 && logical[1] == ':') return true;   // "C:/..."
+
+    size_t at = 0;
+    while (at <= logical.size()) {
+        const size_t slash = logical.find('/', at);
+        const std::string segment = logical.substr(at, slash == std::string::npos
+                                                      ? std::string::npos : slash - at);
+        if (segment == "..") return true;
+        if (slash == std::string::npos) break;
+        at = slash + 1;
+    }
+    return false;
+}
+
+} // namespace
+
+bool ExportSceneResources (const WisceneSplit& split, const std::string& outDir,
+                           ResourceExport* out, std::string* error) {
+    ResourceExport result;
+    if (outDir.empty()) {
+        SetError(error, "no resource folder given");
+        return false;
+    }
+
+    for (const EmbeddedResource& r : split.resources) {
+        if (r.size == 0) {
+            ++result.empty;
+            continue;
+        }
+        const std::string logical = NormalizePath(r.name);
+        if (EscapesFolder(logical)) {
+            ++result.rejected;
+            continue;
+        }
+
+        const std::string path = outDir + "/" + logical;
+
+        // Already there: left alone, deliberately. See the header - the folder is also
+        // where a hand-made override lives, and this is what keeps a repeat export cheap.
+        std::error_code ec;
+        if (fs::exists(U8Path(path), ec)) {
+            ++result.skipped;
+            continue;
+        }
+
+        const fs::path native = U8Path(path);
+        if (native.has_parent_path()) {
+            fs::create_directories(native.parent_path(), ec);
+            if (ec) {
+                SetError(error, "cannot create " + native.parent_path().u8string());
+                if (out) *out = result;
+                return false;
+            }
+        }
+        if (!WriteWholeFile(path, split.Bytes() + r.offset, r.size, error)) {
+            if (out) *out = result;
+            return false;
+        }
+        ++result.written;
+        result.bytes += r.size;
+    }
+
+    if (out) *out = result;
+    return true;
+}
+
 // .stsd
 
 const std::vector<uint8_t>* SceneDescriptor::EcsArchive () const {

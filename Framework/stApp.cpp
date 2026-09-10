@@ -139,6 +139,13 @@ const st::AppConfig& st::App::Config() {
 // elided down to nothing useful.
 st::App::App() : m_loadingScreen("Starting up", 470, 124) {}
 
+void st::App::CreateGraphicsDevice(st::GraphicsAPI api, wi::platform::window_type window) {
+    if (graphicsDevice != nullptr)
+        return;   // a resize re-enters SetWindow; the device is created once
+
+    graphicsDevice = st::CreateGraphicsDevice(api, window);
+}
+
 void st::App::SetDevUIVisible(bool visible) {
     // DevUIMode::Disabled is a build decision, not a runtime one: a shipped game
     // cannot be talked into opening the tooling.

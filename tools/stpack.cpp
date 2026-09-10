@@ -455,21 +455,23 @@ int CommandPack (const Args& args) {
                 if (!SplitWiscene(source.data(), source.size(), split, &error))
                     return Fail(full + ": " + error);
 
-                uint32_t written = 0;
-                uint64_t writtenBytes = 0;
-                for (const EmbeddedResource& r : split.resources) {
-                    const std::string logical = NormalizePath(r.name);
-                    if (logical.empty()) continue;
-                    if (std::find(missing.begin(), missing.end(), logical) == missing.end()) continue;
-                    if (!WriteWholeFile(mirrorDir + "/" + logical,
-                                        split.Bytes() + r.offset, r.size, &error))
-                        return Fail(error);
-                    ++written;
-                    writtenBytes += r.size;
-                }
-                if (written > 0)
-                    Say("  mirror  " + std::to_string(written) + " resource(s) of " + scene.name +
-                        " -> " + mirrorDir + "  " + FormatBytes(writtenBytes));
+                //	The write rule itself lives in ExportSceneResources, because the editor
+                //	does the same thing on save for the resources only it can see - the
+                //	ones an in-editor model import brought in. `missing` above stays a
+                //	cheap pre-check: it is what decides whether this map's .wiscene has to
+                //	be read at all, and the export skips what is already there anyway.
+                ResourceExport exported;
+                if (!ExportSceneResources(split, mirrorDir, &exported, &error))
+                    return Fail(error);
+                if (exported.written > 0)
+                    Say("  mirror  " + std::to_string(exported.written) + " resource(s) of " +
+                        scene.name + " -> " + mirrorDir + "  " + FormatBytes(exported.bytes));
+                if (exported.rejected > 0)
+                    Say("  mirror  " + std::to_string(exported.rejected) + " resource name(s) of " +
+                        scene.name + " refused: they point outside " + mirrorDir);
+                if (exported.empty > 0)
+                    Say("  mirror  " + std::to_string(exported.empty) + " resource(s) of " +
+                        scene.name + " carry no bytes and were not written");
             }
         }
 

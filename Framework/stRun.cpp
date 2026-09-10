@@ -10,7 +10,13 @@
 #include "input/InputSystem.h"
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
+
+#ifndef _WIN32
+#include <cerrno>
+#include <unistd.h>
+#endif
 
 #ifdef _WIN32
 #include <SDL_syswm.h>
@@ -51,9 +57,51 @@ void DisableWindowRounding(SDL_Window* sdlWindow) {
 
 namespace st::detail { void SetActiveConfig(const AppConfig* config); }
 
+namespace {
+
+bool g_restartRequested = false;
+
+// Start this executable again with the command line it was given. Called after the
+// engine, SDL and the crash reporter have all shut down, so the new process never
+// races the old one for the window, the audio device or options.stad.
+void RelaunchSelf(int argc, char* argv[]) {
+#ifdef _WIN32
+    // GetCommandLineW rather than a rebuild from argv: it is the ORIGINAL line,
+    // quoting intact, so a path with spaces survives. CreateProcessW may write to the
+    // buffer it is handed, so it gets a copy of its own.
+    std::wstring commandLine = GetCommandLineW();
+    STARTUPINFOW startup = {};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process = {};
+    if (CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE,
+                       0, nullptr, nullptr, &startup, &process)) {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+    } else {
+        printf("Restart failed (CreateProcessW error %lu)\n", GetLastError());
+    }
+#else
+    // execv REPLACES this process, so nothing below it runs unless it failed. argv is
+    // null-terminated by the standard, which is what execv wants.
+    (void)argc;
+    execv("/proc/self/exe", argv);
+    printf("Restart failed (execv: %s)\n", strerror(errno));
+#endif
+}
+
+} // namespace
+
+void st::RequestRestart()   { g_restartRequested = true; }
+bool st::RestartRequested() { return g_restartRequested; }
+
 int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
-    // Install the project properties first: the crash reporter, the user-data folder
-    // and App::Config() all read from here during startup.
+    // Command line first. It used to be parsed after SetWindow(), which is AFTER the
+    // graphics device is created - so "vulkan", "dx12", "debugdevice" and the GPU
+    // preference flags were all read from an empty argument set and did nothing.
+    wi::arguments::Parse(argc, argv);
+
+    // Then the project properties: the crash reporter, the user-data folder and
+    // App::Config() all read from here during startup.
     st::detail::SetActiveConfig(&config);
     st::userdata::Configure(config.organization, config.name);
 
@@ -92,11 +140,22 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
 
     printf("Starting chassis\n");
     sdl2::sdlsystem_ptr_t system = sdl2::make_sdlsystem(SDL_INIT_EVERYTHING | SDL_INIT_EVENTS);
+
+    // Which backend this run uses - command line, then the player's saved choice, then
+    // the project default, then the platform default. Decided BEFORE the window exists
+    // because the window itself differs: SDL_WINDOW_VULKAN makes SDL load the Vulkan
+    // loader and fail window creation when there is none, so a DirectX 12 run must not
+    // ask for it. See Framework/render/GraphicsAPI.h.
+    const st::GraphicsAPI graphicsAPI = st::ResolveGraphicsAPI(config.graphicsAPI);
+    Uint32 windowFlags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+    if (graphicsAPI == st::GraphicsAPI::Vulkan)
+        windowFlags |= SDL_WINDOW_VULKAN;
+
     sdl2::window_ptr_t window = sdl2::make_window(
             config.name.c_str(),
             SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
             config.windowWidth, config.windowHeight,
-            SDL_WINDOW_SHOWN | SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+            windowFlags);
     if (window) {
         DisableWindowRounding(window.get());
     }
@@ -145,9 +204,15 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     }
 
     printf("Starting Engine.\n");
+    // The device is created here rather than left to Application::SetWindow, which is
+    // the seam the engine documents for it ("User can also create a graphics device if
+    // custom logic is desired, but they must do before this function!"). SetWindow only
+    // builds one when none exists, so it takes ours and appends nothing to the shader
+    // path - st::CreateGraphicsDevice already pointed it at shaders/hlsl6 or
+    // shaders/spirv to match.
+    application.CreateGraphicsDevice(graphicsAPI, window.get());
     application.SetWindow(window.get());
     printf("Starting Engine..\n");
-    wi::arguments::Parse(argc, argv);
 
     // application.infoDisplay.active = true;
     // application.infoDisplay.watermark = true;
@@ -159,7 +224,7 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
 
     bool quit = false;
     printf("Starting Engine....\n");
-    while (!quit) {
+    while (!quit && !g_restartRequested) {
         SDL_PumpEvents();
         application.Run();
 
@@ -275,5 +340,10 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     printf("Stopping crash reporter \n");
     st::crash::Shutdown();
     printf("Stopped\n");
+
+    if (g_restartRequested) {
+        printf("Restarting\n");
+        RelaunchSelf(argc, argv);
+    }
     return 0;
 }

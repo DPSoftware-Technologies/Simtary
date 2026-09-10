@@ -93,6 +93,45 @@ bool MergeWiscene (const uint8_t* ecsArchive, uint64_t ecsSize,
                    const std::vector<ResourceToEmbed>& resources,
                    std::vector<uint8_t>& out, std::string* error = nullptr);
 
+// What an export of a split's resources did.
+struct ResourceExport {
+    uint32_t written  = 0;  // files created
+    uint32_t skipped  = 0;  // a file of that name was already in the folder
+    uint32_t rejected = 0;  // name escaped the folder (see below); nothing written
+    uint32_t empty    = 0;  // resource carried no bytes; nothing written
+    uint64_t bytes    = 0;  // total size of what was written
+};
+
+// Write every resource a split holds into `outDir`, as loose files under the logical
+// name the map references them by: "textures/wall.dds" becomes
+// <outDir>/textures/wall.dds, subdirectories created as needed.
+//
+// This is the tree `stpack pack --resource-dir` merges into the package, and it is the
+// ONLY copy of those bytes outside the .wiscene that carried them - a map's textures
+// and meshes live inside that one file and nowhere else, so a project that never writes
+// them out is one `move` away from a map that ships naming resources no package holds.
+// The build-time packer does this for every map it converts (`--mirror-resources`), and
+// the editor does it when it saves a .stsd, which is the case the packer cannot see:
+// resources that arrived through an in-editor model import exist only in memory.
+//
+// A file already in the folder is LEFT ALONE, never overwritten. It may be a deliberate
+// override (that is what `stpack pack --on-conflict` is for), and rewriting tens of
+// megabytes to reproduce bytes already on disk is time spent for nothing. That makes a
+// repeat export cost one stat() per resource.
+//
+// A resource that carries no bytes is not written either. That happens when the engine
+// could not re-read the file it embedded from - the model it came from was moved or
+// deleted after the import - and a 0-byte file here would be worse than nothing: the
+// packer would merge it in as the texture, and every later export would skip it as
+// already present.
+//
+// A resource whose stored name would escape `outDir` - an absolute path, a drive
+// letter, or any ".." segment - is REFUSED and counted in `rejected` rather than
+// written. Those names come out of a scene file, which is untrusted input by the time
+// it reaches here, and this writes into the developer's own source tree.
+bool ExportSceneResources (const WisceneSplit& split, const std::string& outDir,
+                           ResourceExport* out = nullptr, std::string* error = nullptr);
+
 // .stsd
 
 struct SceneAssetRef {

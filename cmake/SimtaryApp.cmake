@@ -61,21 +61,23 @@ set(SIMTARY_COPY_DIR_CMD "${_SIMTARY_COPY_DIR}" CACHE INTERNAL "cmake -E directo
 option(SIMTARY_BUMP_BUILD_NUMBER "Advance <project>/build_number.txt on every build" ON)
 
 # simtary_compile_shader()
-# Compile one HLSL file with dxc into the app's runtime shader folder
-# (<exe>/shaders/hlsl6 on DX12, <exe>/shaders/spirv on Vulkan - the engine appends
-# the backend subfolder itself, see Application::SetWindow).
+# Compile one HLSL file into the app's runtime shader folders. On Windows that is BOTH
+# backends - <exe>/shaders/hlsl6 for DirectX 12 and <exe>/shaders/spirv for Vulkan -
+# because a Windows build can start on either one (Framework/render/GraphicsAPI.h) and
+# the engine appends the backend subfolder to its shader path at startup. Linux is
+# Vulkan only, so it gets spirv alone.
 #
 #   simtary_compile_shader(TARGET MyGame SOURCE assets/shaders/FooPS.hlsl PROFILE ps_6_0)
 #
-# A missing dxc is a warning, never a hard error: SIMTARY_DXC is empty and the call
-# is skipped, exactly like the engine's own shader tooling.
+# The compiler is `stshaderc` (tools/stshaderc.cpp), not dxc.exe. dxc.exe was the wrong
+# tool for a build that must produce SPIR-V on Windows: the copy that ships with the
+# Windows SDK is DXIL only, so this needed a Vulkan SDK installed to build a complete
+# Windows game. stshaderc drives the dxcompiler.dll vendored in Engine/ through
+# wi::shadercompiler, which always has both.
 function(simtary_compile_shader)
     cmake_parse_arguments(SH "ENGINE_ENV" "TARGET;SOURCE;PROFILE;ENTRY;OUTPUT_NAME" "" ${ARGN})
     if (NOT SH_TARGET OR NOT SH_SOURCE OR NOT SH_PROFILE)
         message(FATAL_ERROR "simtary_compile_shader: TARGET, SOURCE and PROFILE are required")
-    endif()
-    if (NOT SIMTARY_DXC)
-        return()
     endif()
     if (NOT SH_ENTRY)
         set(SH_ENTRY main)
@@ -83,90 +85,48 @@ function(simtary_compile_shader)
     if (NOT SH_OUTPUT_NAME)
         get_filename_component(SH_OUTPUT_NAME "${SH_SOURCE}" NAME_WE)
     endif()
+    # Absolute, because the command below runs from stshaderc's own directory - see the
+    # WORKING_DIRECTORY note there. A relative SOURCE still means what it looks like:
+    # relative to the CMakeLists that called this.
+    get_filename_component(SH_SOURCE "${SH_SOURCE}" ABSOLUTE)
 
     if (WIN32)
-        set(_backend hlsl6)
-        set(_spirv "")
+        set(_backends hlsl6 spirv)
     else()
-        set(_backend spirv)
-        set(_spirv -spirv)
+        set(_backends spirv)
     endif()
 
     # ENGINE_ENV: the shader includes globals.hlsli and reads the engine's bindless
-    # heaps, camera and frame constants. That needs the same compiler environment
-    # wi::shadercompiler builds for the engine's own shaders - the include path, the
-    # default root signature on DX12, and the binding shifts + descriptor set numbers
-    # on Vulkan (mirroring GraphicsDevice_Vulkan's VULKAN_BINDING_SHIFT_* and
-    # DESCRIPTOR_SET_*). Runtime compilation is not an option here: dxcompiler.dll is
-    # not shipped next to the exe, so a shader that is not built now is never built.
+    # heaps, camera and frame constants, so it needs the engine's include path. The
+    # rest of that environment - the DX12 default root signature, the Vulkan binding
+    # shifts and the descriptor set numbers - is applied by wi::shadercompiler itself,
+    # per format, from GraphicsDevice_Vulkan's own constants; CMake used to carry a
+    # hand-written copy of them that could drift. Runtime compilation is not an option
+    # here: dxcompiler.dll is not shipped next to the exe, so a shader that is not built
+    # now is never built.
     set(_engine_args "")
     if (SH_ENGINE_ENV)
         list(APPEND _engine_args
             -I "${SIMTARY_ROOT}/Engine/shaders"
             -I "${SIMTARY_ROOT}/assets/shaders")
-        if (WIN32)
-            list(APPEND _engine_args -rootsig-define WICKED_ENGINE_DEFAULT_ROOTSIGNATURE)
-        else()
-            list(APPEND _engine_args
-                -fspv-target-env=vulkan1.3
-                -fvk-use-dx-layout
-                -fvk-use-dx-position-w
-                -fvk-b-shift 0 0
-                -fvk-t-shift 1000 0
-                -fvk-u-shift 2000 0
-                -fvk-s-shift 3000 0
-                -D DESCRIPTOR_SET_BINDLESS_SAMPLER=1
-                -D DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER=2
-                -D DESCRIPTOR_SET_BINDLESS_UNIFORM_TEXEL_BUFFER=3
-                -D DESCRIPTOR_SET_BINDLESS_SAMPLED_IMAGE=4
-                -D DESCRIPTOR_SET_BINDLESS_STORAGE_IMAGE=5
-                -D DESCRIPTOR_SET_BINDLESS_STORAGE_TEXEL_BUFFER=6
-                -D DESCRIPTOR_SET_BINDLESS_ACCELERATION_STRUCTURE=7)
-        endif()
     endif()
 
-    add_custom_command(TARGET ${SH_TARGET} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:${SH_TARGET}>/shaders/${_backend}
-        COMMAND ${SIMTARY_DXC} -T ${SH_PROFILE} -E ${SH_ENTRY} ${_spirv} ${_engine_args}
-            "${SH_SOURCE}"
-            -Fo $<TARGET_FILE_DIR:${SH_TARGET}>/shaders/${_backend}/${SH_OUTPUT_NAME}.cso
-        COMMENT "Compiling ${SH_OUTPUT_NAME} -> shaders/${_backend}/"
-        VERBATIM
-    )
-endfunction()
-
-# dxc lookup (once per configure)
-# The bundled Engine/Utility/dxc only ships headers, so fall back to the copy that
-# comes with the Vulkan SDK or the Windows 10/11 SDK.
-if (NOT DEFINED SIMTARY_DXC)
-    find_program(SIMTARY_DXC dxc
-        HINTS
-            ${SIMTARY_ROOT}/Engine/Utility/dxc
-            "$ENV{VULKAN_SDK}/Bin"
-    )
-    if (NOT SIMTARY_DXC AND WIN32)
-        file(GLOB _dxc_sdk_candidates
-            "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/dxc.exe"
-            "C:/Program Files/Windows Kits/10/bin/*/x64/dxc.exe"
+    add_dependencies(${SH_TARGET} stshaderc)
+    foreach(_backend IN LISTS _backends)
+        add_custom_command(TARGET ${SH_TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:${SH_TARGET}>/shaders/${_backend}
+            COMMAND stshaderc -T ${SH_PROFILE} -E ${SH_ENTRY} -F ${_backend} ${_engine_args}
+                "${SH_SOURCE}"
+                -Fo $<TARGET_FILE_DIR:${SH_TARGET}>/shaders/${_backend}/${SH_OUTPUT_NAME}.cso
+            # From stshaderc's own directory: on Linux wi::shadercompiler loads
+            # "./libdxcompiler.so", a path relative to the WORKING DIRECTORY rather than
+            # to the executable, so anywhere else it would not find the compiler at all.
+            WORKING_DIRECTORY $<TARGET_FILE_DIR:stshaderc>
+            COMMENT "Compiling ${SH_OUTPUT_NAME} -> shaders/${_backend}/"
+            VERBATIM
         )
-        if (_dxc_sdk_candidates)
-            list(SORT _dxc_sdk_candidates)
-            list(LENGTH _dxc_sdk_candidates _dxc_count)
-            math(EXPR _dxc_last "${_dxc_count} - 1")
-            list(GET _dxc_sdk_candidates ${_dxc_last} SIMTARY_DXC)
-            set(SIMTARY_DXC "${SIMTARY_DXC}" CACHE FILEPATH "DirectX shader compiler" FORCE)
-        endif()
-    endif()
-    if (SIMTARY_DXC)
-        message(STATUS "Simtary: using DXC at ${SIMTARY_DXC}")
-    elseif (WIN32)
-        message(WARNING "dxc.exe not found - framework shaders won't be compiled. "
-            "Install the Windows SDK or place dxc.exe in Simtary/Engine/Utility/dxc.")
-    else()
-        message(WARNING "dxc not found, framework shaders won't be compiled. "
-            "Install with: sudo apt install directx-shader-compiler")
-    endif()
-endif()
+    endforeach()
+endfunction()
 
 # _simtary_collect_static_libs()
 # Every static library that ends up on a target's link line, transitively.
@@ -416,6 +376,16 @@ function(simtary_add_app)
     if (APP_MODULE)
         list(APPEND _compile_targets ${_framework_target} ${_gamecode_target})
     endif()
+
+    # Where the editor writes a saved map's raw resources (Framework/devui/imeditor.cpp).
+    # A SOURCE-tree path, and that is the point: the running game sits in the build
+    # output, while the folder the packer merges from is beside the project's assets, so
+    # the editor cannot find it by looking around itself. Baked into the framework only -
+    # nothing outside the editor reads it, and an editor is developer tooling. Empty when
+    # the project has no assets folder at all, which turns the export off rather than
+    # guessing a destination.
+    target_compile_definitions(${_framework_target} PRIVATE
+        ST_PROJECT_RESOURCE_DIR="${APP_RESOURCE_DIR}")
 
     source_group(TREE ${SIMTARY_FRAMEWORK_DIR} PREFIX "Simtary/Framework" FILES ${_framework_sources})
     source_group(TREE ${APP_SOURCE_DIR}        PREFIX "src"               FILES ${_app_sources})
@@ -775,16 +745,21 @@ function(simtary_add_app)
     # Incremental pre-pass so the first launch is never a cold compile. Turn off with
     # NO_SHADER_WARM for the fastest possible build, at the cost of a slow first run.
     if (NOT APP_NO_SHADER_WARM)
+        # BOTH backends on Windows, because the build can start on either one and the
+        # backend is chosen at launch, not here. It is not twice the work in practice:
+        # Simtary/shaders/ ships a warm cache for both and this pre-pass is incremental,
+        # so a normal build recompiles only what a shader edit actually invalidated.
         if (WIN32)
-            set(_warm hlsl6) # DX12 default; pass spirv too if you run with 'vulkan'
+            set(_warm hlsl6 spirv)
         else()
             set(_warm spirv)
         endif()
         add_dependencies(${APP_NAME} offlineshadercompiler)
+        string(REPLACE ";" " + " _warm_label "${_warm}")
         add_custom_command(TARGET ${APP_NAME} POST_BUILD
             COMMAND offlineshadercompiler ${_warm} strip_reflection quiet
             WORKING_DIRECTORY $<TARGET_FILE_DIR:${APP_NAME}>
-            COMMENT "Warming engine shader cache (incremental) -> shaders/${_warm}/"
+            COMMENT "Warming engine shader cache (incremental) -> shaders/${_warm_label}/"
             USES_TERMINAL
             VERBATIM
         )
@@ -794,12 +769,16 @@ function(simtary_add_app)
         # writes into the shared engine tree.
         if (NOT TARGET simtary_shadercache_update)
             add_custom_target(simtary_shadercache_update
-                COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    $<TARGET_FILE_DIR:${APP_NAME}>/shaders/${_warm}
-                    ${SIMTARY_ROOT}/shaders/${_warm}
-                COMMENT "Publishing <exe>/shaders/${_warm} back into Simtary/shaders/${_warm}"
-                VERBATIM
+                COMMENT "Publishing <exe>/shaders/${_warm_label} back into Simtary/shaders/"
             )
+            foreach(_warm_backend IN LISTS _warm)
+                add_custom_command(TARGET simtary_shadercache_update POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_directory
+                        $<TARGET_FILE_DIR:${APP_NAME}>/shaders/${_warm_backend}
+                        ${SIMTARY_ROOT}/shaders/${_warm_backend}
+                    VERBATIM
+                )
+            endforeach()
             set_target_properties(simtary_shadercache_update PROPERTIES FOLDER "Simtary")
         endif()
     endif()

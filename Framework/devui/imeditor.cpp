@@ -537,6 +537,29 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 				RequestSaveAs("stsd");
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Native .stsd: entities here, textures in the asset package");
+			{
+				// The .stsd carries no bytes, so a save has to put the map's textures and
+				// meshes somewhere. This is the copy the NEXT BUILD reads; the sidecar
+				// package the save also writes only lasts as long as this session.
+				const std::string resourceDir = ResourceExportDir();
+				ImGui::BeginDisabled(resourceDir.empty());
+				if (ImGui::MenuItem("Export resources on save", nullptr, &exportResources_))
+					SaveDebugSettings();
+				ImGui::EndDisabled();
+				// AllowWhenDisabled: the disabled case is the one that most needs saying
+				// why, and a plain IsItemHovered never fires on a greyed item.
+				if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+				{
+					if (resourceDir.empty())
+						ImGui::SetTooltip("No resource folder: this project has no assets/ "
+							"folder and AppConfig::editorResourceDir is empty.");
+					else
+						ImGui::SetTooltip("Write the map's raw textures, meshes and sounds to\n%s\n\n"
+							"That is the folder stpack merges into the game package, so a model "
+							"imported here reaches the next build. Files already there are left "
+							"alone.", resourceDir.c_str());
+				}
+			}
 			ImGui::Separator();
 			if (ImGui::MenuItem("Export .wiscene..."))
 				RequestSaveAs("wiscene");
@@ -1072,6 +1095,9 @@ void st::EditorUI::LoadDebugSettings()
 	debug_.grid          = store.GetBool(DebugKey("grid"),          debug_.grid);
 	debug_.voxels        = store.GetBool(DebugKey("voxels"),        debug_.voxels);
 	debug_.voxelClipmap  = store.GetInt (DebugKey("voxelClipmap"),  debug_.voxelClipmap);
+
+	// Not a debug draw, but it rides the same store: one editor preference, one place.
+	exportResources_ = store.GetBool(DebugKey("exportResources"), exportResources_);
 }
 
 void st::EditorUI::SaveDebugSettings() const
@@ -1091,6 +1117,7 @@ void st::EditorUI::SaveDebugSettings() const
 	store.SetBool(DebugKey("grid"),          debug_.grid);
 	store.SetBool(DebugKey("voxels"),        debug_.voxels);
 	store.SetInt (DebugKey("voxelClipmap"),  debug_.voxelClipmap);
+	store.SetBool(DebugKey("exportResources"), exportResources_);
 
 	st::SettingsManager::Get().Save();
 }
@@ -1459,6 +1486,20 @@ bool st::EditorUI::SaveSceneArchive(wi::scene::Scene& scene, const std::string& 
 	return true;
 }
 
+std::string st::EditorUI::ResourceExportDir()
+{
+	// The project's own choice first. Otherwise the folder the build baked in - a source
+	// tree path, because the running game lives in the build output and the folder the
+	// packer merges from does not.
+	if (!App::Config().editorResourceDir.empty())
+		return App::Config().editorResourceDir;
+#ifdef ST_PROJECT_RESOURCE_DIR
+	return ST_PROJECT_RESOURCE_DIR;
+#else
+	return std::string();
+#endif
+}
+
 bool st::EditorUI::SaveSceneDescriptor(wi::scene::Scene& scene, const std::string& path)
 {
 	// Embedding is turned ON for exactly this serialize, then put back.
@@ -1489,6 +1530,52 @@ bool st::EditorUI::SaveSceneDescriptor(wi::scene::Scene& scene, const std::strin
 	{
 		lastSaveMessage_ = "SAVE FAILED: " + error;
 		return false;
+	}
+
+	// The map's raw resources, as loose files in the project's assets/resources.
+	//
+	// This is the half that survives the session. The sidecar package below makes the
+	// map reload NOW; this is what the next BUILD sees - `stpack pack --resource-dir`
+	// merges the folder into the game package, so a model imported in the editor becomes
+	// part of the shipped content instead of living in a stray .strd next to the map.
+	// The build-time packer already mirrors every map it converts into the same folder;
+	// this covers the resources it cannot see, the ones that never came from a .wiscene
+	// on disk.
+	//
+	// A failure here does not fail the save. The .stsd and the sidecar are what the map
+	// needs to exist and to reload; a folder that could not be written is a problem with
+	// the next build, and losing the save over it would be the worse trade.
+	st::asset::ResourceExport exported;
+	const std::string resourceDir = exportResources_ ? ResourceExportDir() : std::string();
+	if (!resourceDir.empty())
+	{
+		std::string exportError;
+		if (!st::asset::ExportSceneResources(split, resourceDir, &exported, &exportError))
+		{
+			wi::backlog::post("Editor: resource export to " + resourceDir + " failed: " +
+			                  exportError, wi::backlog::LogLevel::Error);
+		}
+		else if (exported.written > 0)
+		{
+			wi::backlog::post("Editor: wrote " + std::to_string(exported.written) +
+			                  " resource(s) to " + resourceDir +
+			                  " for the next build's packer");
+		}
+		if (exported.rejected > 0)
+		{
+			wi::backlog::post("Editor: " + std::to_string(exported.rejected) +
+			                  " resource name(s) point outside " + resourceDir +
+			                  " and were not written", wi::backlog::LogLevel::Warning);
+		}
+		if (exported.empty > 0)
+		{
+			// The engine re-reads an embedded resource from the file it came from when
+			// it serializes one, so this means that file has moved or gone since the
+			// import. The map still references the name, and nothing now holds the bytes.
+			wi::backlog::post("Editor: " + std::to_string(exported.empty) +
+			                  " resource(s) had no bytes to write - the file they were "
+			                  "imported from is gone", wi::backlog::LogLevel::Warning);
+		}
 	}
 
 	// Anything the mounted packages already hold needs no copy - the map just references
@@ -1544,7 +1631,9 @@ bool st::EditorUI::SaveSceneDescriptor(wi::scene::Scene& scene, const std::strin
 	lastSaveMessage_ = "saved " + stem + "  (" + std::to_string(descriptor.assets.size()) +
 	                   " assets" + (unpacked.empty() ? ", all already packed"
 	                                                 : ", " + std::to_string(unpacked.size()) +
-	                                                   " written to " + name + ".strd") + ")";
+	                                                   " written to " + name + ".strd") +
+	                   (exported.written > 0 ? ", " + std::to_string(exported.written) +
+	                                           " exported for the packer" : "") + ")";
 	return true;
 }
 

@@ -1,5 +1,7 @@
 #include "display/DisplaySettings.h"
 
+#include "stRun.h"
+
 #include "Simtary.h"
 #include "imgui.h"
 
@@ -260,6 +262,9 @@ void DisplaySettings::SaveTo(nbt::Tag& out) const {
     out.putBool ("framerateLock",   appliedLock_);
     out.putFloat("targetFrameRate", appliedTargetFps_);
     out.putFloat("renderScale",     appliedScale_);
+    // The backend cannot be applied to a running process, so the live value is what is
+    // persisted - st::ResolveGraphicsAPI() reads this key back on the next start.
+    out.putInt  ("graphicsAPI",     (int)graphicsAPI);
     // Standby applies live, so persist the live values rather than an applied_ copy.
     out.putBool ("standbyOnUnfocus", standbyOnUnfocus);
     out.putInt  ("unfocusedFps",     unfocusedFps);
@@ -278,6 +283,7 @@ void DisplaySettings::LoadFrom(const nbt::Tag& in) {
     framerateLock          = in.getBool ("framerateLock",   framerateLock);
     targetFrameRate        = in.getFloat("targetFrameRate", targetFrameRate);
     renderScale            = in.getFloat("renderScale",     renderScale);
+    graphicsAPI            = (GraphicsAPI)in.getInt("graphicsAPI", (int)graphicsAPI);
     standbyOnUnfocus       = in.getBool ("standbyOnUnfocus", standbyOnUnfocus);
     unfocusedFps           = in.getInt  ("unfocusedFps",     unfocusedFps);
     standbyOnIdle          = in.getBool ("standbyOnIdle",    standbyOnIdle);
@@ -292,6 +298,8 @@ void DisplaySettings::LoadFrom(const nbt::Tag& in) {
         resolution.width  = 1280;
         resolution.height = 720;
     }
+    if (graphicsAPI != GraphicsAPI::DirectX12 && graphicsAPI != GraphicsAPI::Vulkan)
+        graphicsAPI = GraphicsAPI::Auto;
 }
 
 void DisplaySettings::LoadAndApply(const nbt::Tag& in, wi::Application& app) {
@@ -372,6 +380,61 @@ void DisplaySettings::GUI(wi::Application& app) {
         if (app.window) SDL_GetWindowSize(app.window, &w, &h);
         ImGui::TextDisabled("Rendering at %d x %d, presented at %d x %d",
             (int)(w * renderScale), (int)(h * renderScale), w, h);
+    }
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Graphics API");
+
+    {
+        // Not staged behind Apply: there is nothing this process can do with the new
+        // value. The device owns every texture, buffer and pipeline the engine has, so
+        // the switch is a restart - the readout below says what is running now and the
+        // button offers the restart when the two disagree.
+        const GraphicsAPI running = ActiveGraphicsAPI();
+
+        const GraphicsAPI options[] = { GraphicsAPI::Auto, GraphicsAPI::DirectX12, GraphicsAPI::Vulkan };
+        std::string label = GraphicsAPIName(graphicsAPI);
+        if (graphicsAPI == GraphicsAPI::Auto)
+            label += std::string(" (") + GraphicsAPIName(DefaultGraphicsAPI()) + ")";
+
+        if (ImGui::BeginCombo("Backend", label.c_str())) {
+            for (GraphicsAPI api : options) {
+                // A backend this build does not contain is shown greyed rather than
+                // hidden: "Vulkan is not in this build" is a different answer from
+                // "Vulkan does not exist", and only one of them is worth a bug report.
+                const bool compiled  = (api == GraphicsAPI::Auto) || GraphicsAPICompiledIn(api);
+                const bool available = compiled && ((api == GraphicsAPI::Auto) || GraphicsAPIAvailable(api));
+
+                std::string entry = GraphicsAPIName(api);
+                if (api == GraphicsAPI::Auto)
+                    entry += std::string(" (") + GraphicsAPIName(DefaultGraphicsAPI()) + ")";
+                else if (!compiled)  entry += "  - not in this build";
+                else if (!available) entry += "  - no runtime on this machine";
+
+                ImGui::BeginDisabled(!compiled);
+                if (ImGui::Selectable(entry.c_str(), api == graphicsAPI))
+                    graphicsAPI = api;
+                ImGui::EndDisabled();
+            }
+            ImGui::EndCombo();
+        }
+
+        if (const wi::graphics::GraphicsDevice* device = wi::graphics::GetDevice())
+            ImGui::TextDisabled("Running %s on %s", GraphicsAPIName(running),
+                                device->GetAdapterName().c_str());
+        else
+            ImGui::TextDisabled("Running %s", GraphicsAPIName(running));
+
+        // Auto resolves to the platform default, so it only disagrees with what is
+        // running when the requested backend was unavailable and fell back.
+        const GraphicsAPI wanted = (graphicsAPI == GraphicsAPI::Auto)
+                                 ? DefaultGraphicsAPI() : graphicsAPI;
+        if (wanted != running) {
+            ImGui::TextDisabled("Takes effect on the next launch.");
+            ImGui::SameLine();
+            if (ImGui::Button("Restart Now"))
+                RequestRestart();
+        }
     }
 
     ImGui::Spacing();

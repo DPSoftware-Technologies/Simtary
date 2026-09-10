@@ -38,6 +38,7 @@
 #include "render/Projector.h"
 #include "render/Laser.h"
 #include "render/Optics.h"
+#include "render/GraphicsAPI.h"
 #include "display/DisplaySettings.h"
 #include "io/SettingsManager.h"
 #include "io/asset/AssetSystem.h"
@@ -154,6 +155,25 @@ struct AppConfig {
     // for an installer or a "verify game files" menu item, not for every launch.
     bool assetPacksVerify = false;
 
+    // Which graphics backend to start on. Auto is the platform default - DirectX 12
+    // on Windows, Vulkan everywhere else. A player's saved choice (the Display panel)
+    // and the "vulkan" / "dx12" command line arguments both outrank this, so setting
+    // it here only moves the DEFAULT a fresh install starts on. The backend is fixed
+    // for the lifetime of the process; changing it needs a restart.
+    st::GraphicsAPI graphicsAPI = st::GraphicsAPI::Auto;
+
+    // Where the editor writes a saved map's RAW RESOURCES - its textures, meshes and
+    // sounds as loose files, under the names the map references them by. That folder is
+    // the one `stpack pack --resource-dir` merges into the game package, so it is how a
+    // model imported in the editor reaches the next build instead of living only in the
+    // sidecar package beside the map.
+    //
+    // Empty means "use the project's own assets/resources", which the build bakes in as
+    // ST_PROJECT_RESOURCE_DIR - so a normal project needs nothing here. Set it to point
+    // somewhere else; the export is editor-only either way, and a build with no editor
+    // never writes anything.
+    std::string editorResourceDir;
+
     // Developer tooling. Ship a game with Hidden (or Disabled); Visible is the
     // development default.
     DevUIMode devUI = DevUIMode::Visible;
@@ -198,6 +218,12 @@ public:
     // The mirrors and lenses those beams travel through. Separate from the lasers
     // because one mirror serves every beam in the scene. See Framework/render/Optics.h.
     st::OpticsSystem& Optics() { return optics_; }
+
+    // Create the graphics device for `api` before the engine would, so the backend
+    // is the framework's choice rather than wiApplication's built-in default. st::Run
+    // calls this before SetWindow(); doing it afterwards is too late, because
+    // SetWindow creates its own device when none exists yet.
+    void CreateGraphicsDevice(st::GraphicsAPI api, wi::platform::window_type window);
 
     void Initialize() override;
     void Compose(wi::graphics::CommandList cmd) override;

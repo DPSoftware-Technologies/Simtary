@@ -24,4 +24,13 @@ namespace st {
 // Returns the process exit code.
 int Run(int argc, char* argv[], AppConfig& config, App& app);
 
+// Close the game and start it again with the same command line. For settings that
+// cannot be applied to a running process - the graphics backend is the one the
+// framework has - so the options panel can offer more than "quit and come back".
+//
+// The current run shuts down normally first: the loop ends, App::Exit() runs, and
+// options.stad is written, so the new process starts on whatever was just chosen.
+void RequestRestart();
+bool RestartRequested();
+
 } // namespace st

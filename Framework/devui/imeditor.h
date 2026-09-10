@@ -192,6 +192,10 @@ private:
     void SaveScene(wi::scene::Scene& scene, const std::string& path);
     bool SaveSceneArchive(wi::scene::Scene& scene, const std::string& path);
     bool SaveSceneDescriptor(wi::scene::Scene& scene, const std::string& path);
+    // Where a .stsd save writes the map's raw resources: AppConfig::editorResourceDir if
+    // the project set one, otherwise the assets/resources the build baked in. Empty means
+    // the export is off - no folder was configured and nothing is guessed.
+    static std::string ResourceExportDir();
     // `defaultExt` is appended when the user types a bare name in the dialog.
     void RequestSaveAs(const char* defaultExt = "stsd");
     void FlushPendingSave(wi::scene::Scene& scene);
@@ -352,6 +356,12 @@ private:
     // Written by the file dialog's own thread, drained on the main thread in Draw().
     std::mutex  pendingSaveMutex_;
     std::string pendingSavePath_;
+    // Write the map's raw resources out as loose files beside the project's assets on
+    // every .stsd save, so the next build's packer merges them into the game package.
+    // Without it, a model imported in the editor exists only in the sidecar package this
+    // session mounted, and the map reloads untextured on the next launch. Saved with the
+    // other editor settings.
+    bool        exportResources_ = true;
 
     // scene import
     // Same contract as the save path: the dialog thread (and the SDL drop handler) only

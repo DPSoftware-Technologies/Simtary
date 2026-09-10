@@ -24,7 +24,7 @@ Simtary/
 │                   ufbx, reused by every project's FetchContent
 ├── crashreporter/  SimtaryCrashReporter — one reporter GUI for all games
 ├── cmake/          SimtaryBootstrap, SimtaryApp, SimtaryPlatform, IncrementBuild
-├── tests/ tools/   nbt_test, asset_pack_test, model_import_test, stpack,
+├── tests/ tools/   nbt_test, asset_pack_test, model_import_test, stpack, stshaderc,
 │                   make_player_descriptor
 └── CMakeLists.txt
 ```
@@ -69,7 +69,8 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `scene/DayNightComponent.cpp` | The `"sticDayNight"` NATIVE COMPONENT - the same system attached from the editor, so place, date, clock speed, look and weather are scene data that saves with the map and needs no game code. `NCA_*_weatherPreset` names the sky, so a map opens in the weather it was designed for. |
 | `scene/RayComponent.*` | The `"sticRay"` native component: a raycast bolted to an entity, re-cast every frame. The shared seam for a laser sight, a rangefinder, an interaction prompt and an “am I aiming at it” HUD. |
 | `render/Framebuffer.*` | `st::gfx::Framebuffer` — an off-screen surface you draw into and hand to a material, a light mask or a projector. CPU mode wraps libgfx (`GFXcanvas`) and owns the staging texture, row pitch and flip; GPU mode is a render target you draw into with `wi::image`/`wi::font` between `Begin()`/`End()`. |
-| `display/DisplaySettings.*` | Player-facing video options: window mode, monitor, resolution, refresh rate, v-sync, frame cap, render scale. NOT DevUI — `st::App::Display().GUI(app)` drops into a game's own options menu, and DevUI renders the same panel in its Display tab. Sole owner of v-sync and the frame cap; `GraphicsSettings` deliberately no longer carries them. |
+| `render/GraphicsAPI.*` | `st::GraphicsAPI` (Auto / DirectX12 / Vulkan) - which backend the process runs on, resolved once at startup from the command line, `options.stad`, `AppConfig::graphicsAPI` and the platform default, with a fallback when the chosen runtime is not installed. `CreateGraphicsDevice()` builds the device and points the shader path at the matching cache folder; `ActiveGraphicsAPI()` is what actually came up. |
+| `display/DisplaySettings.*` | Player-facing video options: window mode, monitor, resolution, refresh rate, v-sync, frame cap, render scale, and the graphics backend for the next launch. NOT DevUI — `st::App::Display().GUI(app)` drops into a game's own options menu, and DevUI renders the same panel in its Display tab. Sole owner of v-sync and the frame cap; `GraphicsSettings` deliberately no longer carries them. |
 | `audio/faust/` | `FaustManager` (OpenAL DSP host) + `FaustProcessor<T>`. Starts with no processors — games register their own AOT instruments. |
 | `SubWinStatus.*` | The native (Win32/X11) loading window, on its own thread, because a blocking `Scene::Load()` means no ImGui frame can be drawn. Two text lines - a phase and a dimmed, middle-elided detail line - plus a progress bar. Every setter is thread-safe; the detail line is written from loading workers. |
 | `anim/`, `eventBus.*`, `ZmqHandler.*` | Animation descriptors (`.staod`, NBT — read through `wi::helper::FileRead`, so they resolve out of a mounted asset package), main-thread event bus, ZMQ bridge, native (Win32/X11) loading window. |
@@ -187,9 +188,12 @@ embedded:
 `simtary_add_app(PACK_ON_CONFLICT add)` sets it per project. `stpack pack --strict`
 turns a passed-through map's missing resources from a warning into a failed build.
 
-**Swapping in a map the editor saved.** The editor's `.stsd` references resources by
-name and copies none of them — anything the mounted packages already held stays in those
-packages. So copying only the map into `assets/scenes/` and deleting the `.wiscene`
+**Swapping in a map the editor saved.** A `.stsd` references resources by name and holds
+none of them — anything the mounted packages already held stays in those packages. An
+editor save now writes the map's own resources into `assets/resources/` as it goes (see
+"A native save ALSO writes the map's raw resources" below), so a map saved by THIS editor
+carries its dressing into the next build on its own. A map that arrived from somewhere
+else does not: copying only that map into `assets/scenes/` and deleting the `.wiscene`
 leaves the pack with nothing to resolve against, and the map loads white. The recipe:
 
 ```
@@ -209,9 +213,12 @@ stpack resources assets/scenes/s1map.stsd \
 Since the packer MIRRORS as it converts (below), a project that has built once already
 has these files and the recipe is only for a map that arrived from elsewhere.
 
-**Every build mirrors a converted map's resources into `assets/resources/`.**
-`simtary_pack_assets(MIRROR_DIR ...)` - wired to the same folder as `RESOURCE_DIR` by
-`simtary_add_app`, which now CREATES `assets/resources/` rather than merely detecting it.
+**Every build mirrors a converted map's resources into `assets/resources/`, and so does
+every editor save.** `simtary_pack_assets(MIRROR_DIR ...)` - wired to the same folder as
+`RESOURCE_DIR` by `simtary_add_app`, which now CREATES `assets/resources/` rather than
+merely detecting it. The editor writes into the same folder when it saves a `.stsd` (see
+"A native save ALSO writes the map's raw resources" below), which is what covers the
+resources the packer never sees because they came from an in-editor model import.
 A resource of a `.wiscene` exists in exactly one place, inside that file, so a project
 that never copies it out is one `move` away from a package that cannot dress its own map.
 Mirroring costs a stat() per resource on a normal build - the descriptor lists the names,
@@ -463,12 +470,27 @@ its own `lensFlareVS/PS.hlsl` and both land in the same output folder, which is
 case-insensitive on Windows.
 
 **A framework shader that includes `globals.hlsli` needs `ENGINE_ENV`.**
-`simtary_compile_shader(... ENGINE_ENV ...)` adds the engine's include path plus the
-DX12 default root signature / the Vulkan binding shifts, which the bare dxc call the
-other framework shaders use does not have. Runtime compilation is not a fallback
-here: `dxcompiler.dll` is not shipped next to the exe, so `wi::renderer::LoadShader`
-can only ever load a `.cso` that the build already produced. `StProjectorCS.hlsl` and
+`simtary_compile_shader(... ENGINE_ENV ...)` adds the engine's shader include paths.
+The rest of that environment - the DX12 default root signature, the Vulkan binding
+shifts, the descriptor set numbers - comes from `wi::shadercompiler` itself, per format,
+built out of `GraphicsDevice_Vulkan`'s own constants; CMake used to carry a hand-written
+copy of them that could drift. Runtime compilation is not a fallback here:
+`dxcompiler.dll` is not shipped next to the exe, so `wi::renderer::LoadShader` can only
+ever load a `.cso` that the build already produced. `StProjectorCS.hlsl` and
 `StLaserCS.hlsl` are the shaders in this category.
+
+**Framework shaders are compiled by `stshaderc`, not by `dxc.exe`, and on Windows they
+are compiled TWICE.** Twice because a Windows build can start on either backend, so
+every framework shader has to exist as DXIL in `shaders/hlsl6/` and as SPIR-V in
+`shaders/spirv/` - a Vulkan run with only the DX12 set comes up with no ImGui, which is
+no UI at all. And by `stshaderc` (`tools/stshaderc.cpp`, a CLI over `wi::shadercompiler`)
+because dxc.exe cannot be relied on for the SPIR-V half: the copy that ships with the
+Windows 10/11 SDK is DXIL only ("SPIR-V CodeGen not available"), so the build needed a
+Vulkan SDK installed to produce a complete game. The `dxcompiler` vendored in `Engine/`
+has both, and is what the engine's own shaders already go through. It links the engine,
+so its runtime DLLs are staged beside it and its build steps run from its own directory
+- on Linux `wi::shadercompiler` loads `./libdxcompiler.so`, which is relative to the
+working directory rather than to the executable.
 
 **Why the projector is not a `LightComponent`.** `light_spot()` in
 `Engine/shaders/lightingHF.hlsli` clips to a circular cone, so a mask texture, a
@@ -844,6 +866,44 @@ left is content that session introduced, which lives nowhere the next run would 
 it goes into `<name>.strd` beside the map and is mounted immediately. Skipping that step
 gives a map that saves "successfully" and reloads grey.
 
+**A native save ALSO writes the map's raw resources into the project's
+`assets/resources/`, and the two halves answer different questions.** The sidecar package
+above is for NOW: it makes the map reload in this session. The loose export is for the
+next BUILD - `stpack pack --resource-dir` merges that folder into the game package, so a
+model imported in the editor becomes shipped content instead of living in a stray `.strd`
+beside the map. Without it the sidecar is the only copy, nothing mounts it on the next
+launch, and the map that saved fine comes up untextured tomorrow.
+
+It is the same write the build-time mirror does, and deliberately the same code:
+`st::asset::ExportSceneResources` (`Framework/io/asset/SceneDescriptor.h`) is what both
+`stpack --mirror-resources` and the editor call, because two copies of "write these
+resources out under the names the map uses" would drift. What the editor adds is the case
+the packer cannot see - resources that never came from a `.wiscene` on disk, because an
+in-editor import brought them in from a model file.
+
+Three rules the shared function carries, all of them load-bearing:
+
+- **A file already in the folder is never overwritten.** It may be a deliberate override
+  (`--on-conflict`), and rewriting tens of megabytes to reproduce bytes already on disk is
+  time spent for nothing. A repeat export therefore costs one stat() per resource.
+- **A name that escapes the folder is refused.** Resource names come out of a scene file
+  and this writes into the developer's own source tree, so an absolute path, a drive
+  letter or a `..` segment is counted and dropped rather than followed.
+- **A resource with no bytes is not written.** That is what an embedded resource whose
+  source file has since moved looks like (`Serialize_WRITE` re-reads from
+  `container_filename` and gets nothing), and a 0-byte file here would be worse than
+  none: the packer would merge it in as the texture, and every later export would skip
+  it as already present.
+
+Where it writes: `AppConfig::editorResourceDir` if the project set one, otherwise the
+`assets/resources` the build baked in as `ST_PROJECT_RESOURCE_DIR`. It has to be baked -
+the running game sits in the build output and the folder the packer merges from is beside
+the project's sources, so the editor cannot find it by looking around itself. `Scene >
+Export resources on save` turns it off; the setting is saved with the other editor
+preferences. A failure to write does NOT fail the save - the `.stsd` and the sidecar are
+what the map needs to exist, and losing a save over the next build's folder is the worse
+trade.
+
 **A zero `packUuid` in a `.stsd` is not a mismatch.** It means the map was never bound to
 one package build, which is exactly what an editor save is when every resource it
 references was already mounted. `stpack scene` only warns about a UUID that is set AND
@@ -929,10 +989,13 @@ link is two heaps. The visible symptom was only `LNK4098`; the invisible one was
 a module boundary. Fixed by `LANGUAGES C CXX` plus an explicit
 `CMAKE_MSVC_RUNTIME_LIBRARY`.
 
-**Shader cache.** `Simtary/shaders/` is staged into every game's output before the
-incremental `offlineshadercompiler` pre-pass, so first launch is never cold. After a
-shader-heavy change, publish the result back with the
-`simtary_shadercache_update` target.
+**Shader cache.** `Simtary/shaders/` holds `hlsl6/` and `spirv/` and is staged into
+every game's output before the incremental `offlineshadercompiler` pre-pass, so first
+launch is never cold. Windows warms BOTH, since either backend can be the one that
+launches - not twice the work in practice, because the shipped cache covers both and the
+pre-pass only recompiles what an edit invalidated. After a shader-heavy change, publish
+the result back with the `simtary_shadercache_update` target, which now publishes every
+backend it warmed.
 
 **Exceptions and RTTI are off everywhere** (`/EHsc-`, `/GR-`; `-fno-exceptions`,
 `-fno-rtti`). Do not introduce `throw`, `dynamic_cast` or `typeid` in engine or app
@@ -1032,10 +1095,38 @@ origin change even when `staticGeometry` is on. Otherwise static geometry is reg
 once at `Start` and never re-read; a door sets `staticGeometry` off and pays a rebuild
 (and a scene re-commit) at `rebuildRateHz`.
 
-**Graphics API**: DirectX 12 on Windows, Vulkan on Linux (the SDL2 window is created
-with `SDL_WINDOW_VULKAN`). Pass `vulkan` as a command-line argument to force Vulkan on
-Windows. Other useful args: `debugdevice`, `gpuvalidation`, `igpu`, `nvidiagpu`,
-`amdgpu`.
+**The graphics backend is chosen at STARTUP and both are in the Windows build.**
+`st::ResolveGraphicsAPI` (`Framework/render/GraphicsAPI.h`) picks it from, highest
+first: the command line (`vulkan` / `dx12`), the player's saved choice (`options.stad`,
+`display` -> `graphicsAPI`, written by the Display panel), `AppConfig::graphicsAPI`, and
+finally the platform default - DirectX 12 on Windows, Vulkan elsewhere. A backend whose
+runtime is not installed falls back to the other rather than failing to start, which is
+also why the command line outranks the saved choice: a machine that saved a backend it
+cannot run is still startable.
+
+Three things about it are load-bearing:
+
+- **The device is created by the FRAMEWORK, before `Application::SetWindow`.**
+  `st::App::CreateGraphicsDevice()` is called from `st::Run`; SetWindow only builds a
+  device when none exists, which is the seam the engine documents for exactly this. Doing
+  it there is also what lets the shader path be pointed at `shaders/hlsl6/` or
+  `shaders/spirv/` to match, since SetWindow appends nothing when it did not create the
+  device.
+- **`wi::arguments::Parse` must run before that.** It used to be called AFTER SetWindow,
+  so `vulkan`, `dx12`, `debugdevice` and the GPU preference flags were all read from an
+  empty argument set and did nothing at all; the device was always the platform default.
+- **`SDL_WINDOW_VULKAN` is only asked for on a Vulkan run.** SDL loads the Vulkan loader
+  for that flag and fails window creation when there is none, so passing it
+  unconditionally made a DirectX 12 build refuse to start on a machine with no Vulkan
+  driver.
+
+Switching is a RESTART, not a live toggle: a device owns every texture, buffer, pipeline
+and shader the engine has. `st::RequestRestart()` (`stRun.h`) shuts the game down
+normally - so `App::Exit` writes `options.stad` first - and starts the same command line
+again; the Display panel's "Restart Now" is its one caller.
+
+Other useful args: `debugdevice`, `gpuvalidation`, `gpu_verbose`, `igpu`, `nvidiagpu`,
+`amdgpu`, `intelgpu`.
 
 ## Git
 
