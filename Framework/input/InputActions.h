@@ -268,7 +268,11 @@ public:
 	//	missing rather than a crash.
 	void Bind(const Registry* registry, const std::string& mapName, int playerIndex);
 
-	void Evaluate(float dt);
+	// `ignoreGate` evaluates every binding even while st::InputSystem has the device
+	//	class suppressed. Only a diagnostic reader wants it: a panel whose whole job is
+	//	to SHOW what a device is doing goes blank otherwise, because focusing that panel
+	//	is itself what raises the editor's capture. Game runtimes leave it false.
+	void Evaluate(float dt, bool ignoreGate = false);
 
 	bool Valid() const { return registry_ != nullptr && mapIndex_ >= 0; }
 	const std::string& MapName() const { return mapName_; }
@@ -309,7 +313,7 @@ private:
 // Evaluate one action for one player against the current frame snapshot. Exposed so a
 //	tool (the DevUI action tree) can show a live value without owning a runtime.
 ActionState EvaluateAction(const Action& action, int playerIndex, float dt,
-                           const ActionState& previous);
+                           const ActionState& previous, bool ignoreGate = false);
 
 // Display helpers for tooling.
 const char* ToString(ActionType t);

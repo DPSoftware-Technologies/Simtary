@@ -484,7 +484,10 @@ void InputActionsWindow(bool* show) {
 	if (!reg.Maps().empty()) {
 		selected_map = std::clamp(selected_map, 0, (int)reg.Maps().size() - 1);
 		preview_runtime.Bind(&reg, reg.Maps()[selected_map].name, preview_player);
-		preview_runtime.Evaluate(ImGui::GetIO().DeltaTime);
+		// Ungated: this panel exists to show what the devices are doing, and focusing it
+		// is exactly what makes the editor raise its input capture - which would suppress
+		// keyboard, mouse, gamepad and touch alike and leave every live value at 0.
+		preview_runtime.Evaluate(ImGui::GetIO().DeltaTime, /*ignoreGate=*/true);
 	}
 
 	ImGui::SetNextWindowSize(ImVec2(820, 480), ImGuiCond_FirstUseEver);

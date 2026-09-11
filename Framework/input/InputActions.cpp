@@ -320,7 +320,7 @@ ActionBuilder& ActionBuilder::Inverted() {
 // Evaluation
 // ---------------------------------------------------------------------------
 ActionState EvaluateAction(const Action& action, int playerIndex, float dt,
-                           const ActionState& previous) {
+                           const ActionState& previous, bool ignoreGate) {
 	ActionState out;
 
 	// One candidate per binding group. The composite arms share candidates[0]; every
@@ -332,7 +332,7 @@ ActionState EvaluateAction(const Action& action, int playerIndex, float dt,
 
 	for (const Binding& b : action.bindings) {
 		const DeviceClass device = b.Device();
-		if (gate[device])
+		if (!ignoreGate && gate[device])
 			continue; // the UI owns this device this frame
 
 		XMFLOAT2 raw = ReadRaw(b, playerIndex);
@@ -459,7 +459,7 @@ const ActionMap* ActionRuntime::Map() const {
 	return &registry_->Maps()[mapIndex_];
 }
 
-void ActionRuntime::Evaluate(float dt) {
+void ActionRuntime::Evaluate(float dt, bool ignoreGate) {
 	const ActionMap* map = Map();
 	if (map == nullptr)
 		return;
@@ -469,7 +469,7 @@ void ActionRuntime::Evaluate(float dt) {
 		states_.assign(map->actions.size(), ActionState{});
 
 	for (size_t i = 0; i < map->actions.size(); ++i) {
-		states_[i] = EvaluateAction(map->actions[i], playerIndex_, dt, states_[i]);
+		states_[i] = EvaluateAction(map->actions[i], playerIndex_, dt, states_[i], ignoreGate);
 	}
 }
 
