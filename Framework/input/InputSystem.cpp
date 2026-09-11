@@ -155,6 +155,11 @@ void InputSystem::Update(float dt) {
 		//	which is the same rule gated() applies to the legacy keymap.
 		gate.suppressed[(int)DC::Gamepad]  = uiInputCaptured_;
 		gate.suppressed[(int)DC::Touch]    = mouseSuspended_;
+		// Focus is the one gate a diagnostic reader cannot waive, and the only one that
+		//	reaches the gamepad when no editor capture is up: XInput polls by user index
+		//	with no notion of window focus, so without this a pad keeps driving the game
+		//	from behind another application.
+		gate.windowUnfocused = unfocused;
 
 		st::input::BeginFrame(dt, mouseDelta_, wi::input::GetMouseState().delta_wheel);
 	}

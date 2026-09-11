@@ -4,6 +4,7 @@
 #include "imgui.h"
 
 #include <cmath>
+#include <string>
 
 namespace st {
 
@@ -62,6 +63,30 @@ void InputComponent::DrawDebug() {
 		ImGui::TextDisabled("Register it from st::App::OnKeyRegister(). Available maps are");
 		ImGui::TextDisabled("listed in Simtary > Input Actions.");
 		return;
+	}
+
+	// This table shows what the GAME sees, gate and all - which is why every value can sit
+	//	at 0 with a stick clearly deflected. The editor raises an input capture whenever the
+	//	Game Viewport is not the focused panel, and focusing THIS panel to read the table is
+	//	what raises it. Say so, or the component looks broken.
+	{
+		const st::input::DeviceGate& gate = st::input::Gate();
+		if (gate.windowUnfocused) {
+			ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "Window not focused - all input suppressed.");
+		} else {
+			std::string held;
+			for (int d = 0; d < (int)st::input::DeviceClass::Count; ++d) {
+				if (!gate.suppressed[d])
+					continue;
+				if (!held.empty()) held += ", ";
+				held += st::input::ToString((st::input::DeviceClass)d);
+			}
+			if (!held.empty()) {
+				ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1), "UI owns: %s", held.c_str());
+				ImGui::TextDisabled("Values below stay 0 until the Game Viewport has focus.");
+				ImGui::TextDisabled("Simtary > Input Actions reads the same maps ungated.");
+			}
+		}
 	}
 
 	ImGui::Separator();

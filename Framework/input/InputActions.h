@@ -246,8 +246,15 @@ struct ActionState {
 //	per frame from the ImGui capture flags and its own editor gates; the evaluator only
 //	reads it. Kept here rather than in InputSystem so InputActions has no dependency on
 //	it and the two can be used apart.
+//	`windowUnfocused` is a separate, harder gate: another OS window has the keyboard, so
+//	NOTHING should read as input - not even a diagnostic panel that asked to ignore the
+//	per-class gate. It is its own field rather than a bit in `suppressed` for exactly that
+//	reason: `ignoreGate` waives UI ownership, never focus. It also covers the gamepad,
+//	which XInput polls globally and SDL keeps delivering in the background - without this,
+//	a pad drives the game while the window sits behind a browser.
 struct DeviceGate {
 	bool suppressed[(int)DeviceClass::Count] = {};
+	bool windowUnfocused = false;
 	bool operator[](DeviceClass d) const { return suppressed[(int)d]; }
 };
 DeviceGate& Gate();
@@ -272,6 +279,7 @@ public:
 	//	class suppressed. Only a diagnostic reader wants it: a panel whose whole job is
 	//	to SHOW what a device is doing goes blank otherwise, because focusing that panel
 	//	is itself what raises the editor's capture. Game runtimes leave it false.
+	//	It waives UI ownership only - DeviceGate::windowUnfocused still applies.
 	void Evaluate(float dt, bool ignoreGate = false);
 
 	bool Valid() const { return registry_ != nullptr && mapIndex_ >= 0; }

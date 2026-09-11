@@ -332,8 +332,9 @@ ActionState EvaluateAction(const Action& action, int playerIndex, float dt,
 
 	for (const Binding& b : action.bindings) {
 		const DeviceClass device = b.Device();
-		if (!ignoreGate && gate[device])
-			continue; // the UI owns this device this frame
+		// Focus outranks ignoreGate: a background window reads nothing, panel or not.
+		if (gate.windowUnfocused || (!ignoreGate && gate[device]))
+			continue; // another window has focus, or the UI owns this device this frame
 
 		XMFLOAT2 raw = ReadRaw(b, playerIndex);
 		const float sign = b.invert ? -b.scale : b.scale;
