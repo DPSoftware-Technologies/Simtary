@@ -1045,6 +1045,25 @@ Runtime state lives in `Scene::nativeComponents` (not serialized — rebuilt fro
 metadata each `Update`); the system runs single-threaded via
 `Scene::RunNativeComponentUpdateSystem`, right after the script system.
 
+**Dependencies are declared, not hand-rolled.** `ST_REQUIRE_COMPONENTS(TransformComponent,
+Health)` in a component body is Unity's `[RequireComponent]`: the manager creates whatever
+is missing during the same reconcile that built the instance, *before* `Awake()`, so
+`Start()` can assume `GetComponent<T>()` returns non-null. Engine and native types mix
+freely in the list, and requirements are transitive up to `REQUIRE_MAX_ROUNDS` (8) deep —
+`CreateMissingInstances` and `ResolveRequirements` alternate until nothing new is attached,
+which is why a required NATIVE component is live the same frame rather than one later.
+A cycle settles instead of spinning because `requiredResolved` is set before the
+requirements are applied, not after. Override `DescribeRequired()` by hand when a
+registration NAME is needed rather than a type (`RequiredComponent::Native("stAudioEmitter")`
+— a type registered under several names, as the audio components are, cannot be resolved by
+type alone). Nothing is ever auto-REMOVED: detaching the requirer leaves what it pulled in,
+because the dependency may be holding state.
+
+`Require<T>()` is the imperative half, for a conditional dependency. Main thread only. An
+engine component comes back usable immediately; a native one returns the existing instance
+or, if there is none, attaches it and returns **nullptr** — attaching is only a metadata
+write, so the instance appears on the next reconcile.
+
 **An inspector edit only persists if it goes back through the metadata.** The scene saves
 `MetadataComponent`, not the live instance, so a `DrawDebug()` widget writing straight into
 a member changes the frame and nothing else — the value is gone on the next load. `Bind()`

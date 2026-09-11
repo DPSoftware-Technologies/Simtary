@@ -57,6 +57,19 @@ namespace wi::scene
 		return &it->second;
 	}
 
+	const std::string* FindNativeComponentNameForType(NativeTypeID typeID)
+	{
+		if (typeID == nullptr)
+			return nullptr;
+		auto& registry = GetRegistry();
+		for (auto& kv : registry)
+		{
+			if (kv.second.typeID == typeID)
+				return &kv.first;
+		}
+		return nullptr;
+	}
+
 	void GetRegisteredNativeComponentNames(wi::vector<std::string>& out)
 	{
 		auto& registry = GetRegistry();
@@ -476,52 +489,10 @@ namespace wi::scene
 	// ------------------------------------------------------------------
 	// NativeComponentManager
 	// ------------------------------------------------------------------
-	void NativeComponentManager::RunUpdate(Scene& scene, float dt)
+	// Build an instance for every NCI_<id> key that does not have one yet. Idempotent: called
+	//	again after requirements attach more components, and it only ever adds what is missing.
+	void NativeComponentManager::CreateMissingInstances(Scene& scene)
 	{
-		auto range = wi::profiler::BeginRangeCPU("Native Components");
-
-		// Whoever drives Scene::Update is "the main thread" for this frame. Everything that
-		// has to happen there (metadata writes, entity removal, RunOnMainThread callbacks) is
-		// compared against this.
-		mainThreadID = std::this_thread::get_id();
-
-		// --- Pass A: prune instances that no longer match the metadata ---
-		wi::vector<Entity> empty_entities;
-		for (auto& pair : instances)
-		{
-			const Entity entity = pair.first;
-			wi::vector<NativeComponentManager::Instance>& list = pair.second;
-			const MetadataComponent* meta = scene.metadatas.GetComponent(entity);
-
-			for (size_t i = list.size(); i-- > 0; )
-			{
-				NativeComponentManager::Instance& inst = list[i];
-				bool keep = false;
-				if (meta != nullptr)
-				{
-					const std::string key = "NCI_" + std::to_string(inst.localID);
-					if (meta->string_values.has(key) && meta->string_values.get(key) == inst.name)
-						keep = true;
-				}
-				if (!keep)
-				{
-					if (inst.component)
-					{
-						if (inst.enabled)
-							inst.component->OnDisable();
-						inst.component->Destroy();
-					}
-					list.erase(list.begin() + i);
-				}
-			}
-
-			if (list.empty())
-				empty_entities.push_back(entity);
-		}
-		for (Entity e : empty_entities)
-			instances.erase(e);
-
-		// --- Pass B: create instances for NCI_<id> keys that aren't attached yet ---
 		for (size_t mi = 0; mi < scene.metadatas.GetCount(); ++mi)
 		{
 			const Entity entity = scene.metadatas.GetEntity(mi);
@@ -581,6 +552,149 @@ namespace wi::scene
 				inst.component->localID = localID;
 				inst.component->componentName = compName;
 				instances[entity].push_back(std::move(inst));
+			}
+		}
+	}
+
+	// Ask every instance that has not been asked yet what it requires, and create it.
+	//	Returns true when something was ATTACHED (a native component, i.e. a metadata write that
+	//	needs another CreateMissingInstances pass to become an instance). Creating an engine
+	//	component does not count: engine components have no requirements of their own, so they
+	//	cannot make the graph grow.
+	//
+	//	'requiredResolved' is set before the requirements are applied, not after, so a cycle
+	//	(A requires B requires A) attaches both once and then settles instead of spinning.
+	//
+	//	Nothing here may touch 'instances' - it is being walked. Attaching writes metadata and
+	//	creating an engine component touches a different manager, so neither does.
+	bool NativeComponentManager::ResolveRequirements(Scene& scene)
+	{
+		bool attachedAny = false;
+		wi::vector<RequiredComponent> required;
+
+		for (auto& pair : instances)
+		{
+			const Entity entity = pair.first;
+			for (Instance& inst : pair.second)
+			{
+				if (inst.requiredResolved || !inst.component)
+					continue;
+				inst.requiredResolved = true;
+
+				required.clear();
+				inst.component->DescribeRequired(required);
+
+				for (const RequiredComponent& req : required)
+				{
+					if (req.ensureEngine != nullptr)
+					{
+						req.ensureEngine(scene, entity); // get-or-create, usable immediately
+						continue;
+					}
+
+					// Which registration is being asked for: an explicit name wins, otherwise the
+					//	one the type is registered under.
+					const std::string* name = !req.nativeName.empty()
+						? &req.nativeName
+						: FindNativeComponentNameForType(req.nativeType);
+					if (name == nullptr || name->empty())
+					{
+						wi::backlog::post(
+							"NativeComponent: '" + inst.name + "' requires a native component that is not "
+							"registered. Did you add ST_REGISTER_NATIVE_COMPONENT for it?",
+							wi::backlog::LogLevel::Warning);
+						continue;
+					}
+
+					// Already attached? By type when there is one (that also matches a component
+					//	attached under one of its other registered names), otherwise by name.
+					bool present = false;
+					for (const Instance& other : pair.second)
+					{
+						if (!other.component)
+							continue;
+						if ((req.nativeType != nullptr && other.typeID == req.nativeType) ||
+							other.name == *name)
+						{
+							present = true;
+							break;
+						}
+					}
+					if (present)
+						continue;
+
+					if (AttachNativeComponent(scene, entity, *name) >= 0)
+						attachedAny = true;
+				}
+			}
+		}
+
+		return attachedAny;
+	}
+
+	void NativeComponentManager::RunUpdate(Scene& scene, float dt)
+	{
+		auto range = wi::profiler::BeginRangeCPU("Native Components");
+
+		// Whoever drives Scene::Update is "the main thread" for this frame. Everything that
+		// has to happen there (metadata writes, entity removal, RunOnMainThread callbacks) is
+		// compared against this.
+		mainThreadID = std::this_thread::get_id();
+
+		// --- Pass A: prune instances that no longer match the metadata ---
+		wi::vector<Entity> empty_entities;
+		for (auto& pair : instances)
+		{
+			const Entity entity = pair.first;
+			wi::vector<NativeComponentManager::Instance>& list = pair.second;
+			const MetadataComponent* meta = scene.metadatas.GetComponent(entity);
+
+			for (size_t i = list.size(); i-- > 0; )
+			{
+				NativeComponentManager::Instance& inst = list[i];
+				bool keep = false;
+				if (meta != nullptr)
+				{
+					const std::string key = "NCI_" + std::to_string(inst.localID);
+					if (meta->string_values.has(key) && meta->string_values.get(key) == inst.name)
+						keep = true;
+				}
+				if (!keep)
+				{
+					if (inst.component)
+					{
+						if (inst.enabled)
+							inst.component->OnDisable();
+						inst.component->Destroy();
+					}
+					list.erase(list.begin() + i);
+				}
+			}
+
+			if (list.empty())
+				empty_entities.push_back(entity);
+		}
+		for (Entity e : empty_entities)
+			instances.erase(e);
+
+		// --- Pass B: create instances, then let them say what they cannot work without ---
+		//	One round builds every instance the metadata asks for; resolving their requirements can
+		//	attach more (a required native component is a metadata write), so the two alternate until
+		//	nothing new appears. This all happens BEFORE Pass C, which is the point: by the time
+		//	Awake() fires, every declared dependency exists and GetComponent<T>() finds it.
+		CreateMissingInstances(scene);
+		for (int round = 0; ; ++round)
+		{
+			if (!ResolveRequirements(scene))
+				break; // settled: nothing new was attached
+			CreateMissingInstances(scene);
+			if (round + 1 >= REQUIRE_MAX_ROUNDS)
+			{
+				wi::backlog::post(
+					"NativeComponent: requirement chain deeper than " + std::to_string(REQUIRE_MAX_ROUNDS) +
+					" levels; giving up. Check DescribeRequired() for a component that keeps pulling in new ones.",
+					wi::backlog::LogLevel::Warning);
+				break;
 			}
 		}
 

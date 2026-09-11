@@ -91,6 +91,52 @@ namespace wi::scene
 		Update,      // the frame's work
 	};
 
+	// One thing a component cannot work without - Unity's [RequireComponent], resolved by the
+	//	manager instead of by the author.
+	//
+	//	Fill these in DescribeRequired() (or let ST_REQUIRE_COMPONENTS write it) and the manager
+	//	creates whatever is missing during the SAME reconcile that built the instance, before
+	//	Awake() fires. By the time Awake/Start run, GetComponent<T>() returns non-null for every
+	//	declared requirement - including a required NATIVE component, which is attached and
+	//	instantiated in the same pass rather than a frame later.
+	//
+	//	Requirements are transitive: a component pulled in this way has its own requirements
+	//	resolved too, up to REQUIRE_MAX_ROUNDS deep. A cycle (A requires B requires A) is fine -
+	//	both end up attached once - but a chain longer than the round limit logs and stops.
+	//
+	//	Nothing is ever REMOVED by this. Detaching the requirer leaves what it pulled in, exactly
+	//	like Unity: the dependency may be carrying state, and guessing that nothing else wants it
+	//	is how an auto-remove eats a user's data.
+	struct RequiredComponent
+	{
+		// Engine component: creates it on the entity if absent. Captureless, so it stays a plain
+		//	function pointer and RequiredComponent remains trivially copyable apart from the name.
+		void (*ensureEngine)(Scene&, wi::ecs::Entity) = nullptr;
+		// Native component: identity to test "already attached?" against. Either this or
+		//	nativeName identifies the component; both together is fine (name wins for the attach).
+		NativeTypeID nativeType = nullptr;
+		// Native component: the registered NCI_ name. Optional when nativeType is set - the
+		//	manager reverse-looks-up the registration - and required for a type registered under
+		//	a name that is not its own (ST_REGISTER_NATIVE_COMPONENT_AS).
+		std::string nativeName;
+
+		// Deduce which of the two above applies from T. Defined in stNativeComponent_inl.h,
+		//	where Scene and the engine component types are complete.
+		template<typename T> static RequiredComponent For();
+		// Force a specific registration name (for _AS registrations, or a component this
+		//	translation unit cannot include the header of).
+		static RequiredComponent Native(const std::string& registeredName)
+		{
+			RequiredComponent r; r.nativeName = registeredName; return r;
+		}
+	};
+
+	// What ST_REQUIRE_COMPONENTS expands to. DECLARED here and defined in stNativeComponent_inl.h,
+	//	because the macro writes a function BODY inside a component's class - and a class in a
+	//	header that includes only this file must still be able to name it. The definition needs
+	//	the engine component types complete, which is why it cannot live here.
+	template<typename... Ts> void AppendRequired(wi::vector<RequiredComponent>& out);
+
 	// Base class for a native component. Derive from this and override the lifecycle methods.
 	//	The engine fills in scene/entity/localID/componentName before Start() is called.
 	struct NativeComponent
@@ -135,6 +181,20 @@ namespace wi::scene
 		virtual void Update(float dt) {}
 		virtual void OnDisable() {}
 		virtual void Destroy() {}
+
+		// What this component cannot work without. Called ONCE per instance, before Awake(),
+		//	on the main thread; the manager creates anything missing before any lifecycle
+		//	callback runs (see RequiredComponent). Fill the vector and return - it is asked
+		//	while the manager is walking its instance table, so do nothing else here.
+		//
+		//		ST_REQUIRE_COMPONENTS(TransformComponent, Health)   // the usual way
+		//
+		//		// or by hand, when a name is needed rather than a type:
+		//		void DescribeRequired(wi::vector<RequiredComponent>& out) override {
+		//			out.push_back(RequiredComponent::For<TransformComponent>());
+		//			out.push_back(RequiredComponent::Native("stAudioEmitter"));
+		//		}
+		virtual void DescribeRequired(wi::vector<RequiredComponent>& out) {}
 
 		// ------------------------------------------------------------------
 		// Threading.
@@ -387,6 +447,21 @@ namespace wi::scene
 		// Native-only: append every native instance of type T on this entity to 'out'.
 		template<typename T> void GetComponents(wi::vector<T*>& out);
 
+		// Get-or-create, imperative. MAIN THREAD ONLY (Awake/Start/OnEnable/Destroy, or inside
+		//	RunOnMainThread) - it creates scene components and writes metadata, neither of which
+		//	is safe from a worker.
+		//
+		//	- engine component: returns the existing one, or creates it and returns that. Usable
+		//	  immediately.
+		//	- native component: returns the existing instance if there is one. Otherwise it
+		//	  attaches the component (metadata) and returns NULLPTR - the instance is built by
+		//	  the next reconcile, so read it with GetComponent<T>() on a later frame.
+		//
+		//	Prefer DescribeRequired / ST_REQUIRE_COMPONENTS when the dependency is unconditional:
+		//	that path resolves natives in the same reconcile, so nothing is ever null. Require()
+		//	is for the conditional case ("only if this flag is set").
+		template<typename T> T* Require();
+
 		// non-copyable (owns no copyable state by contract; instances are heap-owned by the manager)
 		NativeComponent(const NativeComponent&) = delete;
 		NativeComponent& operator=(const NativeComponent&) = delete;
@@ -441,6 +516,11 @@ namespace wi::scene
 		const char* group, const char* tag, const char* category);
 	// Look up a registration by the metadata name (returns nullptr if not registered).
 	const NativeComponentRegistration* FindNativeComponentRegistration(const std::string& name);
+	// Reverse lookup: the name a type is registered under, nullptr if it is not registered.
+	//	A type registered several times (stAudioEmitter is also stSpeaker) resolves to whichever
+	//	registration is found first - pass an explicit name to RequiredComponent::Native() when
+	//	which one matters.
+	const std::string* FindNativeComponentNameForType(NativeTypeID typeID);
 
 	// Every component name currently registered through ST_REGISTER_NATIVE_COMPONENT(_AS),
 	//	sorted alphabetically. This is what an editor's "Add Component" list is built from:
@@ -514,10 +594,17 @@ namespace wi::scene
 			int localID = 0;
 			std::string name;
 			bool awoken = false;   // Awake() fired
+			bool requiredResolved = false; // DescribeRequired() asked and applied (once, pre-Awake)
 			bool started = false;  // Start() fired
 			bool enabled = false;  // last-applied enabled state (drives OnEnable/OnDisable edges)
 		};
 		wi::unordered_map<wi::ecs::Entity, wi::vector<Instance>> instances; // entity -> attached instances
+
+		// How many create-then-ask-again rounds the requirement resolver runs before giving up.
+		//	Each round instantiates what the previous one attached and asks the new instances what
+		//	THEY require, so this is the depth of a requirement chain, not a retry count. Eight is
+		//	far past anything sane and still bounds a pathological graph.
+		static constexpr int REQUIRE_MAX_ROUNDS = 8;
 
 		// Fixed-timestep state for FixedUpdate (shared across all instances, like Unity).
 		static constexpr float FIXED_DT = 1.0f / 60.0f;   // 60 Hz fixed step
@@ -557,6 +644,13 @@ namespace wi::scene
 		// Run one stage over the whole scene: parallel list dispatched, main-thread list serial,
 		//	then the deferred queue flushed. Returns when every instance has finished the stage.
 		void RunStage(NativeStage stage, float stageDt);
+
+		// Build an instance for every NCI_<id> key that has none yet. Idempotent, and called
+		//	more than once per reconcile when requirements attach further components.
+		void CreateMissingInstances(Scene& scene);
+		// Ask instances that have not been asked yet what they require and create it. True when
+		//	something was attached, meaning another CreateMissingInstances pass is owed.
+		bool ResolveRequirements(Scene& scene);
 
 		// Reconcile attachments against metadata, fire Start() on new ones and Update(dt) on all.
 		//	Called by Scene::RunNativeComponentUpdateSystem once per frame.
@@ -611,6 +705,16 @@ namespace wi::scene
 			return std::unique_ptr<::wi::scene::NativeComponent>(new TYPE()); }, \
 			::wi::scene::GetNativeTypeID<TYPE>(), GROUP, TAG, CATEGORY); \
 	} }; static TYPE##_NativeRegIn _global_##TYPE##_NativeRegIn_instance; }
+
+// Declare this component's dependencies (Unity's [RequireComponent]). Takes engine component
+//	types, native component types, or a mix; the manager creates whatever is missing before
+//	Awake() runs, so Start() can assume GetComponent<T>() returns non-null for each of them.
+//	Place in the component's body:  ST_REQUIRE_COMPONENTS(TransformComponent, Health)
+//
+//	A type registered under a different name (ST_REGISTER_NATIVE_COMPONENT_AS) cannot be found
+//	by type alone when it has several registrations - write DescribeRequired() by hand and use
+//	RequiredComponent::Native("TheName") for those.
+#define ST_REQUIRE_COMPONENTS(...) 	void DescribeRequired(wi::vector<::wi::scene::RequiredComponent>& out) override 	{ ::wi::scene::AppendRequired<__VA_ARGS__>(out); }
 
 // The engine's and the framework's own components: section "Framework", badge "ST", and a
 //	CATEGORY ("Audio", "Optical", "Scene") because that section is long enough to need one.
