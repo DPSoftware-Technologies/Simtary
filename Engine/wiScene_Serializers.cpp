@@ -64,7 +64,27 @@ namespace wi::scene
 				archive >> wx;
 				archive >> wy;
 				archive >> wz;
-				SetWorldPosition(wx, wy, wz);
+
+				// SIMTARY: repair a transform written before the producers established an
+				// absolute position. The three conditions together only occur when nothing
+				// ever maintained the field: the LARGE_WORLD flag is clear (so
+				// UpdateTransform never rebased this transform and never read it), the
+				// stored absolute is exactly zero, and translation_local says the entity is
+				// somewhere else. A correctly written transform - root or child - always has
+				// the two agreeing, so this cannot fire on one. Without it, adopting the
+				// zero would drag the entity to its parent's origin, which is what a model
+				// imported before the fix does on its first reload.
+				const bool absent = (wx == 0.0 && wy == 0.0 && wz == 0.0)
+					&& !IsLargeWorld()
+					&& (translation_local.x != 0.0f || translation_local.y != 0.0f || translation_local.z != 0.0f);
+				if (absent)
+				{
+					SyncWorldFromLocal(wi::scene::GetRenderOrigin());
+				}
+				else
+				{
+					SetWorldPosition(wx, wy, wz);
+				}
 			}
 			else
 			{
@@ -83,9 +103,29 @@ namespace wi::scene
 			archive << scale_local;
 			archive << rotation_local;
 			archive << translation_local;
-			archive << (double)world_translation_x;
-			archive << (double)world_translation_y;
-			archive << (double)world_translation_z;
+
+			// SIMTARY: the absolute position is what the read path above rebuilds
+			// translation_local FROM, so it has to be right even for a transform that
+			// never carried one. IsLargeWorld() off means nothing has maintained
+			// world_translation_* - UpdateTransform() does not rebase those, so the field
+			// is dead data until it is written here, and writing the zero it still holds
+			// is what moved every entity to its parent's origin on the next load. A model
+			// importer or any other producer that sets only translation_local hit exactly
+			// that: correct on screen the moment it ran, collapsed after a save and
+			// reload, with nothing logged. Back-solve it the way SyncWorldFromLocal does.
+			double wx = (double)world_translation_x;
+			double wy = (double)world_translation_y;
+			double wz = (double)world_translation_z;
+			if (!IsLargeWorld())
+			{
+				const RenderOrigin& origin = wi::scene::GetRenderOrigin();
+				wx = (double)translation_local.x + origin.x;
+				wy = (double)translation_local.y + origin.y;
+				wz = (double)translation_local.z + origin.z;
+			}
+			archive << wx;
+			archive << wy;
+			archive << wz;
 		}
 	}
 	void HierarchyComponent::Serialize(wi::Archive& archive, EntitySerializer& seri)

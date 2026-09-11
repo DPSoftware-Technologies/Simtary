@@ -82,7 +82,7 @@ ImportResult Import (Scene& scene, const std::string& path, const ImportOptions&
 		if (TransformComponent* t = scene.transforms.GetComponent(root))
 		{
 			t->scale_local = XMFLOAT3(options.scale, options.scale, options.scale);
-			t->SetDirty();
+			detail::FinishNodeTransform(t);
 		}
 	}
 
@@ -93,6 +93,18 @@ ImportResult Import (Scene& scene, const std::string& path, const ImportOptions&
 } // namespace st::model
 
 namespace st::model::detail {
+
+// transforms
+
+void FinishNodeTransform (wi::scene::TransformComponent* transform)
+{
+	if (transform == nullptr)
+		return;
+	// See ModelImporterCommon.h: the absolute position is what survives a save, so a node
+	//	that only ever set translation_local comes back at its parent's origin.
+	transform->SyncWorldFromLocal(wi::scene::GetRenderOrigin());
+	transform->SetDirty();
+}
 
 // paths
 

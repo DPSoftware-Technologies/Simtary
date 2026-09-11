@@ -640,7 +640,7 @@ bool ImportGLTF (ImportContext& ctx, Entity root)
 			t->scale_local = XMFLOAT3((float)node.scale[0], (float)node.scale[1],
 				(float)node.scale[2]);
 		}
-		t->SetDirty();
+		FinishNodeTransform(t);
 	}
 
 	// Parent after creating them all, so a forward reference is never a problem.

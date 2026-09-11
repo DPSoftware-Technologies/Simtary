@@ -37,6 +37,22 @@ struct ImportContext {
 	std::unordered_map<uint64_t, std::string> embeddedTextures;
 };
 
+// Finish a node transform an importer just wrote.
+//
+// Setting translation_local is NOT enough in a large-world build. TransformComponent
+// carries a second, 64-bit ABSOLUTE position, and that is the one
+// TransformComponent::Serialize round-trips: on read it calls SetWorldPosition() with
+// what the file held and rebuilds translation_local from it. A node whose absolute
+// position was never established therefore saves a 0 and comes back AT ITS PARENT'S
+// ORIGIN - the model looks right the moment it is imported and collapses into a pile
+// the first time the scene is reloaded, with nothing logged.
+//
+// So every producer of a transform has to establish both, which is what
+// st::PlaceEntityAt does for everything the editor creates. SyncWorldFromLocal adopts
+// translation_local as the truth and back-solves the absolute from it, which is exactly
+// right here: an imported node's local translation IS what the file said.
+void FinishNodeTransform (wi::scene::TransformComponent* transform);
+
 // Read a whole file through the engine's file layer (packs first, then disk).
 bool ReadFile (const std::string& path, std::vector<uint8_t>& out);
 

@@ -550,7 +550,7 @@ bool ImportUFBX (ImportContext& ctx, Entity root)
 			t->translation_local = Vec3(local.translation);
 			t->rotation_local    = Quat(local.rotation);
 			t->scale_local       = Vec3(local.scale);
-			t->SetDirty();
+			FinishNodeTransform(t);
 		}
 	}
 
