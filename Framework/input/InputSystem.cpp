@@ -23,12 +23,17 @@ namespace {
 }
 
 bool InputSystem::gated(const InputBinding& b) const {
+	// Gamepad first, and it answers to uiMouseLook_ alone. A pad cannot type into a panel -
+	//	ImGui's gamepad navigation is off, ImguiHelper.cpp never sets NavEnableGamepad - so no
+	//	ImGui window has a claim on it, and an editor panel merely having focus is not a reason
+	//	to take it away. The freecam is the one exception: it is already flying the camera and
+	//	does not want a second driver.
+	//	(The checks below used to sit AFTER the uiInputCaptured_ test, which short-circuited
+	//	first and made "gamepad: never gated" dead code.)
+	if (b.IsAnalog() || wi::input::IsGamepadButton(b.button))
+		return uiMouseLook_;
 	if (uiInputCaptured_)
-		return true;                        // Editor mode: nothing reaches the game, gamepad included
-	if (b.IsAnalog())
-		return false;                       // gamepad analog: never gated
-	if (wi::input::IsGamepadButton(b.button))
-		return false;                       // gamepad button: never gated
+		return true;                        // Editor mode: keyboard and mouse go to the tooling
 	if (IsMouseButton(b.button))
 		return mouseSuspended_;             // mouse: gated while ImGui owns the mouse
 	return keyboardSuspended_;              // keyboard: gated while ImGui owns kb / unfocused
@@ -151,9 +156,13 @@ void InputSystem::Update(float dt) {
 		st::input::DeviceGate& gate = st::input::Gate();
 		gate.suppressed[(int)DC::Keyboard] = keyboardSuspended_;
 		gate.suppressed[(int)DC::Mouse]    = mouseSuspended_;
-		// Gamepad is never taken by an ImGui panel - only by the editor's hard capture,
-		//	which is the same rule gated() applies to the legacy keymap.
-		gate.suppressed[(int)DC::Gamepad]  = uiInputCaptured_;
+		// Gamepad: same rule gated() applies to the legacy keymap, and for the same reason -
+		//	ImGui never consumes a pad (no ImGuiConfigFlags_NavEnableGamepad anywhere), so a
+		//	focused panel has no claim on it. Gating it on the editor capture meant a pad went
+		//	dead the moment the inspector was clicked, with the very panel showing the action
+		//	values being what zeroed them. Only the freecam takes it, because it is already
+		//	flying the camera.
+		gate.suppressed[(int)DC::Gamepad]  = uiMouseLook_;
 		gate.suppressed[(int)DC::Touch]    = mouseSuspended_;
 		// Focus is the one gate a diagnostic reader cannot waive, and the only one that
 		//	reaches the gamepad when no editor capture is up: XInput polls by user index

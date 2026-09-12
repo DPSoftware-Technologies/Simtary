@@ -406,6 +406,231 @@ target_compile_definitions(SimtaryModelIO PUBLIC
     SIMTARY_HAS_MODEL_IMPORTERS=1
 )
 
+# JSBSim: the flight dynamics model
+# Six-degree-of-freedom rigid-body flight dynamics - aerodynamics, propulsion,
+# ground reactions, atmosphere, flight control - driven by XML aircraft files.
+# Taken as a LIBRARY ONLY. The upstream repository is mostly not the library: it
+# also ships the JSBSim command-line simulator, a Python module, a MATLAB
+# S-function, the aircraft/ engine/ systems/ scripts/ data set and the test suite.
+# The clone below checks out src/ and the licence files, and nothing else.
+#
+# Added BEFORE the project-wide /EHsc- /GR- /_HAS_EXCEPTIONS=0 flags, for the same
+# reason as sentry / libzmq / openal-soft: JSBSim throws (a malformed aircraft file
+# is reported as a JSBSim::BaseException) and uses dynamic_cast, so it has to build
+# with exceptions and RTTI ON. The target asks for /EHsc /GR explicitly as well, so
+# the placement is belt-and-braces rather than the only thing holding it up.
+#
+# THE CONSEQUENCE IS THE ONE tinygltf/ufbx WERE PICKED TO AVOID: JSBSim's headers
+# cannot be included from engine or app translation units, which compile with
+# _HAS_EXCEPTIONS=0 - their std::string and std::exception are not the same types
+# JSBSim was compiled against. Reaching it needs a wrapper translation unit built
+# with JSBSim's own settings that exposes a POD, non-throwing surface, the way
+# Framework/io/model/ sits in front of the C importers. This block builds the
+# library; nothing links it yet.
+option(SIMTARY_ENABLE_JSBSIM "Fetch JSBSim (library sources only) and build the flight dynamics model" ON)
+set(SIMTARY_JSBSIM_VERSION "1.2.3" CACHE STRING "JSBSim release tag, without the leading v")
+
+if (SIMTARY_ENABLE_JSBSIM)
+    set(SIMTARY_JSBSIM_DIR "${SIMTARY_DEPS_DIR}/jsbsim" CACHE PATH
+        "JSBSim source (shared deps cache)")
+
+    # NOT FetchContent, on purpose. FetchContent clones a whole repository, and a
+    # whole JSBSim is hundreds of megabytes of aircraft data and language bindings
+    # wrapped around a 5 MB library. A blobless, shallow, SPARSE clone is the only
+    # form that downloads the library alone: --filter=blob:none fetches no file
+    # contents up front and --sparse then materialises just the paths asked for.
+    # src/utilities/ is excluded with the rest - it is the aeromatic / prep_plot
+    # tooling, not part of libJSBSim.
+    if (NOT EXISTS "${SIMTARY_JSBSIM_DIR}/src/FGFDMExec.cpp")
+        find_package(Git REQUIRED)
+        message(STATUS "Simtary: cloning JSBSim ${SIMTARY_JSBSIM_VERSION} (library sources only) into ${SIMTARY_JSBSIM_DIR}")
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" clone --depth 1 --filter=blob:none --sparse
+                    --branch "v${SIMTARY_JSBSIM_VERSION}"
+                    https://github.com/JSBSim-Team/jsbsim.git "${SIMTARY_JSBSIM_DIR}"
+            RESULT_VARIABLE _jsb_result
+        )
+        if (NOT _jsb_result EQUAL 0)
+            message(FATAL_ERROR "Simtary: JSBSim clone failed (${_jsb_result}). "
+                                "Delete ${SIMTARY_JSBSIM_DIR} and reconfigure, or configure with "
+                                "-DSIMTARY_ENABLE_JSBSIM=OFF.")
+        endif()
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${SIMTARY_JSBSIM_DIR}" sparse-checkout set --no-cone
+                    "/src/**" "!/src/utilities/**" "COPYING" "AUTHORS"
+            RESULT_VARIABLE _jsb_result
+        )
+        if (NOT _jsb_result EQUAL 0 OR NOT EXISTS "${SIMTARY_JSBSIM_DIR}/src/FGFDMExec.cpp")
+            message(FATAL_ERROR "Simtary: JSBSim sparse checkout failed (${_jsb_result}).")
+        endif()
+    endif()
+
+    set(_jsb "${SIMTARY_JSBSIM_DIR}/src")
+
+    # The file list is upstream's own (src/*/CMakeLists.txt), written out rather
+    # than globbed, because the checkout carries sources upstream does NOT build:
+    # the CLI simulator (JSBSim.cpp, JSBSim.minimal.cpp), the retired simplex-trim
+    # and Nelder-Mead experiments, FGMars, the MSIS self-test, and the expat
+    # fragments xmltok_impl.c / xmltok_ns.c that xmltok.c #includes. A GLOB would
+    # compile all of them, and then fail to link on the duplicate main().
+    add_library(jsbsim STATIC
+        ${_jsb}/FGFDMExec.cpp
+        ${_jsb}/FGJSBBase.cpp
+
+        ${_jsb}/initialization/FGInitialCondition.cpp
+        ${_jsb}/initialization/FGTrim.cpp
+        ${_jsb}/initialization/FGTrimAxis.cpp
+        ${_jsb}/initialization/FGLinearization.cpp
+
+        ${_jsb}/input_output/FGGroundCallback.cpp
+        ${_jsb}/input_output/FGPropertyManager.cpp
+        ${_jsb}/input_output/FGScript.cpp
+        ${_jsb}/input_output/FGXMLElement.cpp
+        ${_jsb}/input_output/FGXMLParse.cpp
+        ${_jsb}/input_output/FGfdmSocket.cpp
+        ${_jsb}/input_output/FGXMLFileRead.cpp
+        ${_jsb}/input_output/FGOutputType.cpp
+        ${_jsb}/input_output/FGOutputFG.cpp
+        ${_jsb}/input_output/FGOutputSocket.cpp
+        ${_jsb}/input_output/FGOutputFile.cpp
+        ${_jsb}/input_output/FGOutputTextFile.cpp
+        ${_jsb}/input_output/FGPropertyReader.cpp
+        ${_jsb}/input_output/FGModelLoader.cpp
+        ${_jsb}/input_output/FGInputType.cpp
+        ${_jsb}/input_output/FGInputSocket.cpp
+        ${_jsb}/input_output/FGUDPInputSocket.cpp
+        ${_jsb}/input_output/string_utilities.cpp
+
+        ${_jsb}/math/FGColumnVector3.cpp
+        ${_jsb}/math/FGFunction.cpp
+        ${_jsb}/math/FGLocation.cpp
+        ${_jsb}/math/FGMatrix33.cpp
+        ${_jsb}/math/FGPropertyValue.cpp
+        ${_jsb}/math/FGQuaternion.cpp
+        ${_jsb}/math/FGRealValue.cpp
+        ${_jsb}/math/FGTable.cpp
+        ${_jsb}/math/FGCondition.cpp
+        ${_jsb}/math/FGRungeKutta.cpp
+        ${_jsb}/math/FGModelFunctions.cpp
+        ${_jsb}/math/FGTemplateFunc.cpp
+        ${_jsb}/math/FGStateSpace.cpp
+
+        ${_jsb}/models/FGAerodynamics.cpp
+        ${_jsb}/models/FGAircraft.cpp
+        ${_jsb}/models/FGAtmosphere.cpp
+        ${_jsb}/models/FGAuxiliary.cpp
+        ${_jsb}/models/FGFCS.cpp
+        ${_jsb}/models/FGSurface.cpp
+        ${_jsb}/models/FGGroundReactions.cpp
+        ${_jsb}/models/FGInertial.cpp
+        ${_jsb}/models/FGLGear.cpp
+        ${_jsb}/models/FGMassBalance.cpp
+        ${_jsb}/models/FGModel.cpp
+        ${_jsb}/models/FGOutput.cpp
+        ${_jsb}/models/FGPropagate.cpp
+        ${_jsb}/models/FGPropulsion.cpp
+        ${_jsb}/models/FGInput.cpp
+        ${_jsb}/models/FGExternalReactions.cpp
+        ${_jsb}/models/FGExternalForce.cpp
+        ${_jsb}/models/FGBuoyantForces.cpp
+        ${_jsb}/models/FGGasCell.cpp
+        ${_jsb}/models/FGAccelerations.cpp
+
+        ${_jsb}/models/atmosphere/FGMSIS.cpp
+        ${_jsb}/models/atmosphere/FGStandardAtmosphere.cpp
+        ${_jsb}/models/atmosphere/FGWinds.cpp
+        ${_jsb}/models/atmosphere/MSIS/nrlmsise-00.c
+        ${_jsb}/models/atmosphere/MSIS/nrlmsise-00_data.c
+
+        ${_jsb}/models/flight_control/FGDeadBand.cpp
+        ${_jsb}/models/flight_control/FGFCSComponent.cpp
+        ${_jsb}/models/flight_control/FGFilter.cpp
+        ${_jsb}/models/flight_control/FGGain.cpp
+        ${_jsb}/models/flight_control/FGKinemat.cpp
+        ${_jsb}/models/flight_control/FGSummer.cpp
+        ${_jsb}/models/flight_control/FGSwitch.cpp
+        ${_jsb}/models/flight_control/FGFCSFunction.cpp
+        ${_jsb}/models/flight_control/FGSensor.cpp
+        ${_jsb}/models/flight_control/FGPID.cpp
+        ${_jsb}/models/flight_control/FGActuator.cpp
+        ${_jsb}/models/flight_control/FGAccelerometer.cpp
+        ${_jsb}/models/flight_control/FGGyro.cpp
+        ${_jsb}/models/flight_control/FGMagnetometer.cpp
+        ${_jsb}/models/flight_control/FGAngles.cpp
+        ${_jsb}/models/flight_control/FGWaypoint.cpp
+        ${_jsb}/models/flight_control/FGDistributor.cpp
+        ${_jsb}/models/flight_control/FGLinearActuator.cpp
+
+        ${_jsb}/models/propulsion/FGElectric.cpp
+        ${_jsb}/models/propulsion/FGEngine.cpp
+        ${_jsb}/models/propulsion/FGForce.cpp
+        ${_jsb}/models/propulsion/FGNozzle.cpp
+        ${_jsb}/models/propulsion/FGPiston.cpp
+        ${_jsb}/models/propulsion/FGPropeller.cpp
+        ${_jsb}/models/propulsion/FGRocket.cpp
+        ${_jsb}/models/propulsion/FGTank.cpp
+        ${_jsb}/models/propulsion/FGThruster.cpp
+        ${_jsb}/models/propulsion/FGTurbine.cpp
+        ${_jsb}/models/propulsion/FGTurboProp.cpp
+        ${_jsb}/models/propulsion/FGTransmission.cpp
+        ${_jsb}/models/propulsion/FGRotor.cpp
+        ${_jsb}/models/propulsion/FGBrushLessDCMotor.cpp
+
+        ${_jsb}/simgear/props/props.cxx
+        ${_jsb}/simgear/magvar/coremag.cxx
+        ${_jsb}/simgear/misc/sg_path.cxx
+        ${_jsb}/simgear/misc/strutils.cxx
+        ${_jsb}/simgear/io/iostreams/sgstream.cxx
+        ${_jsb}/simgear/xml/easyxml.cxx
+        ${_jsb}/simgear/xml/xmlparse.c
+        ${_jsb}/simgear/xml/xmltok.c
+        ${_jsb}/simgear/xml/xmlrole.c
+
+        ${_jsb}/GeographicLib/Geodesic.cpp
+        ${_jsb}/GeographicLib/GeodesicLine.cpp
+        ${_jsb}/GeographicLib/Math.cpp
+    )
+
+    target_include_directories(jsbsim PUBLIC ${_jsb})
+    set_target_properties(jsbsim PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        C_STANDARD 11
+        FOLDER "Simtary/ThirdParty"
+    )
+    # JSBSIM_STATIC_LINK, _USE_MATH_DEFINES and NOMINMAX are upstream's own PUBLIC
+    # definitions - JSBSim_API.h reads the first to stop declaring dllimport, and
+    # the headers need the other two on MSVC. XML_STATIC is for the expat copy
+    # bundled in simgear/xml.
+    target_compile_definitions(jsbsim
+        PUBLIC  JSBSIM_STATIC_LINK
+        PRIVATE JSBSIM_VERSION="${SIMTARY_JSBSIM_VERSION}"
+                XML_STATIC
+                $<$<BOOL:${MINGW}>:_WIN32_WINNT=0x600>
+    )
+    if (MSVC)
+        target_compile_definitions(jsbsim PUBLIC _USE_MATH_DEFINES NOMINMAX)
+        # Exceptions and RTTI ON for this target whatever the directory scope says,
+        # and warnings off: it is third-party and its diagnostics would bury the
+        # engine's, the same call SimtaryModelIO makes.
+        target_compile_options(jsbsim PRIVATE /EHsc /GR /w)
+    else()
+        target_compile_options(jsbsim PRIVATE -fexceptions -frtti -w)
+    endif()
+    if (WIN32)
+        target_link_libraries(jsbsim PUBLIC wsock32 ws2_32)  # FGfdmSocket
+    elseif (UNIX)
+        target_link_libraries(jsbsim PUBLIC m)
+    endif()
+
+    set(SIMTARY_JSBSIM_FOUND TRUE CACHE INTERNAL "JSBSim is available")
+    message(STATUS "Simtary: JSBSim ${SIMTARY_JSBSIM_VERSION} - flight dynamics model built")
+    unset(_jsb)
+else()
+    set(SIMTARY_JSBSIM_FOUND FALSE CACHE INTERNAL "JSBSim is available")
+    message(STATUS "Simtary: JSBSim disabled - no flight dynamics model.")
+endif()
+
 if(WICKED_ENABLE_ASAN AND WICKED_ENABLE_TSAN)
     message(FATAL_ERROR "WICKED_ENABLE_ASAN and WICKED_ENABLE_TSAN are mutually exclusive!")
 endif()

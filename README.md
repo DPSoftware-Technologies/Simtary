@@ -13,7 +13,7 @@ Simtary/
 ├── include/        vendored headers (faust ABI, stb_image)
 ├── assets/         ImGui + StLensFlare + StProjector + StLaser shaders, faust_arch.h
 ├── shaders/        compiled engine shader cache — shared, committed
-├── deps/           sentry-native + openal-soft clones (gitignored, reused)
+├── deps/           sentry-native + openal-soft + JSBSim clones (gitignored, reused)
 ├── crashreporter/  SimtaryCrashReporter — one reporter GUI for all games
 ├── cmake/          SimtaryBootstrap / SimtaryApp / SimtaryPlatform / IncrementBuild
 └── tests/ tools/

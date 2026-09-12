@@ -2191,7 +2191,12 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 		ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
 	const bool gameHasInput   = (gameViewFocused_ && !popupOpen) || gameOwnsCursor;
 
-	const bool captureWanted = !gameHasInput;
+	// Only claim input away from the game while there IS a Game Viewport to hand it back with.
+	//	With that panel hidden (View > Game Viewport) gameViewFocused_ can never become true, so
+	//	this latched the capture on permanently and nothing the user could click would lift it -
+	//	the game never saw another keystroke. Hidden panel falls back to ImGui's own WantCapture*
+	//	rules, which is the behaviour from before the editor existed.
+	const bool captureWanted = showGameViewport_ && !gameHasInput;
 	if (captureWanted != inputCaptureActive_)
 	{
 		st::InputSystem::Get().SetUIInputCapture(captureWanted);

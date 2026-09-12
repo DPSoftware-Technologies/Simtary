@@ -20,8 +20,8 @@ Simtary/
 ├── assets/         engine-side assets: ImGui + StLensFlare shaders, faust_arch.h
 ├── shaders/        COMPILED engine shader cache, committed. Staged into every game's
 │                   output so no project pays the ~360-shader cold compile
-├── deps/           gitignored git clones of sentry-native, openal-soft, tinygltf and
-│                   ufbx, reused by every project's FetchContent
+├── deps/           gitignored git clones of sentry-native, openal-soft, tinygltf,
+│                   ufbx and JSBSim, reused by every project's FetchContent
 ├── crashreporter/  SimtaryCrashReporter — one reporter GUI for all games
 ├── cmake/          SimtaryBootstrap, SimtaryApp, SimtaryPlatform, IncrementBuild
 ├── tests/ tools/   nbt_test, asset_pack_test, model_import_test, stpack, stshaderc,
@@ -141,10 +141,29 @@ Changing the flags means changing them in ONE place: `SIMTARY_APP_OPTIONS` /
 
 ## Design details worth knowing before changing things
 
-**Third-party build order is load-bearing.** sentry, libzmq and openal-soft are added
+**Third-party build order is load-bearing.** sentry, libzmq, openal-soft and JSBSim are added
 *before* the project-wide `/EHsc- /GR- /_HAS_EXCEPTIONS=0` flags, because they use
 exceptions/RTTI internally and must build with their own defaults. libgfx is added
 *after*, because it uses neither and must stay ABI-consistent with the engine.
+
+**JSBSim is cloned sparsely, and its headers stop at the library boundary.** The
+upstream repo is mostly not the library - `aircraft/`, `engine/`, `systems/`,
+`scripts/`, `python/`, `matlab/`, `tests/`, `doc/` - so `SIMTARY_ENABLE_JSBSIM` does a
+blobless, shallow, SPARSE clone of `src/` alone (minus `src/utilities/`, the
+aeromatic/prep_plot tooling) into `deps/jsbsim`: ~5 MB instead of a few hundred.
+That is also why it is NOT a `FetchContent_Declare` - FetchContent clones whole trees.
+The source list in `CMakeLists.txt` is upstream's own `src/*/CMakeLists.txt` written
+out by hand rather than a `GLOB`, because the checkout carries sources upstream does
+not build (the `JSBSim.cpp` CLI, the retired simplex-trim and Nelder-Mead files,
+`FGMars`, and the expat fragments `xmltok_impl.c` / `xmltok_ns.c` that `xmltok.c`
+`#include`s) and a glob would compile them and fail to link.
+
+The `jsbsim` target builds with exceptions and RTTI ON - it reports a malformed
+aircraft file by throwing, and uses `dynamic_cast` - which means its headers CANNOT be
+included from engine or app translation units, the same wall `tinygltf`/`ufbx` were
+chosen to avoid. Consuming it needs a wrapper translation unit compiled with JSBSim's
+settings, exposing a POD, non-throwing surface, the way `Framework/io/model/` sits in
+front of the C importers. JSBSim is **LGPL 2.1**, unlike everything else vendored here.
 
 **A blocking `Scene::Load()` is why there are two loading screens.** No ImGui frame
 can be drawn while the main thread is inside `Load()`, so `st::App::Update` raises the

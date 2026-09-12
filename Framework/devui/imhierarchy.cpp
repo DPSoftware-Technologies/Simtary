@@ -333,8 +333,47 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 
 	std::unordered_set<Entity> all;
 	GatherEntities(scene, all);
+	const size_t totalEntities = all.size();
 
-	ImGui::Text("%zu entities", all.size());
+	// Window-local state, for the same reason Follow uses it: HierarchyGUI is drawn by the
+	//	editor's docked panel AND the floating DevUI one, and a file static would tie the two
+	//	checkboxes together.
+	ImGuiStorage* store = ImGui::GetStateStorage();
+
+	// "Placeable only": hide the resource entities an importer leaves behind. A model brings one
+	//	entity per mesh and one per material, each with a NameComponent and nothing you can move -
+	//	on a Blender export that is most of the list, and it buries the handful of rows that
+	//	actually have a transform. Kept: anything with a TransformComponent, the current selection
+	//	(so a resource picked some other way is still visible), and every ancestor of a kept row so
+	//	the tree keeps its spine.
+	const ImGuiID placeableKey = ImGui::GetID("##placeable_only");
+	bool placeableOnly = store->GetBool(placeableKey, true);
+	if (placeableOnly)
+	{
+		std::unordered_set<Entity> keep;
+		for (Entity e : all)
+		{
+			if (scene.transforms.Contains(e) || e == selected)
+				keep.insert(e);
+		}
+		std::vector<Entity> stack(keep.begin(), keep.end());
+		while (!stack.empty())
+		{
+			const Entity e = stack.back();
+			stack.pop_back();
+			const HierarchyComponent* h = scene.hierarchy.GetComponent(e);
+			if (h == nullptr || h->parentID == INVALID_ENTITY)
+				continue;
+			if (all.count(h->parentID) && keep.insert(h->parentID).second)
+				stack.push_back(h->parentID);
+		}
+		all.swap(keep);
+	}
+
+	if (all.size() != totalEntities)
+		ImGui::Text("%zu of %zu entities", all.size(), totalEntities);
+	else
+		ImGui::Text("%zu entities", all.size());
 	ImGui::SameLine();
 	if (ImGui::SmallButton("Deselect"))
 		selected = INVALID_ENTITY;
@@ -347,7 +386,6 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 	//	file statics, because HierarchyGUI is drawn by two different windows (the editor's docked
 	//	panel and the floating DevUI one). Shared state would let whichever drew first consume the
 	//	change, leaving the other one never scrolling -- and would tie the two checkboxes together.
-	ImGuiStorage* store = ImGui::GetStateStorage();
 	const ImGuiID followKey  = ImGui::GetID("##follow_selected");
 	const ImGuiID lastSelKey = ImGui::GetID("##follow_last_selected");
 
@@ -363,6 +401,12 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 	ImGui::EndDisabled();
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Reveal the current selection once, whether or not Follow is on.");
+
+	if (ImGui::Checkbox("Placeable only", &placeableOnly))
+		store->SetBool(placeableKey, placeableOnly);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Hide entities with no transform - the mesh and material entities an "
+			"import creates. Turn it off to see every entity in the scene.");
 
 	// Entity is a uint32 counter and ImGuiStorage holds ints; the round trip is exact for every
 	//	id a scene can reach, and INVALID_ENTITY is 0, which is also the default.
