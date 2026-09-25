@@ -2,7 +2,7 @@
 A High Mobility Multipurpose Workspace Visualizator. Based on Wicked Engine
 <img width="1920" height="1032" alt="Screenshot 2026-09-06 035900" src="https://github.com/user-attachments/assets/7c953d28-9f9c-42d9-b6e6-34aceb5f3fb5" />
 
-The shared engine for every game in this workspace.
+The shared engine for every app in this workspace.
 ```
 Simtary/
 ├── Engine/         engine core
@@ -14,20 +14,20 @@ Simtary/
 ├── assets/         ImGui + StLensFlare + StProjector + StLaser shaders, faust_arch.h
 ├── shaders/        compiled engine shader cache — shared, committed
 ├── deps/           sentry-native + openal-soft + JSBSim clones (gitignored, reused)
-├── crashreporter/  SimtaryCrashReporter — one reporter GUI for all games
+├── crashreporter/  SimtaryCrashReporter — one reporter GUI for all apps
 ├── cmake/          SimtaryBootstrap / SimtaryApp / SimtaryPlatform / IncrementBuild
 └── tests/ tools/
 ```
 
-## Using it from a game
+## Using it from a app
 
 ```cmake
 cmake_minimum_required(VERSION 3.19)
-project(MyGame VERSION 1.0.0 LANGUAGES CXX)
+project(MyApp VERSION 1.0.0 LANGUAGES CXX)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/../Simtary/cmake/SimtaryBootstrap.cmake)
 
-simtary_add_app(NAME MyGame ORGANIZATION "YourStudio" ICON assets/appicon.ico)
+simtary_add_app(NAME MyApp ORGANIZATION "YourStudio" ICON assets/appicon.ico)
 ```
 
 ```cpp
@@ -35,7 +35,7 @@ simtary_add_app(NAME MyGame ORGANIZATION "YourStudio" ICON assets/appicon.ico)
 #include "stRun.h"
 #include "scenes/MainScene.h"
 
-class MyGame : public st::App {
+class MyApp : public st::App {
 protected:
     void RegisterScenes (SceneManager& scenes) override {
         scenes.Register("Main", std::make_unique<MainScene>());
@@ -44,10 +44,10 @@ protected:
 
 int main (int argc, char* argv[]) {
     st::AppConfig config;
-    config.name         = "MyGame";
+    config.name         = "MyApp";
     config.organization = "YourStudio";
     config.startupScene = "Main";
-    MyGame app;
+    MyApp app;
     return st::Run(argc, argv, config, app);
 }
 ```
@@ -62,8 +62,8 @@ int main (int argc, char* argv[]) {
 | `stApp.h` | `st::App` + `st::AppConfig` + `st::DevUIMode` + `st::LoadingState`. See the hook table below. |
 | `stScene.h` | `Scene` — `Load` / `Update` / `OnGUI` / `OnDevGUI` / `Unload`, plus `ReportProgress()`. |
 | `SceneManager.h` | `Register` / `Load` / `Reload` / `Names`. Transitions are deferred to the next frame. |
-| `io/PlayerPrefs.h`, `io/SaveGame.h`, `io/SettingsManager.h`, `io/UserData.h` | Per-user options and save games under `LocalLow/<organization>/<name>/`. |
-| `display/DisplaySettings.h` | `st::DisplaySettings` — window mode, monitor, resolution, refresh rate, v-sync, frame cap, render scale, graphics backend. `GUI()` has no `Begin/End`, so it drops into a game's own options menu. |
+| `io/PlayerPrefs.h`, `io/SaveGame.h`, `io/SettingsManager.h`, `io/UserData.h` | Per-user options and save apps under `LocalLow/<organization>/<name>/`. |
+| `display/DisplaySettings.h` | `st::DisplaySettings` — window mode, monitor, resolution, refresh rate, v-sync, frame cap, render scale, graphics backend. `GUI()` has no `Begin/End`, so it drops into a apps's own options menu. |
 | `render/GraphicsAPI.h` | `st::GraphicsAPI` — DirectX 12 or Vulkan, chosen at startup and switchable on Windows. `ActiveGraphicsAPI()` is what came up, `AppConfig::graphicsAPI` is the project's default, and the player's own choice lives in the Display panel. |
 | `input/InputSystem.h` | Action/axis keymap, refreshed once per frame. |
 | `eventBus.h` | Main-thread publish/subscribe (`loading.progress`, `zmq.message`, …). |
@@ -94,12 +94,12 @@ Every one is optional and does nothing by default.
 | `OnExit()` | before teardown |
 | `OnUpdate(dt)` | each frame, after the scene manager |
 | `OnFixedUpdate()` | the engine's fixed tick — physics-rate logic |
-| `RenderUI()` | the game's ImGui. Drawn every frame, whatever `devUI` says |
+| `RenderUI()` | the app's ImGui. Drawn every frame, whatever `devUI` says |
 | `RenderDevUI()` | extra developer panels; only while DevUI is visible |
 | `OnDevUIMenu()` | add a menu to the DevUI main menu bar |
 | `RenderLoadingScreen(const LoadingState&)` | replace the loading overlay with your own art |
 | `OnRenderPathSetup(RenderPath3D&)` | configure the path — or activate one of your own |
-| `OnRender()` | the game's own GPU work, after the engine renders |
+| `OnRender()` | the app's own GPU work, after the engine renders |
 | `OnPreCompose(cmd)` | draw under the composed 3D frame |
 | `OnCompose(cmd)` | draw over the 3D frame, under the UI |
 | `OnEvent(const SDL_Event&) -> bool` | raw SDL before the engine; `true` consumes it |
@@ -112,7 +112,7 @@ Plus, on the instance: `Audio()` (the Faust host), `RequestQuit()`,
 ### DevUI
 
 The menu bar, backlog, graphics settings, hierarchy/properties, scene manager and
-Faust panel are **developer tooling**, not game UI. A project chooses how much of it
+Faust panel are **developer tooling**, not app UI. A project chooses how much of it
 a build exposes:
 
 ```cpp
@@ -134,13 +134,13 @@ somewhere, and it writes them twice, for two different times:
 | Written | Where | Read by |
 |---|---|---|
 | sidecar package | `<name>.strd` beside the map | this session, mounted immediately, so the map reloads now |
-| loose resources | the project's `assets/resources/` | the next build — `stpack pack --resource-dir` merges the folder into the game package |
+| loose resources | the project's `assets/resources/` | the next build — `stpack pack --resource-dir` merges the folder into the app package |
 
-The second is what carries a model imported in the editor into the shipped game. Files
+The second is what carries a model imported in the editor into the shipped app. Files
 already in the folder are left alone, so a repeat save costs a stat() per resource;
 `Scene > Export resources on save` turns it off. The destination is
 `AppConfig::editorResourceDir`, or the project's own `assets/resources` when that is
-empty — the build bakes the path in, because the running game sits in the build output
+empty — the build bakes the path in, because the running app sits in the build output
 and the folder the packer reads is beside the project's sources.
 
 ### Project descriptor
@@ -181,7 +181,7 @@ descriptor keeps the CMake defaults.
 Being NBT it is binary, so it is authored with the generator:
 
 ```
-make_project_descriptor assets/project.stpd --name "My Game" --version 1.2.0
+make_project_descriptor assets/project.stpd --name "My App" --version 1.2.0
 make_project_descriptor assets/project.stpd --dump
 ```
 
@@ -200,10 +200,10 @@ cached exe.
 Resolution, window mode and the rest are **player-facing**, so they are a framework
 module rather than DevUI. `st::App::Display()` hands back the live
 `st::DisplaySettings`; its `GUI()` draws the whole panel without opening a window, so
-a game renders it inside its own menu:
+a app renders it inside its own menu:
 
 ```cpp
-void MyGame::RenderUI () {
+void MyApp::RenderUI () {
     ImGui::Begin("Options");
     Display().GUI(*this);   // window mode, monitor, resolution, v-sync, FPS cap, render scale
     ImGui::End();
@@ -242,13 +242,13 @@ someone is scrolling the dropdown. Applied values persist to `options.stad` unde
 every texture, buffer, pipeline and shader the engine has, so it cannot be swapped in a
 running process. The choice is saved as edited and read back by `st::ResolveGraphicsAPI()`
 on the next start; the panel shows what is running now (`Running DirectX 12 on NVIDIA
-GeForce ...`) and offers **Restart Now** — `st::RequestRestart()`, which shuts the game
+GeForce ...`) and offers **Restart Now** — `st::RequestRestart()`, which shuts the app
 down normally, writes `options.stad`, and starts the same command line again. See
 [Graphics backend](#graphics-backend) for the full resolution order.
 
 The engine-quality knobs (AO, shadows, post, tonemapping, FSR/FSR2, MSAA) stay on the
 Graphics Settings **Engine** tab and are DevUI-only — expose your own curated subset
-from the game if players should reach them.
+from the app if players should reach them.
 
 ### Loading progress
 
@@ -282,12 +282,12 @@ cmake --preset win_x86-64
 cmake --build --preset win_x86-64
 ```
 
-Add `-DSIMTARY_BUILD_PROJECTS=ON` to build every sibling game in the same tree — the
+Add `-DSIMTARY_BUILD_PROJECTS=ON` to build every sibling app in the same tree — the
 fast way to check a framework change still compiles everywhere. `ctest` runs the
 framework tests.
 
 `build_number.txt` is project-level, so only a build of that project advances it: the
-sweep above forces `SIMTARY_BUMP_BUILD_NUMBER=OFF` and leaves every game's counter
+sweep above forces `SIMTARY_BUMP_BUILD_NUMBER=OFF` and leaves every app's counter
 untouched. Pass `-DSIMTARY_BUMP_BUILD_NUMBER=OFF` by hand for CI or throwaway builds.
 
 ## Graphics backend
@@ -319,7 +319,7 @@ Other useful arguments: `debugdevice`, `gpuvalidation`, `gpu_verbose`, `igpu`,
 ## Shader cache
 
 `shaders/` holds the compiled engine shader set — `hlsl6/` for DirectX 12 and `spirv/`
-for Vulkan — and is staged into every game's output before the incremental
+for Vulkan — and is staged into every app's output before the incremental
 `offlineshadercompiler` pre-pass, so no project pays the cold ~360-shader compile. On
 Windows both are warmed, because either backend can be the one that launches. After a
 shader-heavy change, publish the result back:
@@ -332,10 +332,10 @@ The framework's own shaders (ImGui, lens flare, projector, laser) are built by
 `simtary_compile_shader`, which compiles each one for every backend the platform can
 run. It uses `stshaderc` (`tools/stshaderc.cpp`) rather than `dxc.exe`: the dxc that
 ships with the Windows SDK cannot emit SPIR-V at all, so a Windows machine without the
-Vulkan SDK could not build a game that runs on Vulkan. `stshaderc` drives the
+Vulkan SDK could not build a app that runs on Vulkan. `stshaderc` drives the
 `dxcompiler` vendored in `Engine/` through `wi::shadercompiler`, which also means the
 DX12 root signature and the Vulkan binding shifts come from the engine's own constants
 instead of a copy of them in CMake.
 
-# New game from Template
+# New app from Template
 Please Contact to `contact@platoonlabs.com` for get template project.
