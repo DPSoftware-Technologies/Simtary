@@ -98,7 +98,7 @@ enum class AssetType : uint16_t {
     Sound     = 6,   // wav / ogg - short, fully loaded
     Music     = 7,   // ogg / mp3 - long, streamed
     Video     = 8,   // mp4 / h264
-    Script    = 9,   // lua
+    Script    = 9,   // lua, tp (Taipan)
     Font      = 10,
     Shader    = 11,  // cso / spv
     Scene     = 12,  // .stsd

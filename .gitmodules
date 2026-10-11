@@ -11,3 +11,6 @@
 	path = libs/SDL2
 	url = https://github.com/libsdl-org/SDL.git
 	branch = SDL2
+[submodule "libs/Taipan"]
+	path = libs/Taipan
+	url = https://github.com/DPSoftware-Technologies/TaipanLang.git

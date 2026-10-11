@@ -386,6 +386,15 @@ function(simtary_add_app)
     # guessing a destination.
     target_compile_definitions(${_framework_target} PRIVATE
         ST_PROJECT_RESOURCE_DIR="${APP_RESOURCE_DIR}")
+    # Same idea for the Script Editor (Framework/devui/imscripteditor.cpp): Save writes the
+    # AUTHORING copy under assets/contents/, so the next build packs the edit, while the
+    # running game picks it up at once through ScriptSystem's in-memory override.
+    set(_content_dir "")
+    if (APP_CONTENT_SUBDIR AND EXISTS ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR})
+        set(_content_dir ${APP_ASSETS_DIR}/${APP_CONTENT_SUBDIR})
+    endif()
+    target_compile_definitions(${_framework_target} PRIVATE
+        ST_PROJECT_CONTENT_DIR="${_content_dir}")
 
     source_group(TREE ${SIMTARY_FRAMEWORK_DIR} PREFIX "Simtary/Framework" FILES ${_framework_sources})
     source_group(TREE ${APP_SOURCE_DIR}        PREFIX "src"               FILES ${_app_sources})
@@ -498,6 +507,7 @@ function(simtary_add_app)
         Simtary::AppFlags   # exceptions-off / RTTI-off contract, matching the engine
         Simtary
         SimtaryModelIO      # tinygltf + ufbx, for Framework/io/model (both are C)
+        SimtaryScript       # Taipan + its exception-free bridge, for Framework/script
         SDL2::SDL2
         ImGui_Lib
         sentry::sentry
@@ -1158,17 +1168,24 @@ endfunction()
 #                       OUTPUT src/audio/faust/processor/organ.gen.h)
 function(simtary_faust_regen)
     cmake_parse_arguments(FA "" "NAME;CLASS;DSP;OUTPUT" "" ${ARGN})
-    find_program(FAUST_PATH faust)
+    # FAUST_ROOT (env or cache) points at a Faust install whose bin/ is not on PATH.
+    find_program(FAUST_PATH faust HINTS "${FAUST_ROOT}/bin" "$ENV{FAUST_ROOT}/bin" "C:/Program Files/Faust/bin")
     if (NOT FAUST_PATH)
         message(STATUS "Faust compiler not found - using the checked-in ${FA_OUTPUT}. "
                        "Install a prebuilt 'faust' and re-run CMake to enable 'faust_regen_${FA_NAME}'.")
         return()
     endif()
     message(STATUS "Faust compiler: ${FAUST_PATH} (target 'faust_regen_${FA_NAME}')")
+    # A vendored library tree wins when present; otherwise faust uses the stdfaust.lib
+    # that ships with the compiler install.
+    set(_faust_lib_args "")
+    if (EXISTS ${SIMTARY_ROOT}/libs/faust/libraries)
+        set(_faust_lib_args -I ${SIMTARY_ROOT}/libs/faust/libraries)
+    endif()
     add_custom_target(faust_regen_${FA_NAME}
         COMMAND ${FAUST_PATH} -lang cpp -cn ${FA_CLASS}
             -a ${SIMTARY_ROOT}/assets/signal_descriptors/faust_arch.h
-            -I ${SIMTARY_ROOT}/libs/faust/libraries
+            ${_faust_lib_args}
             -o ${CMAKE_CURRENT_SOURCE_DIR}/${FA_OUTPUT}
             ${CMAKE_CURRENT_SOURCE_DIR}/${FA_DSP}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}

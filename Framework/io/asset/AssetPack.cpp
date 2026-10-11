@@ -595,7 +595,7 @@ AssetType ClassifyByExtension (const std::string& path) {
     if (e == "wav" || e == "flac" || e == "aiff" || e == "qoa")             return AssetType::Sound;
     if (e == "ogg" || e == "mp3" || e == "m4a" || e == "opus")              return AssetType::Music;
     if (e == "mp4" || e == "h264" || e == "mkv" || e == "webm")             return AssetType::Video;
-    if (e == "lua")                                                         return AssetType::Script;
+    if (e == "lua" || e == "tp")                                            return AssetType::Script;
     if (e == "ttf" || e == "otf")                                           return AssetType::Font;
     if (e == "cso" || e == "spv" || e == "hlsl" || e == "hlsli")            return AssetType::Shader;
     if (e == "staod" || e == "anim")                                        return AssetType::Animation;

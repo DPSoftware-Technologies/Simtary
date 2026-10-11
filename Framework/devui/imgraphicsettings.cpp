@@ -33,7 +33,7 @@ bool GraphicsSettings::EngineGfx::operator==(const EngineGfx& o) const {
         && fsr == o.fsr && fsrSharpness == o.fsrSharpness
         && fsr2 == o.fsr2 && fsr2Preset == o.fsr2Preset && fsr2Sharpness == o.fsr2Sharpness
         && resolutionScale == o.resolutionScale
-        && occlusionCulling == o.occlusionCulling && sceneUpdate == o.sceneUpdate
+        && occlusionCulling == o.occlusionCulling
         && meshBlend == o.meshBlend && visibilityCompute == o.visibilityCompute
         && frameskip == o.frameskip;
 }
@@ -106,7 +106,6 @@ void GraphicsSettings::readFromEngine(wi::RenderPath3D& path, wi::Application& a
     g.resolutionScale    = path.resolutionScale;
 
     g.occlusionCulling   = path.getOcclusionCullingEnabled();
-    g.sceneUpdate        = path.getSceneUpdateEnabled();
     g.meshBlend          = path.getMeshBlendEnabled();
     g.visibilityCompute  = path.getVisibilityComputeShadingEnabled();
 
@@ -186,7 +185,12 @@ void GraphicsSettings::applyToEngine(wi::RenderPath3D& path, wi::Application& ap
 
     // Performance / culling
     path.setOcclusionCullingEnabled(g.occlusionCulling);
-    path.setSceneUpdateEnabled(g.sceneUpdate);
+    // NOT a graphics setting: st::App::Initialize turns the path's own scene update off
+    // because scenes run Scene::Update themselves, and a second update per frame swaps
+    // the skinning prev/current buffers twice - skinned meshes then get garbage velocity
+    // (grainy motion blur on a character standing still, TAA / FSR2 smearing). This used
+    // to be applied from options.stad, where a `true` saved by an older build switched
+    // the double update back on at every start.
     path.setMeshBlendEnabled(g.meshBlend);
     path.setVisibilityComputeShadingEnabled(g.visibilityCompute);
 
@@ -360,7 +364,6 @@ void GraphicsSettings::SaveTo(st::nbt::Tag& out) const {
     out.putFloat ("resolutionScale", g.resolutionScale);
 
     out.putBool  ("occlusionCulling", g.occlusionCulling);
-    out.putBool  ("sceneUpdate", g.sceneUpdate);
     out.putBool  ("meshBlend", g.meshBlend);
     out.putBool  ("visibilityCompute", g.visibilityCompute);
 
@@ -438,7 +441,7 @@ void GraphicsSettings::LoadFrom(const st::nbt::Tag& in) {
     g.resolutionScale    = in.getFloat ("resolutionScale", g.resolutionScale);
 
     g.occlusionCulling   = in.getBool  ("occlusionCulling", g.occlusionCulling);
-    g.sceneUpdate        = in.getBool  ("sceneUpdate", g.sceneUpdate);
+    // "sceneUpdate" in an older options.stad is ignored on purpose (see applyToEngine).
     g.meshBlend          = in.getBool  ("meshBlend", g.meshBlend);
     g.visibilityCompute  = in.getBool  ("visibilityCompute", g.visibilityCompute);
 

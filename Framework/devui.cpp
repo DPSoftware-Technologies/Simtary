@@ -3,6 +3,8 @@
 #include "wiVersion.h" // engine (Simtary) version + credits
 #include "devui/imaudio.h"
 #include "devui/iminput.h"
+#include "devui/imscriptconsole.h"
+#include "devui/imscripteditor.h"
 
 void st::App::DevUIMenuBar() {
     // Transport hotkeys. Checked here rather than through the action maps: these are
@@ -77,6 +79,8 @@ void st::App::DevUIMenuBar() {
             ImGui::MenuItem("Audio Mixer", NULL, &showAudioMixer);
             ImGui::MenuItem("Gamepad Analog", NULL, &showGamepadAnalog);
             ImGui::MenuItem("Input Actions", NULL, &showInputActions);
+            ImGui::MenuItem("Taipan Console", NULL, &showScriptConsole);
+            ImGui::MenuItem("Script Editor", NULL, &st::devui::ScriptEditorVisible());
             ImGui::Separator();
             if (ImGui::MenuItem("Crash")) {
                 volatile int* p = nullptr;
@@ -334,6 +338,8 @@ void st::App::DevUIRender() {
     if (showAudioMixer) st::devui::AudioMixerWindow(&showAudioMixer);
     if (showGamepadAnalog) st::devui::GamepadAnalogWindow(&showGamepadAnalog);
     if (showInputActions) st::devui::InputActionsWindow(&showInputActions);
+    if (showScriptConsole) st::devui::ScriptConsoleWindow(&showScriptConsole);
+    st::devui::ScriptEditorWindow(); // draws only while visible; opened from stScript / the explorer too
 
     // Project hook: the game's own developer panels.
     RenderDevUI();

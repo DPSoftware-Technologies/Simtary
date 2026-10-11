@@ -52,6 +52,7 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `io/` | `Nbt` (the `.stad`/`.stcd` format), `NbtStore`, `SettingsManager`, `SaveGame`, `PlayerPrefs`, `UserData` (LocalLow path resolver). |
 | `io/model/` | **Model import**: `.gltf`/`.glb` through tinygltf v3, `.fbx` and `.obj`/`.mtl` through ufbx. `st::model::Import()` builds nodes, meshes, PBR materials, skins and animations straight into a `wi::scene::Scene`. Both loaders are C — this workspace is `_HAS_EXCEPTIONS=0`, and a throwing C++ parser would need its own exception settings behind a C boundary. Every byte reaches them through `wi::helper::FileRead`, so a model inside a mounted asset package imports like one on disk. |
 | `io/asset/` | **The asset package**: `.strd` index + `.stafp<N>` payload parts + `.stsd` maps. `AssetFormat.h` is the on-disk layout, `AssetPack` reads it, `AssetPackWriter` builds it, `SceneDescriptor` splits and rebuilds `.wiscene`, `StHash.h` is XXH64. `AssetSystem` is the only engine-aware file: it mounts packages and installs `wi::helper::SetAssetSourceOverride` so every engine read resolves through them. Reach it anywhere via `st::AssetSystem::Get()`, or `App::Assets()`. |
+| `script/` | **Taipan scripting** (Lua stays in the engine). `ScriptSystem` owns the one VM (main thread, created on first use, coroutines stepped on scene time after the scene update), `ScriptBindings.cpp` is the engine API scripts see (`scene.find`, `log.*`, `Entity`), `ScriptComponent` is `stScript` - one script instance per entity. Talks to Taipan only through `libs/TaipanBridge/StTaipan.h`. |
 | `input/InputActions.*` | **The action-map input model**, in the shape Unity's Input System uses: `Registry` (every map the game registered) → `ActionMap` ("Player", "UI") → `Action` (a name plus a control type: Button / Axis / Vector2) → `Binding` (one control, optionally a composite arm, with scale/invert processors). `ActionRuntime` evaluates one map for one player index. Bindings cover keyboard, mouse (button, delta, wheel), gamepad (button, axis, stick) and touch. |
 | `input/InputComponent.*` | The `"stInput"` NATIVE COMPONENT — Simtary's `PlayerInput`. Attach it to the entity that should receive input (`NCA_0_actionMap`, `NCA_0_playerIndex`), and sibling components read the actions off it as a local component instead of out of a singleton. |
 | `input/InputSystem.*` | Owns the `Registry` (`Actions()`), the ImGui/editor device gating, and SDL relative-mouse ownership. Also still carries the ORIGINAL flat keymap (`Down("Sprint")`, `Axis("MoveX")`, `MoveVector()`) unchanged, for the scenes written against it. |
@@ -145,6 +146,24 @@ Changing the flags means changing them in ONE place: `SIMTARY_APP_OPTIONS` /
 *before* the project-wide `/EHsc- /GR- /_HAS_EXCEPTIONS=0` flags, because they use
 exceptions/RTTI internally and must build with their own defaults. libgfx is added
 *after*, because it uses neither and must stay ABI-consistent with the engine.
+"Before" only protects a target that lives in a SUBDIRECTORY: `add_compile_definitions`
+reaches every target in its own directory whenever it was declared, so a library
+declared in this top-level file still gets `_HAS_EXCEPTIONS=0` (JSBSim and
+SimtaryModelIO do - check the generated `.vcxproj`). That is why `SimtaryScript` comes in
+through `add_subdirectory(libs/TaipanBridge)`.
+
+**Taipan is the framework's scripting language; Lua stays the engine's.** The two never
+meet: `wi::lua` (ScriptComponent, `startup.lua`, the backlog console) is untouched, and
+Taipan lives in `Framework/script/` on top of `libs/Taipan` (a git submodule of
+TaipanLang, unpatched - pin and bump steps in `libs/TaipanBridge/TAIPAN.md`). Taipan throws for every script error, so only
+`libs/TaipanBridge/StTaipan.cpp` includes `taipan.h`; everything else uses `StTaipan.h`, a
+POD, non-throwing surface whose natives record errors and let the bridge raise them after
+they return. `tests/script_bridge_test.cpp` builds like a game (exceptions off) and fails
+if any script error escapes. Scripts are `stScript` components (one instance per entity,
+`onStart/onUpdate/onFixedUpdate/onDestroy(Entity self, ...)` - `start` is a Taipan
+keyword), read from `assets/scripts/` through `wi::helper::FileRead` so they load out of
+the asset package; the engine API they see is `Framework/script/ScriptBindings.cpp`.
+`Simtary > Taipan Console` runs code and writes the `.tpi` stub for the language server.
 
 **JSBSim is cloned sparsely, and its headers stop at the library boundary.** The
 upstream repo is mostly not the library - `aircraft/`, `engine/`, `systems/`,

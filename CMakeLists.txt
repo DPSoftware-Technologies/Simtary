@@ -631,6 +631,16 @@ else()
     message(STATUS "Simtary: JSBSim disabled - no flight dynamics model.")
 endif()
 
+# Taipan: the framework's scripting language (Lua stays in the engine, untouched)
+# libs/Taipan is a git submodule of TaipanLang, unpatched (libs/TaipanBridge/TAIPAN.md:
+# pin, how to bump). Taipan reports every script error with a C++ exception and passes
+# std::string / std::function through its header, so like JSBSim it must build with
+# exceptions ON and never be included from game code. SimtaryScript = Taipan + the
+# one bridge TU allowed to include taipan.h; Framework/script/ is the engine-aware half
+# on top of it. Its own subdirectory, BEFORE the project-wide flags, so neither
+# /EHsc- nor _HAS_EXCEPTIONS=0 reaches it (libs/TaipanBridge/CMakeLists.txt says why).
+add_subdirectory(libs/TaipanBridge)
+
 if(WICKED_ENABLE_ASAN AND WICKED_ENABLE_TSAN)
     message(FATAL_ERROR "WICKED_ENABLE_ASAN and WICKED_ENABLE_TSAN are mutually exclusive!")
 endif()
@@ -935,6 +945,13 @@ if (SIMTARY_BUILD_TESTS)
     target_link_libraries(model_import_test PRIVATE Simtary::AppFlags SimtaryModelIO)
     set_target_properties(model_import_test PROPERTIES FOLDER "Simtary/Tests")
     add_test(NAME model_import_test COMMAND model_import_test)
+
+    # The Taipan bridge from a host built like a game (exceptions off): every script
+    # error is a C++ exception inside the VM, and none may escape into this TU.
+    add_executable(script_bridge_test tests/script_bridge_test.cpp)
+    target_link_libraries(script_bridge_test PRIVATE Simtary::AppFlags SimtaryScript)
+    set_target_properties(script_bridge_test PROPERTIES FOLDER "Simtary/Tests")
+    add_test(NAME script_bridge_test COMMAND script_bridge_test)
 
     add_executable(nbt_test tests/nbt_test.cpp Framework/io/Nbt.cpp)
     target_include_directories(nbt_test PRIVATE Framework)

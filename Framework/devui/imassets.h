@@ -37,13 +37,16 @@
 // st::App::HandleDroppedFile. SDL owns the string it hands over; the caller frees it.
 
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "io/asset/AssetPack.h"
 #include "io/asset/AssetPackWriter.h"
 #include "wiResourceManager.h"
+#include "devui/imaudiopreview.h"
 
 namespace st {
 
@@ -123,6 +126,50 @@ private:
         std::string          note;             // provenance, or why it failed
     };
 
+    // One asset as the views draw it - from the mounts in browse mode, from the working
+    // set in edit mode. Both views build their lists through CollectRows, which is what
+    // stops them drifting apart.
+    struct Row {
+        uint64_t         id = 0;
+        std::string      path;          // name inside the package ("scripts/ai.tp")
+        std::string      mount;         // mount point it is reached under ("assets/")
+        asset::AssetType type = asset::AssetType::Unknown;
+        asset::Codec     codec = asset::Codec::None;
+        uint64_t         size = 0, storedSize = 0, contentHash = 0;
+        uint32_t         partNumber = 0, flags = 0;
+        bool             removed = false, added = false, renamed = false;
+        const char*      origin = "package";
+    };
+    // `applyFilters` false = every row (the browser's folder tree needs the whole shape).
+    void CollectRows (std::vector<Row>& rows, bool applyFilters) const;
+
+    // Browser view: the Unity-style one. Folder tree on the left (with type shortcuts),
+    // breadcrumbs, and a grid of folder / file tiles - thumbnails for images.
+    struct FolderNode {
+        std::string name;                         // "scripts"
+        std::string path;                         // "scripts/ai" (no trailing slash; "" = root)
+        std::map<std::string, FolderNode> children; // keyed by lower-case name: sorted, case-folded
+        uint32_t files = 0;                       // directly inside
+        uint32_t total = 0;                       // inside, recursively
+    };
+    // The Browser tab: browser + inspector laid out to the panel's CURRENT size - side by
+    // side when wide, stacked when narrow - with draggable dividers.
+    void DrawBrowserLayout ();
+    void DrawBrowser ();
+    void DrawFolderTree (const FolderNode& node, int depth);
+    void DrawTiles (const std::vector<Row>& rows);
+    void RebuildTree (const std::vector<Row>& rows);
+    // Double-click: enter a folder, open a script in the Script Editor.
+    void OpenRow (const Row& row);
+    void SelectRow (uint64_t id);
+    void RowContextMenu (const Row& row);
+    void RowDragSource (const Row& row);
+    // Where a sound row's bytes come from, for the audio preview: `name` is left as the
+    // package name unless the working set says otherwise; `bytes` is set for in-memory rows.
+    void AudioSourceFor (uint64_t id, std::string& name, const std::vector<uint8_t>*& bytes) const;
+    // A loaded thumbnail for an image row, or null while it is (or cannot be) loaded.
+    const wi::graphics::Texture* Thumbnail (const Row& row);
+
     // panels
     void DrawToolbar ();
     void DrawPackages ();
@@ -183,8 +230,27 @@ private:
     std::vector<uint64_t> selection_;
     uint64_t              lastClicked_ = 0;
 
+    // Browser state.
+    bool        browserView_ = true;   // false = the detailed table
+    std::string browseFolder_;         // current folder ("" = the root)
+    int         shortcutType_ = -1;    // a left-pane "All Scripts"-style shortcut, -1 = none
+    float       tileSize_ = 76.0f;
+    float       treeWidth_ = 210.0f;      // dragged by the divider; clamped to the panel
+    float       inspectorWidth_ = 260.0f; // side-by-side layout only
+    FolderNode  tree_;
+    uint64_t    treeSignature_ = 0;    // rows the tree was built from; rebuilt when it moves
+    struct Thumb {
+        wi::Resource resource;
+        uint64_t     lastUsed = 0;
+        bool         failed = false;
+    };
+    std::unordered_map<uint64_t, Thumb> thumbs_;
+    uint64_t    frame_ = 0;
+    int         thumbBudget_ = 0;      // loads still allowed this frame
+
     // Preview.
     wi::Resource previewResource_;
+    devui::AudioPreview audio_;   // sound playback (inspector player + tile buttons)
     uint64_t     previewId_ = 0;
     std::string  previewText_;
     bool         previewIsText_ = false;

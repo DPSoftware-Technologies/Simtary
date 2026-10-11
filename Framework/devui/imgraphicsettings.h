@@ -136,7 +136,6 @@ private:
 
         // Performance / culling
         bool  occlusionCulling   = true;
-        bool  sceneUpdate        = true;
         bool  meshBlend          = true;
         bool  visibilityCompute  = false;
 

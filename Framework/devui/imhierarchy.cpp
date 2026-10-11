@@ -3,6 +3,10 @@
 #include "imcomponents.h"
 #include "imcomponentinspectors.h"
 #include "imeditorhistory.h"
+#include "imassets.h"         // SIMTARY_ASSET_PAYLOAD: scripts dropped from the Resource Explorer
+#include "io/asset/StHash.h"
+#include "io/asset/AssetSystem.h" // the mount point a dropped package name is reached under
+#include "wiBacklog.h"
 
 #include "stNativeComponent.h"
 #include "wiScene.h"
@@ -25,6 +29,9 @@ using namespace wi::scene;
 // EntityLabel / EditString / ComponentHeader live in imcomponentinspectors.cpp, because both
 //	files draw components and one copy of each is enough.
 using namespace st::devui;
+
+// Script drops (defined further down, with the Properties panel they mostly serve).
+static bool AcceptScriptDrop(Scene& scene, Entity entity, st::EditorHistory* history);
 
 // ------------------------------------------------------------------ helpers ---
 
@@ -129,10 +136,76 @@ static void HierarchyRowInteract(Scene& scene, Entity e, Entity& selected,
 		ImGui::EndDragDropTarget();
 	}
 
+	// A script carried out of the Resource Explorer: drop it on the row to add it.
+	const ImGuiPayload* carried = ImGui::GetDragDropPayload();
+	if (carried && carried->IsDataType(st::SIMTARY_ASSET_PAYLOAD) && ImGui::BeginDragDropTarget())
+	{
+		if (AcceptScriptDrop(scene, e, history))
+			selected = e;
+		ImGui::EndDragDropTarget();
+	}
+
 	if (hovered && !toggledOpen
 		&& ImGui::IsMouseReleased(ImGuiMouseButton_Left)
 		&& !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left))
 		selected = e;
+}
+
+// ------------------------------------------------------------ script drops ---
+// A .tp dragged out of the Resource Explorer onto an entity - anywhere on its Properties
+// panel, or onto its row in the Hierarchy - becomes an stScript on that entity with the
+// file already filled in, the way dropping a MonoBehaviour onto a GameObject works.
+
+// The logical path the game loads a dropped asset by: the package name under its mount
+//	point ("scripts/ai.tp" -> "assets/scripts/ai.tp").
+static bool ScriptPathFromPayload(const ImGuiPayload* p, std::string& logical)
+{
+	if (p == nullptr || p->DataSize != (int)sizeof(st::AssetPayload))
+		return false;
+	const st::AssetPayload& a = *(const st::AssetPayload*)p->Data;
+	const std::string path = st::asset::NormalizePath(a.path);
+	const std::string canon = st::asset::CanonicalPath(path);
+	if (canon.size() < 4 || canon.compare(canon.size() - 3, 3, ".tp") != 0)
+		return false;
+	// (Not App::Config(): stApp.h's ::Scene would collide with wi::scene::Scene in this file.)
+	st::AssetSystem& assets = st::AssetSystem::Get();
+	std::string mount = st::asset::NormalizePath(assets.MountCount() > 0 ? assets.MountAt(0).mountPoint : "assets/");
+	if (!mount.empty() && mount.back() != '/')
+		mount += '/';
+	const bool hasMount = !mount.empty() && canon.rfind(st::asset::CanonicalPath(mount), 0) == 0;
+	logical = hasMount ? path : mount + path;
+	return true;
+}
+
+static void AddScriptComponent(Scene& scene, Entity entity, const std::string& logical, st::EditorHistory* history)
+{
+	if (history) history->BeginEntity(scene, entity, "Add Script");
+	const int id = wi::scene::AttachNativeComponent(scene, entity, "stScript");
+	if (id >= 0)
+	{
+		// Written as the NCA_ argument stScript binds in Start(), which is also what a save
+		//	keeps - so the script is live next frame and survives the scene round-trip.
+		if (MetadataComponent* m = scene.metadatas.GetComponent(entity))
+			m->string_values.set("NCA_" + std::to_string(id) + "_file", logical);
+		wi::backlog::post("Editor: added stScript '" + logical + "' to entity " + std::to_string(entity));
+	}
+	if (history) history->Commit(scene);
+}
+
+// Inside an open drag-drop target: take the payload only if it is a script, so a texture
+//	or a model dragged over the same spot does not light it up.
+static bool AcceptScriptDrop(Scene& scene, Entity entity, st::EditorHistory* history)
+{
+	std::string logical;
+	const ImGuiPayload* peek = ImGui::AcceptDragDropPayload(st::SIMTARY_ASSET_PAYLOAD,
+		ImGuiDragDropFlags_AcceptPeekOnly | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+	if (!ScriptPathFromPayload(peek, logical))
+		return false;
+	const ImGuiPayload* p = ImGui::AcceptDragDropPayload(st::SIMTARY_ASSET_PAYLOAD);
+	if (p == nullptr || !p->IsDelivery())
+		return false;
+	AddScriptComponent(scene, entity, logical, history);
+	return true;
 }
 
 static float Deg(float rad) { return rad * (180.0f / XM_PI); }
@@ -795,6 +868,24 @@ void PropertiesGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 
 	ImGui::Separator();
 	AddComponentButton(scene, selected, history);
+
+	// The whole panel takes a dropped script. Asset fields inside it are smaller targets,
+	//	and ImGui hands a drop to the smallest one under the cursor, so dropping onto an
+	//	stScript's own "file" field still just changes that field.
+	const ImGuiPayload* carried = ImGui::GetDragDropPayload();
+	if (carried && carried->IsDataType(st::SIMTARY_ASSET_PAYLOAD))
+	{
+		std::string logical;
+		const bool script = ScriptPathFromPayload(carried, logical);
+		if (script)
+			ImGui::TextDisabled("Drop to add %s as an stScript", logical.c_str());
+		ImGuiWindow* window = ImGui::GetCurrentWindow();
+		if (script && ImGui::BeginDragDropTargetCustom(window->InnerRect, ImGui::GetID("##script_drop")))
+		{
+			AcceptScriptDrop(scene, selected, history);
+			ImGui::EndDragDropTarget();
+		}
+	}
 }
 
 void PropertiesWindow(Scene& scene, Entity& selected, bool* p_open)

@@ -10,6 +10,8 @@
 #include "io/asset/AssetSystem.h"
 #include "io/asset/SceneDescriptor.h"
 #include "io/asset/StHash.h"
+#include "devui/imscripteditor.h"
+#include "stApp.h"
 #include "wiHelper.h"
 #include "wiBacklog.h"
 
@@ -613,7 +615,30 @@ void AssetExplorer::RefreshPreview () {
     if (id == 0) return;
 
     const Entry* entry = FindEntry(id);
-    if (entry == nullptr) return;
+    if (entry == nullptr) {
+        // Browse mode: no working set, so go to the mounts. Images load by name through
+        //	the asset source; small text assets are read for the preview box.
+        AssetSystem& assets = AssetSystem::Get();
+        for (uint32_t m = 0; m < assets.MountCount(); ++m) {
+            const asset::AssetPack* pack = assets.PackAt(m);
+            const asset::StrdAsset* a = pack ? pack->Find(id) : nullptr;
+            if (a == nullptr) continue;
+            const std::string name = pack->NameString(*a);
+            const auto type = static_cast<asset::AssetType>(a->type);
+            if (type == asset::AssetType::Texture || type == asset::AssetType::Image) {
+                previewResource_ = wi::resourcemanager::Load(name);
+            } else if (a->originalSize <= 256 * 1024) {
+                std::vector<uint8_t> bytes;
+                if (assets.Read(name, bytes) && LooksLikeText(bytes.data(), bytes.size())) {
+                    previewIsText_ = true;
+                    previewText_.assign(reinterpret_cast<const char*>(bytes.data()),
+                                        std::min<size_t>(bytes.size(), 8192));
+                }
+            }
+            return;
+        }
+        return;
+    }
 
     if (entry->type == asset::AssetType::Texture || entry->type == asset::AssetType::Image) {
         // For a package asset the engine's own loader resolves the name through the
@@ -798,6 +823,69 @@ void AssetExplorer::DrawPackages () {
     }
 }
 
+void AssetExplorer::CollectRows (std::vector<Row>& rows, bool applyFilters) const {
+    AssetSystem& assets = AssetSystem::Get();
+    const std::string filter = applyFilters ? asset::CanonicalPath(filter_) : std::string();
+    const int typeFilter = applyFilters ? typeFilter_ : -1;
+
+    // In browse mode the rows come from the mounts; in edit mode they come from the
+    // working set. One list for both keeps every view drawing the same thing.
+    if (editing_) {
+        // The working set is one package's names; reach them under that package's mount.
+        std::string mount = App::Config().assetMountPoint;
+        for (uint32_t m = 0; m < assets.MountCount(); ++m)
+            if (assets.PackAt(m) == sourcePack_) mount = assets.MountAt(m).mountPoint;
+        rows.reserve(entries_.size());
+        for (const Entry& e : entries_) {
+            if (e.removed && !showRemoved_) continue;
+            if (typeFilter >= 0 && static_cast<int>(e.type) != typeFilter) continue;
+            if (!filter.empty() && asset::CanonicalPath(e.logicalPath).find(filter) == std::string::npos) continue;
+            Row row;
+            row.id          = asset::AssetIdFromPath(e.logicalPath);
+            row.path        = e.logicalPath;
+            row.mount       = mount;
+            row.type        = e.type;
+            row.codec       = e.autoCodec ? asset::DefaultCodecFor(e.logicalPath, e.type, e.size) : e.codec;
+            row.size        = e.size;
+            row.storedSize  = e.storedSize;
+            row.contentHash = e.contentHash;
+            row.partNumber  = e.partNumber;
+            row.flags       = e.flags;
+            row.removed     = e.removed;
+            row.added       = e.added;
+            row.renamed     = e.renamed;
+            row.origin      = e.origin == Entry::Origin::Package ? "package"
+                            : (e.origin == Entry::Origin::File ? "file" : "generated");
+            rows.push_back(std::move(row));
+        }
+        return;
+    }
+    for (uint32_t m = 0; m < assets.MountCount(); ++m) {
+        if (mountFilter_ >= 0 && (int)m != mountFilter_) continue;
+        const asset::AssetPack* pack = assets.PackAt(m);
+        if (pack == nullptr) continue;
+        const std::string mount = assets.MountAt(m).mountPoint;
+        for (uint32_t i = 0; i < pack->AssetCount(); ++i) {
+            const asset::StrdAsset* a = pack->AssetAt(i);
+            if (typeFilter >= 0 && a->type != typeFilter) continue;
+            std::string name = pack->NameString(*a);
+            if (!filter.empty() && asset::CanonicalPath(name).find(filter) == std::string::npos) continue;
+            Row row;
+            row.id          = a->id;
+            row.path        = std::move(name);
+            row.mount       = mount;
+            row.type        = static_cast<asset::AssetType>(a->type);
+            row.codec       = static_cast<asset::Codec>(a->codec);
+            row.size        = a->originalSize;
+            row.storedSize  = a->storedSize;
+            row.contentHash = a->contentHash;
+            row.partNumber  = pack->PartAt(a->partIndex).number;
+            row.flags       = a->flags;
+            rows.push_back(std::move(row));
+        }
+    }
+}
+
 void AssetExplorer::DrawAssetTable () {
     AssetSystem& assets = AssetSystem::Get();
 
@@ -824,55 +912,8 @@ void AssetExplorer::DrawAssetTable () {
         ImGui::Checkbox("show removed", &showRemoved_);
     }
 
-    const std::string filter = asset::CanonicalPath(filter_);
-
-    // In browse mode the rows come from the mounts; in edit mode they come from the
-    // working set. Building one index list keeps the drawing code below identical for
-    // both, which is what stops the two views from drifting apart.
-    struct Row {
-        uint64_t    id;
-        std::string path;
-        asset::AssetType type;
-        asset::Codec     codec;
-        uint64_t    size, storedSize, contentHash;
-        uint32_t    partNumber, flags;
-        bool        removed, added, renamed;
-        const char* origin;
-    };
     std::vector<Row> rows;
-
-    if (editing_) {
-        rows.reserve(entries_.size());
-        for (const Entry& e : entries_) {
-            if (e.removed && !showRemoved_) continue;
-            if (typeFilter_ >= 0 && static_cast<int>(e.type) != typeFilter_) continue;
-            if (!filter.empty() && asset::CanonicalPath(e.logicalPath).find(filter) == std::string::npos) continue;
-            rows.push_back(Row{
-                asset::AssetIdFromPath(e.logicalPath), e.logicalPath, e.type,
-                e.autoCodec ? asset::DefaultCodecFor(e.logicalPath, e.type, e.size) : e.codec,
-                e.size, e.storedSize, e.contentHash, e.partNumber, e.flags,
-                e.removed, e.added, e.renamed,
-                e.origin == Entry::Origin::Package ? "package"
-                    : (e.origin == Entry::Origin::File ? "file" : "generated") });
-        }
-    } else {
-        for (uint32_t m = 0; m < assets.MountCount(); ++m) {
-            if (mountFilter_ >= 0 && (int)m != mountFilter_) continue;
-            const asset::AssetPack* pack = assets.PackAt(m);
-            if (pack == nullptr) continue;
-            for (uint32_t i = 0; i < pack->AssetCount(); ++i) {
-                const asset::StrdAsset* a = pack->AssetAt(i);
-                if (typeFilter_ >= 0 && a->type != typeFilter_) continue;
-                const std::string name = pack->NameString(*a);
-                if (!filter.empty() && asset::CanonicalPath(name).find(filter) == std::string::npos) continue;
-                rows.push_back(Row{ a->id, name, static_cast<asset::AssetType>(a->type),
-                                    static_cast<asset::Codec>(a->codec), a->originalSize,
-                                    a->storedSize, a->contentHash,
-                                    pack->PartAt(a->partIndex).number, a->flags,
-                                    false, false, false, "package" });
-            }
-        }
-    }
+    CollectRows(rows, true);
 
     const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                                   ImGuiTableFlags_ScrollY | ImGuiTableFlags_Sortable |
@@ -1009,6 +1050,7 @@ void AssetExplorer::DrawAssetTable () {
 void AssetExplorer::DrawInspector () {
     if (selection_.empty()) {
         ImGui::TextDisabled("Select an asset to inspect it.");
+        audio_.Stop();
         return;
     }
 
@@ -1132,6 +1174,18 @@ void AssetExplorer::DrawInspector () {
         ImGui::SameLine();
     }
     if (ImGui::Button("Copy path")) ImGui::SetClipboardText(path.c_str());
+    if (type == asset::AssetType::Script && asset::CanonicalPath(path).size() > 3 &&
+        asset::CanonicalPath(path).compare(path.size() - 3, 3, ".tp") == 0) {
+        ImGui::SameLine();
+        if (ImGui::Button("Edit script")) {
+            // Logical path = the mount point the game reaches this package under + its name.
+            std::string mount = App::Config().assetMountPoint;
+            AssetSystem& assets = AssetSystem::Get();
+            for (uint32_t m = 0; m < assets.MountCount(); ++m)
+                if (assets.PackAt(m) == (pack ? pack : sourcePack_)) mount = assets.MountAt(m).mountPoint;
+            st::devui::OpenScriptEditor(asset::NormalizePath(mount + path));
+        }
+    }
 
     RefreshPreview();
     if (previewResource_.IsValid()) {
@@ -1147,6 +1201,29 @@ void AssetExplorer::DrawInspector () {
     } else if (previewIsText_) {
         ImGui::InputTextMultiline("##preview", previewText_.data(), previewText_.size(),
                                   ImVec2(-1, 140), ImGuiInputTextFlags_ReadOnly);
+    }
+
+    // Sounds: a player. Selecting anything else stops it.
+    if (type == asset::AssetType::Sound || type == asset::AssetType::Music) {
+        std::string name = path;
+        const std::vector<uint8_t>* bytes = nullptr;
+        AudioSourceFor(id, name, bytes);
+        audio_.Select(id, name, bytes, size);
+        audio_.DrawInspector();
+    } else {
+        audio_.Stop();
+    }
+}
+
+void AssetExplorer::AudioSourceFor (uint64_t id, std::string& name, const std::vector<uint8_t>*& bytes) const {
+    // A package row loads by its name (the asset source resolves it). A working-set row
+    //	that is not packed yet plays from its file, or from the bytes this window built.
+    bytes = nullptr;
+    if (!editing_) return;
+    if (const Entry* e = FindEntry(id)) {
+        if (e->origin == Entry::Origin::File)        name = e->filePath;
+        else if (e->origin == Entry::Origin::Memory) bytes = &e->bytes;
+        else                                         name = e->logicalPath;
     }
 }
 
@@ -1188,9 +1265,19 @@ void AssetExplorer::GUI () {
 
     if (ImGui::BeginTabBar("assettabs")) {
         if (ImGui::BeginTabItem(editing_ ? "Assets (editing)" : "Assets")) {
-            DrawAssetTable();
-            ImGui::Separator();
-            DrawInspector();
+            // Browser: folders and icons, the way a file manager (or Unity's Project
+            //	window) shows them. Table: every column, sortable - "what makes this build
+            //	big" is answered there. Same rows, same selection, same inspector.
+            if (ImGui::RadioButton("Browser", browserView_)) browserView_ = true;
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Table", !browserView_)) browserView_ = false;
+            if (browserView_) {
+                DrawBrowserLayout();
+            } else {
+                DrawAssetTable();
+                ImGui::Separator();
+                DrawInspector();
+            }
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Packages")) {

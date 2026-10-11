@@ -6,6 +6,7 @@
 #include "input/InputSystem.h"
 #include "io/asset/AssetSystem.h"
 #include "io/model/ModelImporter.h"
+#include "script/ScriptSystem.h"
 #include "wiPhysics.h"
 #include "wiScene.h"
 #include "wiHelper.h"
@@ -440,7 +441,13 @@ void st::App::Update(float dt) {
     // On the scene's clock too, or a paused world would keep moving through its own day.
     st::DayNight::Get().Update(wi::scene::GetScene(), sceneDt);
 
+    st::ScriptSystem::Get().BeginFrame(sceneDt, dt); // Time.deltaTime, Input.* for this frame
     sceneManager.Update(sceneDt);
+
+    // Taipan coroutines, on scene time so a paused world pauses its scripts too. After
+    // the scene update: stScript's onUpdate ran inside it, and a coroutine it started
+    // this frame should not also take its first step in the same frame.
+    st::ScriptSystem::Get().Update(sceneDt);
 
     if (transitioning) {
         m_loadingScreen.Hide();
@@ -555,6 +562,9 @@ void st::App::Exit() {
     st::SettingsManager::Get().Save();
     zmqHandler.Stop(); // join receiver thread before tearing anything else down
     faustManager.Unload(); // join audio thread + close OpenAL before teardown
+    // The script VM goes before the engine. stScript instances still alive in the scene
+    // see the generation change and drop their handles instead of freeing into it.
+    st::ScriptSystem::Get().Shutdown();
     ImguiExit();
     wi::Application::Exit();
 }

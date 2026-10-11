@@ -452,6 +452,7 @@ private:
     bool showAudioMixer = false;
     bool showGamepadAnalog = false;
     bool showInputActions = false;
+    bool showScriptConsole = false;
 
     bool STDDBoneLines = false;
     bool STDDCameras = false;
