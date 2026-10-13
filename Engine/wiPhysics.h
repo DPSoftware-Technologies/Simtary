@@ -237,6 +237,36 @@ namespace wi::physics
 	// Signed velocity amount in forward direction
 	float GetVehicleForwardVelocity(wi::scene::RigidBodyPhysicsComponent& physicscomponent);
 
+	// --- SIMTARY EXTENSION: vehicle telemetry ---
+	//	What the simulation is actually doing, read straight off the Jolt controller after a
+	//	step: the numbers a vehicle model is tuned and validated against. Main thread, after
+	//	the scene update.
+	struct VehicleTelemetry
+	{
+		float engine_rpm = 0;
+		int gear = 0;					// 0 = neutral, negative = reverse
+		float clutch_friction = 0;		// 0 = open, 1 = locked
+		float forward_speed = 0;		// m/s along the chassis forward axis, signed
+		struct Wheel
+		{
+			bool contact = false;
+			wi::ecs::Entity contact_entity = wi::ecs::INVALID_ENTITY;
+			XMFLOAT3 contact_position = XMFLOAT3(0, 0, 0);
+			XMFLOAT3 contact_normal = XMFLOAT3(0, 1, 0);
+			float suspension_length = 0;	// metres, attachment to wheel centre
+			float suspension_impulse = 0;	// N*s over the last step (load = impulse / dt)
+			float angular_velocity = 0;		// rad/s
+			float steer_angle = 0;			// radians
+			float longitudinal_slip = 0;	// slip ratio
+			float lateral_slip = 0;			// slip angle, radians
+			float longitudinal_friction = 0;	// combined tyre x ground coefficient in use
+			float lateral_friction = 0;
+		};
+		wi::vector<Wheel> wheels;
+	};
+	// False when the body is not (yet) a vehicle.
+	bool GetVehicleTelemetry(wi::scene::RigidBodyPhysicsComponent& physicscomponent, VehicleTelemetry& out);
+
 	// Override all vehicle wheel transforms in world space
 	void OverrideWehicleWheelTransforms(wi::scene::Scene& scene);
 

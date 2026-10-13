@@ -2,6 +2,7 @@
 #include "scene/FileScene.h"
 #include "scene/RuntimeScene.h"
 #include "scene/SceneFile.h"
+#include "scene/GuiHooks.h"
 #include "io/asset/AssetSystem.h"
 #include "io/asset/AssetPack.h"
 #include "wiHelper.h"
@@ -207,13 +208,31 @@ void SceneManager::Update(float dt) {
             current_->Unload();
             if (onUnloaded_) onUnloaded_(previous);
         }
+        codeEntities_.clear();
 
         auto it = scenes_.find(pendingLoad_);
         if (it != scenes_.end()) {
             current_     = it->second.get();
             currentName_ = pendingLoad_;
+
+            // Bracket the load: whatever is new afterwards and did not come out of a map
+            // file was made by code - the scene's own Load() or a loaded hook (a DayNight
+            // sun, say). See CodeEntities().
+            wi::scene::Scene& scene = wi::scene::GetScene();
+            std::vector<wi::ecs::Entity> before;
+            st::GatherSceneEntities(scene, before);
+            st::BeginMapEntityLog();
+
             current_->Load();
             if (onLoaded_) onLoaded_(currentName_);
+
+            st::EndMapEntityLog();
+            std::unordered_set<wi::ecs::Entity> known(before.begin(), before.end());
+            known.insert(st::MapEntityLog().begin(), st::MapEntityLog().end());
+            std::vector<wi::ecs::Entity> after;
+            st::GatherSceneEntities(scene, after);
+            for (wi::ecs::Entity e : after)
+                if (known.count(e) == 0) codeEntities_.insert(e);
         }
         pendingLoad_.clear();
         loadingName_.clear();
@@ -226,6 +245,8 @@ void SceneManager::Update(float dt) {
 void SceneManager::OnGUI() {
     if (current_)
         current_->OnGUI();
+    // Game UI that native components draw (a HUD on a vehicle, say) - see GuiHooks.h.
+    st::GuiHooks::Get().Draw();
 }
 
 void SceneManager::OnDevGUI() {

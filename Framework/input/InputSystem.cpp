@@ -81,6 +81,9 @@ float InputSystem::bindingAxis(const InputBinding& b) const {
 
 // per-frame update
 void InputSystem::Update(float dt) {
+	// Injected tooling input (InputActions.h) ages on the real frame clock.
+	st::input::TickInjectedActions(dt);
+
 	// Source gating from ImGui + window focus. GetIO() is valid here because this is
 	// called after ImguiUpdate() (NewFrame) in st::App::Update.
 	//	While the cursor is captured (FPS mode) the player is driving the game, not typing

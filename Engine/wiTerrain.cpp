@@ -701,8 +701,9 @@ namespace wi::terrain
 
 		if (IsCenterToCamEnabled())
 		{
-			center_chunk.x = (int)std::floor((camera.Eye.x + chunk_half_width) * chunk_width_rcp * chunk_scale_rcp);
-			center_chunk.z = (int)std::floor((camera.Eye.z + chunk_half_width) * chunk_width_rcp * chunk_scale_rcp);
+			const XMFLOAT3 eye = focus_override ? focus_position : camera.Eye; // SIMTARY EXTENSION
+			center_chunk.x = (int)std::floor((eye.x + chunk_half_width) * chunk_width_rcp * chunk_scale_rcp);
+			center_chunk.z = (int)std::floor((eye.z + chunk_half_width) * chunk_width_rcp * chunk_scale_rcp);
 		}
 
 		const int removal_threshold = generation + 2;
@@ -739,6 +740,14 @@ namespace wi::terrain
 
 				if (virtual_texture_any)
 					break;
+			}
+
+			// SIMTARY EXTENSION: an authored terrain paints its layers by weight, and a layer
+			//	may be nothing but a base colour. Without the virtual texture the chunk would
+			//	render with its own placeholder material instead of the layers.
+			if (source != nullptr)
+			{
+				virtual_texture_any = true;
 			}
 
 			if (grassEntity != INVALID_ENTITY)
@@ -1053,7 +1062,7 @@ namespace wi::terrain
 					mesh.vertex_tangents.resize(vertexCount);
 					mesh.vertex_uvset_0.resize(vertexCount);
 
-					chunk_data.blendmap_layers.resize(4);
+					chunk_data.blendmap_layers.resize(source != nullptr ? GetLayerCount() : 4);
 					for (auto& x : chunk_data.blendmap_layers)
 					{
 						x.pixels.resize(vertexCount);
@@ -1094,11 +1103,19 @@ namespace wi::terrain
 
 						float height = 0;
 						const XMFLOAT2 world_pos = XMFLOAT2(chunk_data.position.x + x, chunk_data.position.z + z);
-						for (auto& modifier : modifiers)
+						if (source != nullptr)
 						{
-							modifier->Apply(world_pos, height);
+							// SIMTARY EXTENSION: authored height, already in metres
+							height = source->Height(world_pos);
 						}
-						height = lerp(bottomLevel, topLevel, height);
+						else
+						{
+							for (auto& modifier : modifiers)
+							{
+								modifier->Apply(world_pos, height);
+							}
+							height = lerp(bottomLevel, topLevel, height);
+						}
 
 						const bool is_real_vertex = coord.x < chunk_width && coord.y < chunk_width;
 						const uint32_t real_index = coord.x + coord.y * chunk_width;
@@ -1152,20 +1169,39 @@ namespace wi::terrain
 						if (slope_amount > 0.1f)
 							slope_cast_shadow.store(true);
 
-						float region_base = 1;
-						float region_slope = region1 == 0 ? 1 : smoothstep(0.0f, region1, slope_amount);
-						float region_low_altitude = region2 == 0 ? 1 : smoothstep(0.0f, region2, wi::math::InverseLerp(0, bottomLevel, height));
-						float region_high_altitude = region3 == 0 ? 1 : smoothstep(0.0f, region3, wi::math::InverseLerp(0, topLevel, height));
+						XMFLOAT4 materialBlendWeights;
+						float authored_grass = 0;
+						if (source != nullptr)
+						{
+							// SIMTARY EXTENSION: authored layer weights, one per blend layer
+							constexpr uint32_t max_layers = 32;
+							float weights[max_layers] = {};
+							const uint32_t layer_count = std::min((uint32_t)chunk_data.blendmap_layers.size(), max_layers);
+							const XMFLOAT2 surface_pos = XMFLOAT2(chunk_data.position.x + x, chunk_data.position.z + z);
+							authored_grass = saturate(source->Surface(surface_pos, weights, layer_count));
+							for (uint32_t layer = 0; layer < layer_count; ++layer)
+							{
+								chunk_data.blendmap_layers[layer].pixels[index] = uint8_t(saturate(weights[layer]) * 255 + 0.5f);
+							}
+							materialBlendWeights = XMFLOAT4(weights[0], weights[1], weights[2], weights[3]);
+						}
+						else
+						{
+							float region_base = 1;
+							float region_slope = region1 == 0 ? 1 : smoothstep(0.0f, region1, slope_amount);
+							float region_low_altitude = region2 == 0 ? 1 : smoothstep(0.0f, region2, wi::math::InverseLerp(0, bottomLevel, height));
+							float region_high_altitude = region3 == 0 ? 1 : smoothstep(0.0f, region3, wi::math::InverseLerp(0, topLevel, height));
 
-						region_low_altitude = saturate(region_low_altitude - region_slope);
-						region_high_altitude = saturate(region_high_altitude - region_slope);
+							region_low_altitude = saturate(region_low_altitude - region_slope);
+							region_high_altitude = saturate(region_high_altitude - region_slope);
 
-						XMFLOAT4 materialBlendWeights(region_base, region_slope, region_low_altitude, region_high_altitude);
+							materialBlendWeights = XMFLOAT4(region_base, region_slope, region_low_altitude, region_high_altitude);
 
-						chunk_data.blendmap_layers[0].pixels[index] = uint8_t(materialBlendWeights.x * 255);
-						chunk_data.blendmap_layers[1].pixels[index] = uint8_t(materialBlendWeights.y * 255);
-						chunk_data.blendmap_layers[2].pixels[index] = uint8_t(materialBlendWeights.z * 255);
-						chunk_data.blendmap_layers[3].pixels[index] = uint8_t(materialBlendWeights.w * 255);
+							chunk_data.blendmap_layers[0].pixels[index] = uint8_t(materialBlendWeights.x * 255);
+							chunk_data.blendmap_layers[1].pixels[index] = uint8_t(materialBlendWeights.y * 255);
+							chunk_data.blendmap_layers[2].pixels[index] = uint8_t(materialBlendWeights.z * 255);
+							chunk_data.blendmap_layers[3].pixels[index] = uint8_t(materialBlendWeights.w * 255);
+						}
 
 						// Normalize after store, blending shader wants unnormalized!
 						weight_norm(materialBlendWeights);
@@ -1191,7 +1227,8 @@ namespace wi::terrain
 
 						const float grass_noise_frequency = 0.1f;
 						const float grass_noise = perlin_noise.compute(vertex_pos.x * grass_noise_frequency, vertex_pos.y * grass_noise_frequency, vertex_pos.z * grass_noise_frequency) * 0.5f + 0.5f;
-						const float region_grass = std::pow(materialBlendWeights.x * (1 - materialBlendWeights.w), 8.0f) * grass_noise * (1 - saturate(spline_factor));
+						const float grass_source = source != nullptr ? authored_grass : std::pow(materialBlendWeights.x * (1 - materialBlendWeights.w), 8.0f);
+						const float region_grass = grass_source * grass_noise * (1 - saturate(spline_factor));
 						if (region_grass > 0.1f)
 						{
 							grass_valid_vertex_count.fetch_add(1);
@@ -1201,7 +1238,9 @@ namespace wi::terrain
 						{
 							grass.vertex_lengths[index] = 0;
 						}
-						chunk_data.heightmap_data[index] = uint16_t(inverse_lerp(bottomLevel, topLevel, height) * 65535);
+						// saturate: an authored height can fall outside [bottomLevel, topLevel], and
+						//	casting a negative float to uint16_t is undefined
+						chunk_data.heightmap_data[index] = uint16_t(saturate(inverse_lerp(bottomLevel, topLevel, height)) * 65535);
 					});
 					wi::jobsystem::Wait(ctx); // wait until chunk's vertex buffer is fully generated
 
@@ -1419,7 +1458,10 @@ namespace wi::terrain
 				auto it = chunks.find(chunk);
 				if (it != chunks.end() && it->second.invalidated) // Check here too in this special case, because multiple of the same entries can easily exist on the queue. Already refreshes chunks will not be refreshed again
 				{
-					request_chunk(chunk.x, chunk.z);
+					// SIMTARY FIX: request_chunk takes an OFFSET from center_chunk, and the queue
+					//	holds absolute chunk coordinates. Passing them straight through regenerated
+					//	the wrong chunk whenever the camera was away from the origin.
+					request_chunk(chunk.x - center_chunk.x, chunk.z - center_chunk.z);
 					if (generator->cancelled.load()) return;
 				}
 			}
@@ -1994,7 +2036,11 @@ namespace wi::terrain
 				}
 				for (uint i = 0; i < baseMaterialCount; ++i)
 				{
-					const Entity entity = materialEntities[i];
+					// An authored terrain always carries at least four blend layers (see
+					//	GetLayerCount), which can be more than it has materials. Those spare
+					//	layers are painted with zero weight, which the shader skips before it
+					//	ever reads the material index.
+					const Entity entity = i < materialEntities.size() ? materialEntities[i] : INVALID_ENTITY;
 					const uint material_index = (uint)scene->materials.GetIndex(entity);
 					std::memcpy((uint*)mem.data + i, &material_index, sizeof(uint)); // force memcpy to avoid uncached read from GPU pointer!
 				}
@@ -2293,6 +2339,189 @@ namespace wi::terrain
 			ChunkData& chunk_data = it->second;
 			chunk_data.prop_density_current = 0;
 		}
+	}
+
+	uint32_t Terrain::GetLayerCount() const
+	{
+		return std::max(uint32_t(MATERIAL_COUNT), uint32_t(materialEntities.size()));
+	}
+
+	void Terrain::InvalidateChunksInRegion(const XMFLOAT2& min, const XMFLOAT2& max)
+	{
+		// A chunk's vertices span chunk_half_width quads either side of its position, and its
+		//	normals read one sample further, so grow the test by one sample as well.
+		const float half = (chunk_half_width + 1) * chunk_scale;
+		for (auto it = chunks.begin(); it != chunks.end(); it++)
+		{
+			ChunkData& chunk_data = it->second;
+			if (chunk_data.invalidated)
+				continue;
+			const XMFLOAT3& p = chunk_data.position;
+			if (p.x + half < min.x || p.x - half > max.x || p.z + half < min.y || p.z - half > max.y)
+				continue;
+			chunk_data.invalidated = true;
+			generator->priority_invalidation.push_back(it->first);
+		}
+	}
+
+	bool Terrain::RefreshChunksInRegion(const XMFLOAT2& min, const XMFLOAT2& max)
+	{
+		if (source == nullptr || scene == nullptr || IsGenerationBusy())
+			return false;
+
+		// The virtual texture CPU job reads and writes the same update request lists.
+		wi::jobsystem::Wait(virtual_texture_ctx);
+
+		const float half = (chunk_half_width + 1) * chunk_scale;
+		const float chunk_size = (chunk_width - 1) * chunk_scale;
+		const uint32_t layer_count = GetLayerCount();
+
+		for (auto it = chunks.begin(); it != chunks.end(); it++)
+		{
+			ChunkData& chunk_data = it->second;
+			const XMFLOAT3 p = chunk_data.position;
+			if (p.x + half < min.x || p.x - half > max.x || p.z + half < min.y || p.z - half > max.y)
+				continue;
+			if (chunk_data.invalidated)
+				continue; // already queued for a full rebuild
+
+			MeshComponent* mesh = scene->meshes.GetComponent(chunk_data.entity);
+			TransformComponent* transform = scene->transforms.GetComponent(chunk_data.entity);
+			// Terrain modifier splines are only applied by the generator, and the blend layer
+			//	count may have changed: both need the full path.
+			if (mesh == nullptr || transform == nullptr || mesh->vertex_positions.size() != vertexCount ||
+				!generator->splines.empty() || chunk_data.blendmap_layers.size() != layer_count)
+			{
+				chunk_data.invalidated = true;
+				generator->priority_invalidation.push_back(it->first);
+				continue;
+			}
+
+			// Same padded height grid as generation, so normals at the chunk border match.
+			constexpr int chunk_width_padded = chunk_width + 1;
+			float heights_padded[chunk_width_padded][chunk_width_padded];
+			for (int cz = 0; cz < chunk_width_padded; ++cz)
+			{
+				for (int cx = 0; cx < chunk_width_padded; ++cx)
+				{
+					const float x = (float(cx) - chunk_half_width) * chunk_scale;
+					const float z = (float(cz) - chunk_half_width) * chunk_scale;
+					heights_padded[cx][cz] = source->Height(XMFLOAT2(p.x + x, p.z + z));
+				}
+			}
+
+			bool paint_changed = false;
+			constexpr uint32_t max_layers = 32;
+			float weights[max_layers];
+			const uint32_t layers = std::min(layer_count, max_layers);
+			for (uint32_t index = 0; index < vertexCount; ++index)
+			{
+				const int cx = int(index % chunk_width);
+				const int cz = int(index / chunk_width);
+				const float x = (float(cx) - chunk_half_width) * chunk_scale;
+				const float z = (float(cz) - chunk_half_width) * chunk_scale;
+				const float height = heights_padded[cx][cz];
+				const XMVECTOR corners[3] = {
+					XMVectorSet(p.x + x, height, p.z + z, 0),
+					XMVectorSet(p.x + x + 1, heights_padded[cx + 1][cz], p.z + z, 0),
+					XMVectorSet(p.x + x, heights_padded[cx][cz + 1], p.z + z + 1, 0),
+				};
+				const XMVECTOR T = XMVectorSubtract(corners[1], corners[2]);
+				const XMVECTOR B = XMVectorSubtract(corners[0], corners[1]);
+				const XMVECTOR N = XMVector3Normalize(XMVector3Cross(T, B));
+				XMStoreFloat3(&mesh->vertex_normals[index], N);
+				XMStoreFloat4(&mesh->vertex_tangents[index], T);
+				mesh->vertex_tangents[index].w = 1;
+				mesh->vertex_positions[index] = XMFLOAT3(x, height, z);
+				chunk_data.heightmap_data[index] = uint16_t(saturate(inverse_lerp(bottomLevel, topLevel, height)) * 65535);
+
+				source->Surface(XMFLOAT2(p.x + x, p.z + z), weights, layers);
+				for (uint32_t layer = 0; layer < layers; ++layer)
+				{
+					const uint8_t v = uint8_t(saturate(weights[layer]) * 255 + 0.5f);
+					uint8_t& dst = chunk_data.blendmap_layers[layer].pixels[index];
+					if (dst != v)
+					{
+						dst = v;
+						paint_changed = true;
+					}
+				}
+			}
+
+			mesh->CreateRenderData();
+			mesh->SetBVHEnabled(false);
+			mesh->SetBVHEnabled(true);
+			chunk_data.sphere.center = mesh->aabb.getCenter();
+			chunk_data.sphere.center.x += p.x;
+			chunk_data.sphere.center.y += p.y;
+			chunk_data.sphere.center.z += p.z;
+			chunk_data.sphere.radius = mesh->aabb.getRadius();
+
+			// GPU copies of the heightmap (objects blending into the ground) and, when the paint
+			//	moved, the blend map the virtual texture is rendered from.
+			chunk_data.heightmap = {};
+			if (paint_changed)
+				chunk_data.blendmap = {};
+			CreateChunkRegionTexture(chunk_data);
+
+			if (IsPhysicsEnabled())
+			{
+				// A fresh heightfield, then drop the body: Generation_Update re-adds the rigid
+				//	body for chunks in physics range and the physics system picks this shape up.
+				RigidBodyPhysicsComponent& shape = mesh->precomputed_rigidbody_physics_shape;
+				shape = {};
+				shape.shape = RigidBodyPhysicsComponent::HEIGHTFIELD;
+				shape.mass = 0;
+				shape.friction = 0.8f;
+				wi::physics::CreateRigidBodyShape(shape, transform->scale_local, mesh);
+				scene->rigidbodies.Remove(chunk_data.entity);
+			}
+
+			VirtualTexture* vt = chunk_data.vt.get();
+			if (!paint_changed || vt == nullptr || vt->resolution == 0 || vt->tiles.empty())
+				continue;
+			vt->blendmap = chunk_data.blendmap;
+
+			// Re-render only the resident tiles the edit overlaps. Tile (x, y) of a level with n
+			//	tiles per side covers uv [x/n, (x+1)/n]; uv runs 0..1 across the chunk in X and Z.
+			const float pad = 2.0f * chunk_scale;
+			const float u0 = std::max(0.0f, (min.x - pad - (p.x - chunk_size * 0.5f)) / chunk_size);
+			const float u1 = std::min(1.0f, (max.x + pad - (p.x - chunk_size * 0.5f)) / chunk_size);
+			const float v0 = std::max(0.0f, (min.y - pad - (p.z - chunk_size * 0.5f)) / chunk_size);
+			const float v1 = std::min(1.0f, (max.y + pad - (p.z - chunk_size * 0.5f)) / chunk_size);
+
+			auto request_tile = [&](uint32_t tile_index, uint32_t x, uint32_t y, uint32_t lod) {
+				const VirtualTextureAtlas::Tile& tile = vt->tiles[tile_index];
+				if (!atlas.check_tile_resident(tile))
+					return;
+				VirtualTexture::UpdateRequest& request = vt->update_requests.emplace_back();
+				request.x = uint16_t(x);
+				request.y = uint16_t(y);
+				request.lod = uint16_t(lod);
+				request.tile_x = tile.x;
+				request.tile_y = tile.y;
+			};
+
+			if (vt->residency == nullptr)
+			{
+				request_tile(uint32_t(vt->tiles.size() - 1), 0, 0, vt->lod_count - 1); // the only tile
+				continue;
+			}
+			uint32_t offset = 0;
+			for (uint32_t lod = 0; lod + 1 < vt->lod_count; ++lod)
+			{
+				const uint32_t n = std::max(1u, (vt->resolution >> lod) / SVT_TILE_SIZE);
+				const uint32_t x0 = std::min(n - 1, uint32_t(u0 * n)), x1 = std::min(n - 1, uint32_t(u1 * n));
+				const uint32_t y0 = std::min(n - 1, uint32_t(v0 * n)), y1 = std::min(n - 1, uint32_t(v1 * n));
+				for (uint32_t y = y0; y <= y1; ++y)
+					for (uint32_t x = x0; x <= x1; ++x)
+						if (offset + x + y * n < vt->tiles.size())
+							request_tile(offset + x + y * n, x, y, lod);
+				offset += n * n;
+			}
+			request_tile(uint32_t(vt->tiles.size() - 1), 0, 0, vt->lod_count - 1); // packed mip tail
+		}
+		return true;
 	}
 
 	void Terrain::InvalidateChunksAtSpline(const wi::scene::SplineComponent& spline)
@@ -2734,6 +2963,20 @@ namespace wi::terrain
 		}
 
 		perlin_noise.Serialize(archive);
+
+		// SIMTARY EXTENSION: the authored terrain data, opaque to the engine
+		if (terrain_version >= 7)
+		{
+			if (archive.IsReadMode())
+			{
+				archive >> authored_data;
+				source = {}; // the framework installs a fresh one from the loaded bytes
+			}
+			else
+			{
+				archive << authored_data;
+			}
+		}
 	}
 
 }

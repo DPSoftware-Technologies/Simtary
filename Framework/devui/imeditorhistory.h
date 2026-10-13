@@ -36,6 +36,7 @@
 #include "wiECS.h"
 #include "wiVector.h"
 
+#include <functional>
 #include <string>
 
 namespace wi::scene { struct Scene; struct TransformComponent; }
@@ -87,6 +88,13 @@ public:
     void RecordCreatedMany(wi::scene::Scene& scene, const wi::vector<wi::ecs::Entity>& entities,
         const char* label);
 
+    // A step whose state lives OUTSIDE the components - a terrain brush stroke, whose before
+    //	and after are tiles of st::terrain::TerrainData rather than anything an archive of
+    //	the entity would capture cheaply. The caller holds both states; `apply(true)` must put
+    //	the "after" back (redo), `apply(false)` the "before" (undo). `entity` is what gets
+    //	selected afterwards.
+    void PushCustom(const char* label, wi::ecs::Entity entity, std::function<void(bool redo)> apply);
+
     // Capture the "after" state and push the step. Drops the step if nothing changed.
     void Commit(wi::scene::Scene& scene);
     // Throw the pending capture away.
@@ -107,7 +115,7 @@ public:
 
 private:
     struct Step {
-        enum class Kind { None, Transform, Entity } kind = Kind::None;
+        enum class Kind { None, Transform, Entity, Custom } kind = Kind::None;
         std::string label;
         wi::vector<wi::ecs::Entity> entities;
 
@@ -121,6 +129,9 @@ private:
         wi::vector<wi::Archive> archivesAfter;
         wi::vector<uint8_t>     existedBefore;
         wi::vector<uint8_t>     existedAfter;
+
+        // Kind::Custom
+        std::function<void(bool redo)> custom;
     };
 
     void CaptureInto(wi::scene::Scene& scene, Step& step, bool after);

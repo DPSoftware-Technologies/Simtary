@@ -1,0 +1,905 @@
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "Ws2_32.lib")
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
+#include "dev/EditorBridge.h"
+#include "dev/DevBuild.h"
+
+#include "stApp.h"
+#include "scene/PlayControl.h"
+#include "scene/SceneFile.h"
+#include "script/ScriptSystem.h"
+#include "input/InputActions.h"
+#include "io/model/ModelImporter.h"
+#include "terrain/TerrainSystem.h"
+#include "terrain/TerrainGenerate.h"
+#include "vehicle/VehicleComponent.h"
+
+#include "wiScene.h"
+#include "wiPhysics.h"
+#include "wiHelper.h"
+#include "wiBacklog.h"
+#include "wiTimer.h"
+#include "stNativeComponent.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <random>
+
+using st::json::Value;
+using wi::ecs::Entity;
+using wi::ecs::INVALID_ENTITY;
+using WScene = wi::scene::Scene; // not "Scene": Framework/stScene.h has a global one
+
+namespace st::dev {
+
+namespace {
+
+constexpr int kDefaultPort = 57230;
+
+#ifdef _WIN32
+using Socket = SOCKET;
+const Socket kBadSocket = INVALID_SOCKET;
+void CloseSocket (Socket s) { closesocket(s); }
+#else
+using Socket = int;
+const Socket kBadSocket = -1;
+void CloseSocket (Socket s) { close(s); }
+#endif
+
+// ------------------------------------------------------------- json helpers ---
+
+bool ReadVec3 (const Value& v, XMFLOAT3& out) {
+    if (!v.IsArray() || v.size() < 3) return false;
+    out = XMFLOAT3(v.At(0).AsFloat(), v.At(1).AsFloat(), v.At(2).AsFloat());
+    return true;
+}
+
+Value Vec3 (const XMFLOAT3& v) {
+    Value a = Value::Array();
+    a.push_back(v.x); a.push_back(v.y); a.push_back(v.z);
+    return a;
+}
+
+Value Vec4 (const XMFLOAT4& v) {
+    Value a = Value::Array();
+    a.push_back(v.x); a.push_back(v.y); a.push_back(v.z); a.push_back(v.w);
+    return a;
+}
+
+// Euler degrees (pitch X, yaw Y, roll Z: XMQuaternionRotationRollPitchYaw's order) <-> quaternion.
+XMFLOAT4 QuatFromEulerDeg (const XMFLOAT3& deg) {
+    XMFLOAT4 q;
+    XMStoreFloat4(&q, XMQuaternionRotationRollPitchYaw(XMConvertToRadians(deg.x), XMConvertToRadians(deg.y),
+                                                       XMConvertToRadians(deg.z)));
+    return q;
+}
+
+XMFLOAT3 EulerDegFromQuat (const XMFLOAT4& q) {
+    const float sinp = std::clamp(2.0f * (q.w * q.x - q.y * q.z), -1.0f, 1.0f);
+    const float pitch = std::asin(sinp);
+    const float yaw = std::atan2(2.0f * (q.w * q.y + q.x * q.z), 1.0f - 2.0f * (q.x * q.x + q.y * q.y));
+    const float roll = std::atan2(2.0f * (q.w * q.z + q.x * q.y), 1.0f - 2.0f * (q.x * q.x + q.z * q.z));
+    return XMFLOAT3(XMConvertToDegrees(pitch), XMConvertToDegrees(yaw), XMConvertToDegrees(roll));
+}
+
+std::string ShortName (const std::string& managerName) {
+    const size_t p = managerName.rfind("::");
+    return p == std::string::npos ? managerName : managerName.substr(p + 2);
+}
+
+bool Exists (const WScene& scene, Entity e) {
+    if (e == INVALID_ENTITY) return false;
+    for (const auto& kv : scene.componentLibrary.entries)
+        if (kv.second.component_manager && kv.second.component_manager->Contains(e)) return true;
+    return false;
+}
+
+// "id": 123  or  "name": "HMMWV" (first match), with an optional "under" ancestor.
+Entity ResolveEntity (WScene& scene, const Value& args, std::string& error, const char* idKey = "id") {
+    if (args[idKey].IsNumber()) {
+        const Entity e = Entity(args[idKey].AsInt());
+        if (!Exists(scene, e)) { error = "no entity " + std::to_string(e); return INVALID_ENTITY; }
+        return e;
+    }
+    const std::string name = args[idKey].IsString() ? args[idKey].AsString() : args["name"].AsString();
+    if (!name.empty()) {
+        const Entity e = scene.Entity_FindByName(name);
+        if (e == INVALID_ENTITY) error = "no entity named '" + name + "'";
+        return e;
+    }
+    error = std::string("give '") + idKey + "' (number) or 'name'";
+    return INVALID_ENTITY;
+}
+
+Value ComponentNames (const WScene& scene, Entity e) {
+    Value list = Value::Array();
+    for (const auto& kv : scene.componentLibrary.entries)
+        if (kv.second.component_manager && kv.second.component_manager->Contains(e))
+            list.push_back(ShortName(kv.first));
+    return list;
+}
+
+Value EntitySummary (const WScene& scene, Entity e) {
+    Value o = Value::Object();
+    o.Set("id", uint64_t(e));
+    const wi::scene::NameComponent* n = scene.names.GetComponent(e);
+    o.Set("name", n ? n->name : std::string());
+    const wi::scene::HierarchyComponent* h = scene.hierarchy.GetComponent(e);
+    o.Set("parent", h ? uint64_t(h->parentID) : uint64_t(0));
+    o.Set("components", ComponentNames(scene, e));
+    return o;
+}
+
+Value TransformJson (const wi::scene::TransformComponent& t) {
+    Value o = Value::Object();
+    o.Set("local_position", Vec3(t.translation_local));
+    o.Set("local_rotation_deg", Vec3(EulerDegFromQuat(t.rotation_local)));
+    o.Set("local_scale", Vec3(t.scale_local));
+    o.Set("world_position", Vec3(t.GetPosition()));
+    o.Set("world_rotation_deg", Vec3(EulerDegFromQuat(t.GetRotation())));
+    o.Set("world_rotation_quat", Vec4(t.GetRotation()));
+    return o;
+}
+
+Value MetadataJson (const wi::scene::MetadataComponent& m) {
+    Value o = Value::Object();
+    for (size_t i = 0; i < m.bool_values.names.size(); ++i)   o.Set(m.bool_values.names[i], bool(m.bool_values.values[i]));
+    for (size_t i = 0; i < m.int_values.names.size(); ++i)    o.Set(m.int_values.names[i], m.int_values.values[i]);
+    for (size_t i = 0; i < m.float_values.names.size(); ++i)  o.Set(m.float_values.names[i], m.float_values.values[i]);
+    for (size_t i = 0; i < m.string_values.names.size(); ++i) o.Set(m.string_values.names[i], m.string_values.values[i]);
+    return o;
+}
+
+// A JSON value into a metadata key. Native component parameters are TYPED (GetFloat reads
+// only floats, GetInt only ints), and JSON has one number type, so a number is written as a
+// float and, when it is whole, as an int as well - whichever the component binds, it finds.
+// {"int": n} / {"float": n} force one.
+bool SetMetadata (wi::scene::MetadataComponent& m, const std::string& key, const Value& v, std::string& error) {
+    if (v.IsBool()) { m.bool_values.set(key, v.AsBool()); return true; }
+    if (v.IsString()) { m.string_values.set(key, v.AsString()); return true; }
+    if (v.IsNumber()) {
+        const double d = v.AsNumber();
+        m.float_values.set(key, float(d));
+        if (d == std::floor(d) && std::fabs(d) < 2e9) m.int_values.set(key, int(d));
+        return true;
+    }
+    if (v.IsObject() && v["int"].IsNumber()) { m.int_values.set(key, int(v["int"].AsInt())); return true; }
+    if (v.IsObject() && v["float"].IsNumber()) { m.float_values.set(key, v["float"].AsFloat()); return true; }
+    error = "value for '" + key + "' must be bool, number, string, {\"int\":n} or {\"float\":n}";
+    return false;
+}
+
+void EraseMetadata (wi::scene::MetadataComponent& m, const std::string& key) {
+    m.bool_values.erase(key);
+    m.int_values.erase(key);
+    m.float_values.erase(key);
+    m.string_values.erase(key);
+}
+
+std::string LogTail (int lines, const std::string& filter) {
+    const std::string text = wi::backlog::getText();
+    std::vector<std::string> all;
+    size_t start = 0;
+    while (start < text.size()) {
+        size_t end = text.find('\n', start);
+        if (end == std::string::npos) end = text.size();
+        std::string line = text.substr(start, end - start);
+        if (!line.empty() && (filter.empty() || line.find(filter) != std::string::npos)) all.push_back(line);
+        start = end + 1;
+    }
+    std::string out;
+    const size_t from = all.size() > size_t(lines) ? all.size() - size_t(lines) : 0;
+    for (size_t i = from; i < all.size(); ++i) { out += all[i]; out += '\n'; }
+    return out;
+}
+
+} // namespace
+
+EditorBridge& EditorBridge::Get () {
+    static EditorBridge instance;
+    return instance;
+}
+
+void EditorBridge::Register (const std::string& name, const std::string& help, Handler fn) {
+    handlers_[name] = std::move(fn);
+    help_[name] = help;
+}
+
+// ------------------------------------------------------------------ socket side ---
+
+bool EditorBridge::Start (App& app, int port) {
+    if (running_.load()) return true;
+    app_ = &app;
+    port_ = port > 0 ? port : kDefaultPort;
+    if (handlers_.empty()) RegisterAll();
+
+#ifdef _WIN32
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
+#endif
+    Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == kBadSocket) return false;
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(uint16_t(port_));
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr); // never reachable from another machine
+    if (bind(s, (sockaddr*)&addr, sizeof(addr)) != 0 || listen(s, 2) != 0) {
+        CloseSocket(s);
+        wi::backlog::post("EditorBridge: port " + std::to_string(port_) + " is busy - bridge off",
+                          wi::backlog::LogLevel::Warning);
+        return false;
+    }
+    listenSocket_ = uintptr_t(s);
+
+    std::random_device rd;
+    char token[33];
+    std::snprintf(token, sizeof(token), "%08x%08x%08x%08x", rd(), rd(), rd(), rd());
+    token_ = token;
+
+    Value info = Value::Object();
+    info.Set("port", port_);
+    info.Set("token", token_);
+    info.Set("app", App::Config().name);
+#ifdef _WIN32
+    info.Set("pid", uint64_t(GetCurrentProcessId()));
+#else
+    info.Set("pid", uint64_t(getpid()));
+#endif
+    std::ofstream("devbridge.json", std::ios::trunc) << info.Dump() << "\n";
+
+    running_ = true;
+    thread_ = std::thread([this] { ThreadMain(); });
+    wi::backlog::post("EditorBridge: listening on 127.0.0.1:" + std::to_string(port_) + " (token in devbridge.json)");
+    return true;
+}
+
+void EditorBridge::Stop () {
+    if (!running_.exchange(false)) return;
+    CloseSocket(Socket(listenSocket_));
+    cv_.notify_all();
+    if (thread_.joinable()) thread_.join();
+    std::error_code ec;
+    std::filesystem::remove("devbridge.json", ec);
+#ifdef _WIN32
+    WSACleanup();
+#endif
+}
+
+void EditorBridge::ThreadMain () {
+    const Socket listener = Socket(listenSocket_);
+    while (running_.load()) {
+        fd_set set;
+        FD_ZERO(&set);
+        FD_SET(listener, &set);
+        timeval tv = { 0, 200000 };
+        if (select(int(listener + 1), &set, nullptr, nullptr, &tv) <= 0) continue;
+        const Socket client = accept(listener, nullptr, nullptr);
+        if (client == kBadSocket) continue;
+
+        std::string buffer;
+        char chunk[4096];
+        while (running_.load()) {
+            const int got = int(recv(client, chunk, int(sizeof(chunk)), 0));
+            if (got <= 0) break;
+            buffer.append(chunk, size_t(got));
+            size_t nl;
+            while ((nl = buffer.find('\n')) != std::string::npos) {
+                const std::string line = buffer.substr(0, nl);
+                buffer.erase(0, nl + 1);
+                if (line.find_first_not_of(" \r\t") == std::string::npos) continue;
+                std::string reply = Execute(line);
+                reply += '\n';
+                size_t sent = 0;
+                while (sent < reply.size()) {
+                    const int n = int(send(client, reply.data() + sent, int(reply.size() - sent), 0));
+                    if (n <= 0) break;
+                    sent += size_t(n);
+                }
+            }
+        }
+        CloseSocket(client);
+    }
+}
+
+std::string EditorBridge::Execute (const std::string& line) {
+    // Hand the request to the main thread and wait for its answer: the scene is only ever
+    // touched from there, between frames.
+    Pending pending;
+    pending.request = line;
+    std::unique_lock<std::mutex> lock(mutex_);
+    queue_.push_back(&pending);
+    cv_.wait(lock, [&] { return pending.done || !running_.load(); });
+    if (!pending.done) return "{\"ok\":false,\"error\":\"bridge stopped\"}";
+    return pending.response;
+}
+
+void EditorBridge::Pump () {
+    std::deque<Pending*> work;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        work.swap(queue_);
+    }
+    for (Pending* p : work) {
+        Value request, reply = Value::Object();
+        std::string error;
+        if (!json::Parse(p->request, request, error)) {
+            reply.Set("ok", false);
+            reply.Set("error", "bad JSON: " + error);
+        } else if (request["token"].AsString() != token_) {
+            reply.Set("ok", false);
+            reply.Set("error", "bad token (read it from devbridge.json)");
+        } else {
+            const std::string cmd = request["cmd"].AsString();
+            auto it = handlers_.find(cmd);
+            if (it == handlers_.end()) {
+                reply.Set("ok", false);
+                reply.Set("error", "unknown command '" + cmd + "' - try 'help'");
+            } else {
+                Value result = it->second(request["args"], error);
+                if (!error.empty()) {
+                    reply.Set("ok", false);
+                    reply.Set("error", error);
+                } else {
+                    reply.Set("ok", true);
+                    reply.Set("result", std::move(result));
+                }
+            }
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        p->response = reply.Dump();
+        p->done = true;
+    }
+    if (!work.empty()) cv_.notify_all();
+}
+
+// --------------------------------------------------------------------- commands ---
+
+void EditorBridge::RegisterAll () {
+    App& app = *app_;
+    auto S = []() -> WScene& { return wi::scene::GetScene(); };
+
+    Register("help", "{} -> every command with its arguments", [this](const Value&, std::string&) {
+        Value o = Value::Object();
+        for (const auto& kv : help_) o.Set(kv.first, kv.second);
+        return o;
+    });
+
+    Register("ping", "{} -> app, scene, play state, editor mode, dev build", [&app, S](const Value&, std::string&) {
+        Value o = Value::Object();
+        o.Set("app", App::Config().name);
+        o.Set("scene", app.sceneManager.CurrentName());
+        o.Set("loading", app.sceneManager.HasPendingLoad());
+        o.Set("play", st::ToString(st::PlayControl::Get().State()));
+        o.Set("editor", app.IsEditorMode());
+        o.Set("dev_build", IsDevBuild());
+        o.Set("entities", uint64_t(S().names.GetCount()));
+        return o;
+    });
+
+    Register("log", "{lines=40, filter=''} -> the backlog's last lines", [](const Value& a, std::string&) {
+        return Value(LogTail(int(a["lines"].AsInt(40)), a["filter"].AsString()));
+    });
+
+    // scenes
+    Register("scene.list", "{} -> registered scenes and where they come from", [&app](const Value&, std::string&) {
+        Value list = Value::Array();
+        for (const std::string& n : app.sceneManager.Names()) {
+            Value o = Value::Object();
+            o.Set("name", n);
+            const SceneManager::Origin origin = app.sceneManager.OriginOf(n);
+            o.Set("origin", origin == SceneManager::Origin::Cpp ? "c++" : origin == SceneManager::Origin::Folder ? "file" : "runtime");
+            list.push_back(std::move(o));
+        }
+        return list;
+    });
+    Register("scene.load", "{name} -> queues the load; poll ping until loading is false", [&app](const Value& a, std::string& err) {
+        const std::string name = a["name"].AsString();
+        if (!app.sceneManager.Has(name)) { err = "no scene '" + name + "' (scene.list, or scene.rescan after saving a new map)"; return Value(); }
+        app.sceneManager.Load(name);
+        return Value("loading " + name);
+    });
+    Register("scene.new", "{name='Untitled'} -> an empty scene with sun and sky, loaded", [&app](const Value& a, std::string&) {
+        const std::string base = a["name"].AsString().empty() ? std::string("Untitled") : a["name"].AsString();
+        return Value(app.sceneManager.NewScene(base));
+    });
+    Register("scene.save", "{path} -> writes the scene (.stsd native, .wiscene archive); dev builds mirror into the project's assets/scenes/",
+        [&app, S](const Value& a, std::string& err) {
+        const std::string path = a["path"].AsString();
+        if (path.empty()) { err = "path required, e.g. assets/scenes/mymap.stsd"; return Value(); }
+        if (!app.Editor().SaveSceneForTool(app, S(), path)) { err = "save failed - see log"; return Value(); }
+        return Value(path);
+    });
+    Register("scene.rescan", "{} -> register maps found in the scene folder", [&app](const Value&, std::string&) {
+        return Value(app.sceneManager.DiscoverScenes(App::Config().sceneFolder));
+    });
+
+    // entities
+    Register("entity.list", "{filter='', roots_only=false, limit=300} -> [{id,name,parent,components}]", [S](const Value& a, std::string&) {
+        WScene& scene = S();
+        const std::string filter = wi::helper::toLower(a["filter"].AsString());
+        const bool rootsOnly = a["roots_only"].AsBool(false);
+        const size_t limit = size_t(a["limit"].AsInt(300));
+        Value list = Value::Array();
+        for (size_t i = 0; i < scene.names.GetCount() && list.size() < limit; ++i) {
+            const Entity e = scene.names.GetEntity(i);
+            if (rootsOnly && scene.hierarchy.Contains(e)) continue;
+            if (!filter.empty() && wi::helper::toLower(scene.names[i].name).find(filter) == std::string::npos) continue;
+            list.push_back(EntitySummary(scene, e));
+        }
+        return list;
+    });
+    Register("entity.get", "{id|name} -> components, transform, metadata, children, native components", [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        Value o = EntitySummary(scene, e);
+        if (const auto* t = scene.transforms.GetComponent(e)) o.Set("transform", TransformJson(*t));
+        if (const auto* m = scene.metadatas.GetComponent(e)) o.Set("metadata", MetadataJson(*m));
+        Value children = Value::Array();
+        for (size_t i = 0; i < scene.hierarchy.GetCount(); ++i)
+            if (scene.hierarchy[i].parentID == e) children.push_back(EntitySummary(scene, scene.hierarchy.GetEntity(i)));
+        o.Set("children", std::move(children));
+        auto it = scene.nativeComponents.instances.find(e);
+        if (it != scene.nativeComponents.instances.end()) {
+            Value natives = Value::Array();
+            for (const auto& inst : it->second) {
+                Value n = Value::Object();
+                n.Set("name", inst.name);
+                n.Set("localID", inst.localID);
+                n.Set("started", inst.started);
+                n.Set("enabled", inst.enabled);
+                natives.push_back(std::move(n));
+            }
+            o.Set("native", std::move(natives));
+        }
+        if (const auto* rb = scene.rigidbodies.GetComponent(e)) {
+            Value r = Value::Object();
+            r.Set("shape", int(rb->shape));
+            r.Set("mass", rb->mass);
+            r.Set("vehicle", rb->IsVehicle());
+            r.Set("body_built", wi::physics::HasValidBody(*const_cast<wi::scene::RigidBodyPhysicsComponent*>(rb)));
+            o.Set("rigidbody", std::move(r));
+        }
+        return o;
+    });
+    Register("entity.create", "{name, primitive=empty|cube|sphere|plane, parent?, position?, rotation_deg?, scale?} -> id",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const std::string name = a["name"].AsString().empty() ? std::string("Entity") : a["name"].AsString();
+        const std::string prim = a["primitive"].AsString();
+        Entity e;
+        if (prim == "cube") e = scene.Entity_CreateCube(name);
+        else if (prim == "sphere") e = scene.Entity_CreateSphere(name);
+        else if (prim == "plane") e = scene.Entity_CreatePlane(name);
+        else {
+            e = wi::ecs::CreateEntity();
+            scene.names.Create(e) = name;
+            scene.layers.Create(e);
+            scene.transforms.Create(e);
+        }
+        Entity parent = INVALID_ENTITY;
+        if (a.Has("parent")) {
+            parent = ResolveEntity(scene, a, err, "parent");
+            if (parent == INVALID_ENTITY) return Value();
+        }
+        wi::scene::TransformComponent* t = scene.transforms.GetComponent(e);
+        XMFLOAT3 v;
+        if (t != nullptr) {
+            if (ReadVec3(a["position"], v)) {
+                if (parent == INVALID_ENTITY) t->SetWorldPosition(v.x, v.y, v.z);
+                else t->translation_local = v;
+            }
+            if (ReadVec3(a["rotation_deg"], v)) t->rotation_local = QuatFromEulerDeg(v);
+            if (ReadVec3(a["scale"], v)) t->scale_local = v;
+            t->SetDirty();
+            t->UpdateTransform();
+        }
+        if (parent != INVALID_ENTITY) scene.Component_Attach(e, parent, true);
+        return Value(uint64_t(e));
+    });
+    Register("entity.delete", "{id|name} -> removes it and its children", [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        scene.Entity_Remove(e);
+        return Value(true);
+    });
+    Register("entity.rename", "{id|name, new_name}", [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        scene.names.Create(e) = a["new_name"].AsString();
+        return Value(true);
+    });
+    Register("entity.transform", "{id|name, position?, rotation_deg?, scale?} (local; a root's position is its world position)",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        wi::scene::TransformComponent* t = scene.transforms.GetComponent(e);
+        if (t == nullptr) { err = "entity has no transform"; return Value(); }
+        XMFLOAT3 v;
+        if (ReadVec3(a["position"], v)) {
+            if (!scene.hierarchy.Contains(e)) t->SetWorldPosition(v.x, v.y, v.z);
+            else t->translation_local = v;
+        }
+        if (ReadVec3(a["rotation_deg"], v)) t->rotation_local = QuatFromEulerDeg(v);
+        if (ReadVec3(a["scale"], v)) t->scale_local = v;
+        t->SetDirty();
+        t->UpdateTransform();
+        // A simulated body would snap straight back to where the solver has it.
+        if (wi::scene::RigidBodyPhysicsComponent* rb = scene.rigidbodies.GetComponent(e)) {
+            if (wi::physics::HasValidBody(*rb)) {
+                wi::physics::SetPositionAndRotation(*rb, t->GetPosition(), t->GetRotation());
+                wi::physics::SetLinearVelocity(*rb, XMFLOAT3(0, 0, 0));
+                wi::physics::SetAngularVelocity(*rb, XMFLOAT3(0, 0, 0));
+            }
+        }
+        return TransformJson(*t);
+    });
+    Register("entity.parent", "{id|name, parent (id, name, or 0 to detach), keep_world=true}", [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        if (a["parent"].IsNumber() && a["parent"].AsInt() == 0) {
+            scene.Component_Detach(e);
+            return Value(true);
+        }
+        const Entity parent = ResolveEntity(scene, a, err, "parent");
+        if (parent == INVALID_ENTITY) return Value();
+        scene.Component_Attach(e, parent, !a["keep_world"].AsBool(true));
+        return Value(true);
+    });
+
+    // metadata + native components (the data the editor itself writes)
+    Register("metadata.set", "{id|name, values:{key: bool|number|string|{int}|{float}}}", [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        wi::scene::MetadataComponent* m = scene.metadatas.GetComponent(e);
+        if (m == nullptr) m = &scene.metadatas.Create(e);
+        for (const auto& kv : a["values"].Members())
+            if (!SetMetadata(*m, kv.first, kv.second, err)) return Value();
+        return MetadataJson(*m);
+    });
+    Register("metadata.remove", "{id|name, keys:[...]}", [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        wi::scene::MetadataComponent* m = scene.metadatas.GetComponent(e);
+        if (m != nullptr)
+            for (const Value& k : a["keys"].Items()) EraseMetadata(*m, k.AsString());
+        return m ? MetadataJson(*m) : Value();
+    });
+    Register("native.list", "{} -> every registered native component name", [](const Value&, std::string&) {
+        wi::vector<std::string> names;
+        wi::scene::GetRegisteredNativeComponentNames(names);
+        Value list = Value::Array();
+        for (const std::string& n : names) list.push_back(n);
+        return list;
+    });
+    Register("native.attach", "{id|name, component, params:{name: value}} -> localID (writes NCI_n / NCA_n_*)",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        const std::string component = a["component"].AsString();
+        if (component.empty()) { err = "component required (native.list)"; return Value(); }
+        wi::scene::MetadataComponent* m = scene.metadatas.GetComponent(e);
+        if (m == nullptr) m = &scene.metadatas.Create(e);
+        int localID = 0;
+        while (m->string_values.has("NCI_" + std::to_string(localID))) ++localID;
+        m->string_values.set("NCI_" + std::to_string(localID), component);
+        for (const auto& kv : a["params"].Members())
+            if (!SetMetadata(*m, "NCA_" + std::to_string(localID) + "_" + kv.first, kv.second, err)) return Value();
+        return Value(localID);
+    });
+    Register("native.detach", "{id|name, localID}", [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        wi::scene::DetachNativeComponent(scene, e, int(a["localID"].AsInt()));
+        return Value(true);
+    });
+
+    Register("rigidbody.set", "{id|name, shape=box|sphere|capsule|cylinder|convex|mesh, mass, box:[hx,hy,hz], radius, height, friction, restitution, kinematic}",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        wi::scene::RigidBodyPhysicsComponent* rb = scene.rigidbodies.GetComponent(e);
+        if (rb == nullptr) rb = &scene.rigidbodies.Create(e);
+        using RB = wi::scene::RigidBodyPhysicsComponent;
+        const std::string shape = a["shape"].AsString();
+        if (shape == "box") rb->shape = RB::BOX;
+        else if (shape == "sphere") rb->shape = RB::SPHERE;
+        else if (shape == "capsule") rb->shape = RB::CAPSULE;
+        else if (shape == "cylinder") rb->shape = RB::CYLINDER;
+        else if (shape == "convex") rb->shape = RB::CONVEX_HULL;
+        else if (shape == "mesh") rb->shape = RB::TRIANGLE_MESH;
+        if (a.Has("mass")) rb->mass = a["mass"].AsFloat();
+        XMFLOAT3 v;
+        if (ReadVec3(a["box"], v)) rb->box.halfextents = v;
+        if (a.Has("radius")) { rb->sphere.radius = a["radius"].AsFloat(); rb->capsule.radius = a["radius"].AsFloat(); }
+        if (a.Has("height")) rb->capsule.height = a["height"].AsFloat();
+        if (a.Has("friction")) rb->friction = a["friction"].AsFloat();
+        if (a.Has("restitution")) rb->restitution = a["restitution"].AsFloat();
+        if (a.Has("kinematic")) rb->SetKinematic(a["kinematic"].AsBool());
+        rb->physicsobject = {}; // rebuild with the new settings
+        return Value(true);
+    });
+
+    Register("model.import", "{path, name?, parent?, position?, rotation_deg?, scale?} -> root id", [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const st::model::ImportResult r = st::model::Import(scene, a["path"].AsString());
+        if (!r.ok()) { err = "import failed: " + r.error; return Value(); }
+        if (a["name"].IsString()) scene.names.Create(r.root) = a["name"].AsString();
+        Entity parent = INVALID_ENTITY;
+        if (a.Has("parent")) {
+            parent = ResolveEntity(scene, a, err, "parent");
+            if (parent == INVALID_ENTITY) return Value();
+        }
+        if (wi::scene::TransformComponent* t = scene.transforms.GetComponent(r.root)) {
+            XMFLOAT3 v;
+            if (ReadVec3(a["position"], v)) {
+                if (parent == INVALID_ENTITY) t->SetWorldPosition(v.x, v.y, v.z);
+                else t->translation_local = v;
+            }
+            if (ReadVec3(a["rotation_deg"], v)) t->rotation_local = QuatFromEulerDeg(v);
+            if (ReadVec3(a["scale"], v)) t->scale_local = v;
+            t->SetDirty();
+            t->UpdateTransform();
+        }
+        if (parent != INVALID_ENTITY) scene.Component_Attach(r.root, parent, true);
+        Value o = Value::Object();
+        o.Set("root", uint64_t(r.root));
+        o.Set("meshes", r.meshes);
+        o.Set("materials", r.materials);
+        o.Set("nodes", r.nodes);
+        return o;
+    });
+
+    // terrain
+    Register("terrain.create", "{name='Terrain', spacing=1, base=0, radius=8} -> terrain id", [S](const Value& a, std::string&) {
+        st::terrain::CreateParams p;
+        if (a["name"].IsString()) p.name = a["name"].AsString();
+        p.spacing = a["spacing"].AsFloat(1.0f);
+        p.baseHeight = a["base"].AsFloat(0.0f);
+        p.generationRadius = int(a["radius"].AsInt(8));
+        return Value(uint64_t(st::terrain::TerrainSystem::Get().CreateTerrain(S(), p)));
+    });
+    Register("terrain.generate", "{terrain?, x,z,size_x,size_z, biomes:[plains,hills,mountains,dunes,canyons,marsh,lakes], height, base, seed, erosion, warp, blending, biome_size, auto_paint, water_level}",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        st::terrain::TerrainSystem& sys = st::terrain::TerrainSystem::Get();
+        const Entity t = a.Has("terrain") ? ResolveEntity(scene, a, err, "terrain") : sys.FindTerrain(scene);
+        if (t == INVALID_ENTITY || !sys.IsAuthored(t)) { if (err.empty()) err = "no authored terrain (terrain.create)"; return Value(); }
+        st::terrain::GenerateParams g;
+        g.x = a["x"].AsFloat(g.x); g.z = a["z"].AsFloat(g.z);
+        g.sizeX = a["size_x"].AsFloat(g.sizeX); g.sizeZ = a["size_z"].AsFloat(g.sizeZ);
+        if (a["biomes"].IsArray()) {
+            for (bool& b : g.biomes) b = false;
+            for (const Value& b : a["biomes"].Items())
+                for (uint32_t k = 0; k < uint32_t(st::terrain::Biome::Count); ++k)
+                    if (wi::helper::toLower(st::terrain::ToString(st::terrain::Biome(k))) == wi::helper::toLower(b.AsString()))
+                        g.biomes[k] = true;
+        }
+        g.height = a["height"].AsFloat(g.height);
+        g.base = a["base"].AsFloat(g.base);
+        g.seed = uint32_t(a["seed"].AsInt(g.seed));
+        g.erosion = a["erosion"].AsFloat(g.erosion);
+        g.warp = a["warp"].AsFloat(g.warp);
+        g.blending = a["blending"].AsFloat(g.blending);
+        g.biomeSize = a["biome_size"].AsFloat(g.biomeSize);
+        g.autoPaint = a["auto_paint"].AsBool(g.autoPaint);
+        g.waterLevel = a["water_level"].AsFloat(g.waterLevel);
+        sys.Edit(t, [g](st::terrain::TerrainData& d) { return st::terrain::Generate(d, g); }, true);
+        return Value("queued");
+    });
+    Register("terrain.brush", "{terrain?, tool=raise|lower|smooth|flatten|paint|noise, x, z, radius=8, amount=1, hardness=0.3, layer=0, target?}",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        st::terrain::TerrainSystem& sys = st::terrain::TerrainSystem::Get();
+        const Entity t = a.Has("terrain") ? ResolveEntity(scene, a, err, "terrain") : sys.FindTerrain(scene);
+        if (t == INVALID_ENTITY || !sys.IsAuthored(t)) { if (err.empty()) err = "no authored terrain"; return Value(); }
+        st::terrain::Brush b;
+        b.radius = a["radius"].AsFloat(8.0f);
+        b.hardness = a["hardness"].AsFloat(0.3f);
+        const std::string tool = a["tool"].AsString();
+        const float x = a["x"].AsFloat(), z = a["z"].AsFloat(), amount = a["amount"].AsFloat(1.0f);
+        const uint32_t layer = uint32_t(a["layer"].AsInt(0));
+        const bool hasTarget = a["target"].IsNumber();
+        const float target = a["target"].AsFloat();
+        sys.Edit(t, [=](st::terrain::TerrainData& d) {
+            if (tool == "lower") return d.Raise(x, z, b, -amount);
+            if (tool == "smooth") return d.Smooth(x, z, b, std::min(1.0f, amount));
+            if (tool == "flatten") return d.Flatten(x, z, b, hasTarget ? target : d.SampleHeight(x, z), std::min(1.0f, amount));
+            if (tool == "paint") return d.Paint(x, z, b, layer, amount);
+            if (tool == "noise") return d.Noise(x, z, b, amount, 12.0f, 7);
+            return d.Raise(x, z, b, amount);
+        });
+        return Value("queued");
+    });
+    Register("terrain.sample", "{x, z} -> height, normal, dominant layer", [](const Value& a, std::string& err) {
+        st::terrain::GroundSample g;
+        if (!st::terrain::TerrainSystem::Get().Sample(a["x"].AsFloat(), a["z"].AsFloat(), g)) { err = "no authored terrain"; return Value(); }
+        Value o = Value::Object();
+        o.Set("height", g.height);
+        o.Set("normal", Vec3(g.normal));
+        o.Set("layer", g.dominantLayer);
+        return o;
+    });
+
+    // play, input, camera, capture
+    Register("play", "{state=play|nophysics|pause|step|reset, frames=1}", [](const Value& a, std::string& err) {
+        st::PlayControl& pc = st::PlayControl::Get();
+        const std::string s = a["state"].AsString();
+        if (s == "play") pc.Play();
+        else if (s == "nophysics") pc.PlayWithoutPhysics();
+        else if (s == "pause") pc.Pause();
+        else if (s == "step") pc.Step(int(a["frames"].AsInt(1)));
+        else if (s == "reset") pc.Reset();
+        else if (!s.empty()) { err = "state must be play, nophysics, pause, step or reset"; return Value(); }
+        return Value(st::ToString(pc.State()));
+    });
+    Register("input.inject", "{action, value (number or [x,y]), seconds=1 (<=0 holds until input.clear)} - works while the window is unfocused",
+        [](const Value& a, std::string& err) {
+        const std::string action = a["action"].AsString();
+        if (action.empty()) { err = "action required (e.g. Throttle, Steer)"; return Value(); }
+        XMFLOAT2 v(0, 0);
+        if (a["value"].IsArray()) v = XMFLOAT2(a["value"].At(0).AsFloat(), a["value"].At(1).AsFloat());
+        else v.x = a["value"].AsFloat(1.0f);
+        st::input::InjectAction(action, v, a["seconds"].AsFloat(1.0f));
+        return Value(true);
+    });
+    Register("input.clear", "{} -> drop every injected input", [](const Value&, std::string&) {
+        st::input::ClearInjectedActions();
+        return Value(true);
+    });
+    Register("camera.get", "{} -> the game camera", [](const Value&, std::string&) {
+        const wi::scene::CameraComponent& c = wi::scene::GetCamera();
+        Value o = Value::Object();
+        o.Set("position", Vec3(c.Eye));
+        o.Set("forward", Vec3(c.At));
+        o.Set("fov_deg", XMConvertToDegrees(c.fov));
+        return o;
+    });
+    Register("camera.set", "{position, target} -> points the game camera (a scene that drives its own camera overrides it next frame)",
+        [](const Value& a, std::string& err) {
+        XMFLOAT3 p, t;
+        if (!ReadVec3(a["position"], p) || !ReadVec3(a["target"], t)) { err = "position and target required"; return Value(); }
+        const XMFLOAT3 d(t.x - p.x, t.y - p.y, t.z - p.z);
+        const float yaw = std::atan2(d.x, d.z);
+        const float pitch = -std::atan2(d.y, std::sqrt(d.x * d.x + d.z * d.z));
+        wi::scene::TransformComponent tr;
+        tr.SetWorldPosition(p.x, p.y, p.z);
+        tr.RotateRollPitchYaw(XMFLOAT3(pitch, yaw, 0.0f));
+        tr.UpdateTransform();
+        wi::scene::GetCamera().TransformCamera(tr);
+        wi::scene::GetCamera().UpdateCamera();
+        return Value(true);
+    });
+    Register("screenshot", "{path?} -> PNG of the game view (last rendered frame), absolute path", [this, &app](const Value& a, std::string& err) {
+        const wi::graphics::Texture* tex = app.renderPath.GetLastPostprocessRT();
+        if (tex == nullptr || !tex->IsValid()) { err = "nothing rendered yet"; return Value(); }
+        std::string path = a["path"].AsString();
+        if (path.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories("devbridge_shots", ec);
+            char name[64];
+            std::snprintf(name, sizeof(name), "devbridge_shots/shot_%03d.png", ++shotCounter_);
+            path = name;
+        }
+        if (!wi::helper::saveTextureToFile(*tex, path)) { err = "could not write " + path; return Value(); }
+        std::error_code ec;
+        return Value(std::filesystem::absolute(path, ec).generic_u8string());
+    });
+    Register("editor.mode", "{on} -> editor mode on/off", [&app](const Value& a, std::string&) {
+        if (a.Has("on")) {
+            if (a["on"].AsBool() && !app.IsDevUIVisible()) app.SetDevUIVisible(true);
+            app.SetEditorMode(a["on"].AsBool());
+        }
+        return Value(app.IsEditorMode());
+    });
+    Register("script.run", "{code} -> runs Taipan in the game's script VM; returns the log lines it produced",
+        [](const Value& a, std::string& err) {
+        const std::string before = wi::backlog::getText();
+        const bool ok = st::ScriptSystem::Get().RunConsole(a["code"].AsString());
+        const std::string after = wi::backlog::getText();
+        Value o = Value::Object();
+        o.Set("ok", ok);
+        o.Set("output", after.size() > before.size() ? after.substr(before.size()) : std::string());
+        if (!ok) err = "script error: " + o["output"].AsString();
+        return o;
+    });
+
+    // vehicles
+    // The live stVehicle instance on an entity. Attaching is a metadata write, so a vehicle
+    // attached this frame has no instance until the next scene update.
+    auto findVehicle = [](WScene& scene, Entity e, std::string& err) -> st::VehicleComponent* {
+        auto it = scene.nativeComponents.instances.find(e);
+        if (it != scene.nativeComponents.instances.end())
+            for (auto& inst : it->second)
+                if (inst.name == "stVehicle") return static_cast<st::VehicleComponent*>(inst.component.get());
+        err = "no stVehicle instance on that entity (just attached? wait one frame)";
+        return nullptr;
+    };
+    Register("vehicle.fit_visual", "{id|name, model?} fit a child model to the simulated vehicle (scale to wheelbase, front to +Z, wheels on wheels)", [S, findVehicle](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        st::VehicleComponent* v = findVehicle(scene, e, err);
+        if (v == nullptr) return Value();
+        Entity model = INVALID_ENTITY;
+        if (a.Has("model")) {
+            model = ResolveEntity(scene, a, err, "model");
+            if (model == INVALID_ENTITY) return Value();
+        }
+        Value o = Value::Object();
+        o.Set("report", v->FitVisual(model));
+        return o;
+    });
+    Register("vehicle.reset", "{id|name} put the vehicle back on its wheels where it stands", [S, findVehicle](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        st::VehicleComponent* v = findVehicle(scene, e, err);
+        if (v == nullptr) return Value();
+        v->ResetUpright();
+        return Value::Object();
+    });
+    Register("vehicle.telemetry", "{id|name} -> speed, rpm, gear, inputs, per-wheel load/slip/contact", [S, findVehicle](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        st::VehicleComponent* v = findVehicle(scene, e, err);
+        if (v == nullptr) return Value();
+        Value o = Value::Object();
+        o.Set("has_body", v->hasTelemetry);
+        o.Set("speed_kmh", v->telemetry.forward_speed * 3.6f);
+        o.Set("rpm", v->telemetry.engine_rpm);
+        o.Set("gear", v->telemetry.gear);
+        o.Set("throttle", v->throttle);
+        o.Set("brake", v->brake);
+        o.Set("steer", v->steer);
+        if (const auto* t = scene.transforms.GetComponent(e)) {
+            o.Set("position", Vec3(t->GetPosition()));
+            o.Set("rotation_deg", Vec3(EulerDegFromQuat(t->GetRotation())));
+        }
+        Value wheels = Value::Array();
+        for (size_t i = 0; i < v->telemetry.wheels.size(); ++i) {
+            const auto& w = v->telemetry.wheels[i];
+            Value wj = Value::Object();
+            wj.Set("contact", w.contact);
+            wj.Set("load_n", v->WheelLoad(i));
+            wj.Set("suspension_m", w.suspension_length);
+            wj.Set("slip_ratio", w.longitudinal_slip);
+            wj.Set("slip_angle_deg", XMConvertToDegrees(w.lateral_slip));
+            wj.Set("mu_long", w.longitudinal_friction);
+            wj.Set("mu_lat", w.lateral_friction);
+            wheels.push_back(std::move(wj));
+        }
+        o.Set("wheels", std::move(wheels));
+        return o;
+    });
+}
+
+} // namespace st::dev

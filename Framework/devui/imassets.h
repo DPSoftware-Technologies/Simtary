@@ -105,6 +105,7 @@ private:
         enum class Origin : uint8_t { Package, File, Memory };
 
         std::string          logicalPath;      // editable; the key the game looks up
+        std::string          originalPath;     // the name it had in the source package ("" if added)
         asset::AssetType     type      = asset::AssetType::Unknown;
         asset::Codec         codec     = asset::Codec::None;
         bool                 autoCodec = true;
@@ -201,6 +202,12 @@ private:
 
     bool SaveWorkingSet (const std::string& outDir, const std::string& baseName,
                          std::string* error);
+    // Dev build (Framework/dev/DevBuild.h): write the working set's edits back into the
+    // project's source assets - added and renamed rows as files, removed rows moved to
+    // assets/.trash/. Without it the launch sync would rebuild the package from source and
+    // silently undo the edit. Codec and type choices are not carried: the packer decides
+    // those again from the file.
+    bool ExportEditsToSource (std::string* summary, std::string* error);
     bool ExtractEntries (const std::vector<uint64_t>& ids, const std::string& outDir,
                          std::string* error);
 

@@ -484,6 +484,16 @@ namespace wi::physics
 			//	because the wheel count is per vehicle now rather than always four.
 			wi::vector<Vec3> prev_wheel_positions;
 			wi::vector<Quat> prev_wheel_rotations;
+			// SIMTARY FIX: each visual wheel's rotation relative to the chassis, captured when the
+			//	vehicle was built. The drawn wheel is the simulated wheel frame (axle +X, up +Y)
+			//	times this, so a wheel node that carries a rotation of its own (any FBX/glTF
+			//	export with pivots) keeps it. Passing the node's local axes to
+			//	GetWheelWorldTransform instead, as before, only drew right when the node had none.
+			wi::vector<Quat> wheel_bind_rotations;
+			// ...and where the wheel MESH's centre sits relative to the node's pivot, in the
+			//	node's own (scaled) frame. Exported wheels are often pivoted off-centre; the
+			//	mesh centre is what has to land on the simulated wheel centre.
+			wi::vector<Vec3> wheel_mesh_offsets;
 
 			// character:
 			Ref<Character> character = nullptr;
@@ -1204,6 +1214,30 @@ namespace wi::physics
 						// The interpolation snapshot is per wheel, so it has to follow the count.
 						physicsobject.prev_wheel_positions.assign(vehicle_data.wheels.size(), Vec3::sZero());
 						physicsobject.prev_wheel_rotations.assign(vehicle_data.wheels.size(), Quat::sIdentity());
+
+						// The wheels' bind pose: their world rotation now, before the simulation
+						//	has ever moved them, expressed in the simulated wheel's own rest frame
+						//	(no steer, no spin yet). Relative to that frame, rather than to the
+						//	chassis axes, so it holds whichever way Jolt orients a wheel.
+						physicsobject.wheel_bind_rotations.assign(vehicle_data.wheels.size(), Quat::sIdentity());
+						physicsobject.wheel_mesh_offsets.assign(vehicle_data.wheels.size(), Vec3::sZero());
+						for (size_t i = 0; i < vehicle_data.wheels.size(); ++i)
+						{
+							const TransformComponent* wheel_transform = scene.transforms.GetComponent(vehicle_data.wheels[i].entity);
+							if (wheel_transform == nullptr)
+								continue;
+							if (const ObjectComponent* wheel_object = scene.objects.GetComponent(vehicle_data.wheels[i].entity))
+							{
+								if (const MeshComponent* wheel_mesh = scene.meshes.GetComponent(wheel_object->meshID))
+								{
+									physicsobject.wheel_mesh_offsets[i] = cast(wheel_mesh->aabb.getCenter()) * cast(wheel_transform->GetScale());
+								}
+							}
+							const Quat node = cast(wheel_transform->GetRotation()).Normalized();
+							const Quat rest = physicsobject.vehicle_constraint->GetWheelWorldTransform(
+								(uint)i, Vec3::sAxisX(), Vec3::sAxisY()).GetQuaternion().Normalized();
+							physicsobject.wheel_bind_rotations[i] = (rest.Conjugated() * node).Normalized();
+						}
 
 						physics_scene.physics_system.AddConstraint(physicsobject.vehicle_constraint);
 						physics_scene.physics_system.AddStepListener(physicsobject.vehicle_constraint);
@@ -3282,13 +3316,10 @@ namespace wi::physics
 								TransformComponent* wheel_transform = scene.transforms.GetComponent(wheel_entity);
 								if (wheel_transform != nullptr)
 								{
-									XMFLOAT4X4 localMatrix;
-									XMStoreFloat4x4(&localMatrix, wheel_transform->GetLocalMatrix());
-									Vec3 right = cast(wi::math::GetRight(localMatrix)).Normalized();
-									Vec3 up = cast(wi::math::GetUp(localMatrix)).Normalized();
-									Mat44 wheelmat = rb.vehicle_constraint->GetWheelWorldTransform(i, right, up);
+									Mat44 wheelmat = rb.vehicle_constraint->GetWheelWorldTransform(i, Vec3::sAxisX(), Vec3::sAxisY());
 									rb.prev_wheel_positions[i] = wheelmat.GetTranslation();
-									rb.prev_wheel_rotations[i] = wheelmat.GetQuaternion();
+									const Quat bind = i < rb.wheel_bind_rotations.size() ? rb.wheel_bind_rotations[i] : Quat::sIdentity();
+									rb.prev_wheel_rotations[i] = (wheelmat.GetQuaternion() * bind).Normalized();
 								}
 							}
 						}
@@ -4148,6 +4179,59 @@ namespace wi::physics
 		return velocity;
 	}
 
+	bool GetVehicleTelemetry(wi::scene::RigidBodyPhysicsComponent& physicscomponent, VehicleTelemetry& out)
+	{
+		out = {};
+		if (physicscomponent.physicsobject == nullptr)
+			return false;
+		RigidBody& physicsobject = GetRigidBody(physicscomponent);
+		if (physicsobject.vehicle_constraint == nullptr)
+			return false;
+		PhysicsScene& physics_scene = *(PhysicsScene*)physicsobject.physics_scene.get();
+		BodyInterface& body_interface = physics_scene.physics_system.GetBodyInterfaceNoLock();
+
+		out.forward_speed = (body_interface.GetRotation(physicsobject.bodyID).Conjugated() *
+			body_interface.GetLinearVelocity(physicsobject.bodyID)).GetZ();
+
+		const WheeledVehicleController* controller =
+			static_cast<const WheeledVehicleController*>(physicsobject.vehicle_constraint->GetController());
+		out.engine_rpm = controller->GetEngine().GetCurrentRPM();
+		out.gear = controller->GetTransmission().GetCurrentGear();
+		out.clutch_friction = controller->GetTransmission().GetClutchFriction();
+
+		const uint32_t count = (uint32_t)physicsobject.vehicle_constraint->GetWheels().size();
+		out.wheels.resize(count);
+		for (uint32_t i = 0; i < count; ++i)
+		{
+			const WheelWV* w = static_cast<const WheelWV*>(physicsobject.vehicle_constraint->GetWheel(i));
+			VehicleTelemetry::Wheel& dst = out.wheels[i];
+			dst.contact = w->HasContact();
+			dst.suspension_length = w->GetSuspensionLength();
+			dst.suspension_impulse = w->GetSuspensionLambda();
+			dst.angular_velocity = w->GetAngularVelocity();
+			dst.steer_angle = w->GetSteerAngle();
+			dst.longitudinal_slip = w->mLongitudinalSlip;
+			dst.lateral_slip = w->mLateralSlip;
+			dst.longitudinal_friction = w->mCombinedLongitudinalFriction;
+			dst.lateral_friction = w->mCombinedLateralFriction;
+			if (dst.contact)
+			{
+				dst.contact_position = cast(Vec3(w->GetContactPosition()));
+				dst.contact_normal = cast(w->GetContactNormal());
+				// Every body the engine creates carries its RigidBody as user data, which knows
+				//	the entity - a terrain chunk, a prop, another vehicle.
+				const uint64_t userdata = body_interface.GetUserData(w->GetContactBodyID());
+				if (userdata != 0)
+				{
+					dst.contact_entity = body_interface.GetBodyType(w->GetContactBodyID()) == EBodyType::RigidBody
+						? ((const RigidBody*)userdata)->entity
+						: ((const SoftBody*)userdata)->entity;
+				}
+			}
+		}
+		return true;
+	}
+
 	void OverrideWehicleWheelTransforms(wi::scene::Scene& scene)
 	{
 		if (scene.physics_scene == nullptr)
@@ -4180,18 +4264,18 @@ namespace wi::physics
 				TransformComponent* wheel_transform = scene.transforms.GetComponent(wheel_entity);
 				if (wheel_transform != nullptr)
 				{
-					XMFLOAT4X4 localMatrix;
-					XMStoreFloat4x4(&localMatrix, wheel_transform->GetLocalMatrix());
-					Vec3 right = cast(wi::math::GetRight(localMatrix)).Normalized();
-					Vec3 up = cast(wi::math::GetUp(localMatrix)).Normalized();
-					Mat44 wheelmat = physicsobject.vehicle_constraint->GetWheelWorldTransform(i, right, up);
+					Mat44 wheelmat = physicsobject.vehicle_constraint->GetWheelWorldTransform(i, Vec3::sAxisX(), Vec3::sAxisY());
 					Vec3 wheelpos = wheelmat.GetTranslation();
-					Quat wheelrot = wheelmat.GetQuaternion();
+					const Quat bind = i < physicsobject.wheel_bind_rotations.size() ? physicsobject.wheel_bind_rotations[i] : Quat::sIdentity();
+					Quat wheelrot = (wheelmat.GetQuaternion() * bind).Normalized();
 					if (IsInterpolationEnabled())
 					{
 						wheelpos = wheelpos * physics_scene.alpha + physicsobject.prev_wheel_positions[i] * (1 - physics_scene.alpha);
 						wheelrot = physicsobject.prev_wheel_rotations[i].SLERP(wheelrot, physics_scene.alpha);
 					}
+					// The simulated centre is where the MESH centre goes; the pivot follows.
+					if (i < physicsobject.wheel_mesh_offsets.size())
+						wheelpos -= wheelrot * physicsobject.wheel_mesh_offsets[i];
 					wheelmat = Mat44::sRotationTranslation(wheelrot, wheelpos) * Mat44::sScale(cast(wheel_transform->GetScale()));
 					wheel_transform->world = cast(wheelmat);
 

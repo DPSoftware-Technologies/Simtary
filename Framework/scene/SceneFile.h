@@ -73,4 +73,13 @@ void UnloadSceneFile (wi::scene::Scene& target, LoadedSceneFile& loaded);
 // load, and by RuntimeScene to work out what it has to clean up.
 void GatherSceneEntities (wi::scene::Scene& scene, std::vector<wi::ecs::Entity>& out);
 
+// Map-entity log. While it runs, every entity a LoadSceneFileFlat() call brings in is
+// recorded. SceneManager brackets each Scene::Load() with it, so what a scene's CODE made
+// (everything new that did not come out of a map file) can be told apart from the map -
+// which is what lets the editor save a C++ scene into its map without baking the
+// code-made objects in, where the next load would create them a second time.
+void BeginMapEntityLog ();
+void EndMapEntityLog ();
+const std::vector<wi::ecs::Entity>& MapEntityLog ();
+
 } // namespace st

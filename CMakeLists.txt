@@ -974,6 +974,19 @@ if (SIMTARY_BUILD_TESTS)
     set_target_properties(asset_pack_test PROPERTIES FOLDER "Simtary/Tests")
     add_test(NAME asset_pack_test COMMAND asset_pack_test)
 
+    # The authored terrain data (Framework/terrain): brushes, paint, undo snapshots, the
+    # save blob, generator and heightmap import. Links the engine for zstd, noise and the
+    # job system; needs no window and no graphics device.
+    add_executable(terrain_data_test
+        tests/terrain_data_test.cpp
+        Framework/terrain/TerrainData.cpp
+        Framework/terrain/TerrainGenerate.cpp
+    )
+    target_include_directories(terrain_data_test PRIVATE Framework Engine)
+    target_link_libraries(terrain_data_test PRIVATE Simtary::AppFlags Simtary_ext_shaders)
+    set_target_properties(terrain_data_test PROPERTIES FOLDER "Simtary/Tests")
+    add_test(NAME terrain_data_test COMMAND terrain_data_test)
+
     # Generator for the sample player animation descriptor (writes an NBT file). Not
     # run automatically; build + run it from a project root to (re)create one.
     add_executable(make_player_descriptor tools/make_player_descriptor.cpp Framework/io/Nbt.cpp)

@@ -323,6 +323,16 @@ private:
 ActionState EvaluateAction(const Action& action, int playerIndex, float dt,
                            const ActionState& previous, bool ignoreGate = false);
 
+// Injected input, for tooling (the dev build's editor bridge driving a test). An injected
+//	value joins an action's candidates like one more binding - in EVERY map that has an
+//	action of that name - and ignores the device gates and window focus, so a test can drive
+//	the game while another window has focus. `seconds` <= 0 holds it until cleared.
+//	Main thread only; InputSystem::Update ages them once a frame.
+void InjectAction(const std::string& action, XMFLOAT2 value, float seconds);
+void ClearInjectedActions();
+void TickInjectedActions(float dt);
+size_t InjectedActionCount();
+
 // Display helpers for tooling.
 const char* ToString(ActionType t);
 const char* ToString(ControlType t);

@@ -2,7 +2,9 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
+#include "wiECS.h"
 #include <functional>
 #include "stScene.h"
 
@@ -76,6 +78,13 @@ public:
 
     const std::string& CurrentName() const { return currentName_; }
 
+    // Entities the current scene's CODE created while it loaded - everything new after
+    // Scene::Load() and the loaded hooks that did not come out of a map file. A C++ scene
+    // rebuilds these on every load, so the editor leaves them out when it saves the scene
+    // into its own map (they would otherwise exist twice). Empty for a scene that is just
+    // a map file.
+    const std::unordered_set<wi::ecs::Entity>& CodeEntities() const { return codeEntities_; }
+
     // Registered scene names, sorted - for UI selectors.
     std::vector<std::string> Names() const;
 
@@ -94,6 +103,7 @@ private:
     std::string currentName_;
     std::string pendingLoad_;
     std::string loadingName_;
+    std::unordered_set<wi::ecs::Entity> codeEntities_;
     Callback    onLoaded_;
     Callback    onUnloaded_;
 };

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 
 namespace st::input {
 
@@ -319,6 +320,29 @@ ActionBuilder& ActionBuilder::Inverted() {
 // ---------------------------------------------------------------------------
 // Evaluation
 // ---------------------------------------------------------------------------
+namespace {
+struct Injected { XMFLOAT2 value; float remaining; bool hold; };
+std::unordered_map<std::string, Injected> g_injected;
+} // namespace
+
+void InjectAction(const std::string& action, XMFLOAT2 value, float seconds) {
+	g_injected[action] = Injected{ value, seconds, seconds <= 0.0f };
+}
+
+void ClearInjectedActions() { g_injected.clear(); }
+
+void TickInjectedActions(float dt) {
+	for (auto it = g_injected.begin(); it != g_injected.end();) {
+		if (!it->second.hold) {
+			it->second.remaining -= dt;
+			if (it->second.remaining <= 0.0f) { it = g_injected.erase(it); continue; }
+		}
+		++it;
+	}
+}
+
+size_t InjectedActionCount() { return g_injected.size(); }
+
 ActionState EvaluateAction(const Action& action, int playerIndex, float dt,
                            const ActionState& previous, bool ignoreGate) {
 	ActionState out;
@@ -328,7 +352,20 @@ ActionState EvaluateAction(const Action& action, int playerIndex, float dt,
 	//	loop branch-free about which slot an arm belongs to.
 	Candidate composite;
 	std::vector<Candidate> candidates;
-	candidates.reserve(action.bindings.size());
+	candidates.reserve(action.bindings.size() + 1);
+
+	// An injected value (tooling) is one more candidate, past every gate.
+	if (!g_injected.empty()) {
+		auto it = g_injected.find(action.name);
+		if (it != g_injected.end()) {
+			Candidate c;
+			c.device = DeviceClass::Keyboard;
+			c.used = true;
+			c.value = action.controlType == ControlType::Vector2 ? it->second.value
+			                                                      : XMFLOAT2(it->second.value.x, 0.0f);
+			candidates.push_back(c);
+		}
+	}
 
 	for (const Binding& b : action.bindings) {
 		const DeviceClass device = b.Device();

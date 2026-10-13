@@ -37,6 +37,11 @@
 
 include_guard(GLOBAL)
 
+# Dev build mode (Framework/dev/DevBuild.h): editor saves go back into the project's
+# assets/ folder, and the game re-converts that folder at launch when it changed. OFF for
+# anything you ship - a shipped game must not reach into a source tree.
+option(SIMTARY_DEV_BUILD "Dev build: save assets into the project's assets/ and sync them at launch" OFF)
+
 include(SimtaryProject)
 
 # CACHE INTERNAL, not a plain set(): this file is included from Simtary/CMakeLists.txt,
@@ -974,6 +979,36 @@ function(simtary_add_app)
             PART_SIZE     ${APP_PACK_PART_SIZE}
             LEVEL         ${APP_PACK_LEVEL}
         )
+    endif()
+
+    # dev build
+    # SIMTARY_DEV_BUILD bakes the project's SOURCE asset folders and the packer's path
+    # into the framework (Framework/dev/DevBuild.h): editor saves are mirrored back into
+    # assets/, and the game re-runs the same stpack conversion as the build at launch
+    # whenever the source tree changed. Framework-only definitions, so switching it on an
+    # existing build tree recompiles the framework and nothing else.
+    if (SIMTARY_DEV_BUILD)
+        set(_dev_pack 0)
+        set(_dev_stpack "")
+        set(_dev_pack_name "content")
+        set(_dev_part_size 50)
+        if (APP_PACK_ASSETS OR APP_PACK_ONLY)
+            set(_dev_pack 1)
+            set(_dev_stpack "$<TARGET_FILE:stpack>")
+            set(_dev_pack_name ${APP_PACK_NAME})
+            set(_dev_part_size ${APP_PACK_PART_SIZE})
+            add_dependencies(${APP_NAME} stpack)
+        endif()
+        target_compile_definitions(${_framework_target} PRIVATE
+            ST_DEV_BUILD=1
+            ST_DEV_ASSETS_DIR="${APP_ASSETS_DIR}"
+            ST_DEV_SCENE_SUBDIR="${APP_SCENE_SUBDIR}"
+            ST_DEV_PACK=${_dev_pack}
+            ST_DEV_STPACK="${_dev_stpack}"
+            ST_DEV_PACK_NAME="${_dev_pack_name}"
+            ST_DEV_PACK_PART_SIZE=${_dev_part_size}
+            ST_DEV_PACK_ON_CONFLICT="${APP_PACK_ON_CONFLICT}")
+        message(STATUS "simtary_add_app(${APP_NAME}): DEV BUILD - saves go to ${APP_ASSETS_DIR}, assets sync at launch")
     endif()
 
     set_target_properties(${APP_NAME} PROPERTIES FOLDER "${APP_NAME}")

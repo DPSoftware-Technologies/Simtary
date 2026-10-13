@@ -191,6 +191,10 @@ namespace wi::helper
 		std::string description;
 		wi::vector<std::string> extensions;
 		bool multiselect = true; // only for TYPE::OPEN
+		// SIMTARY EXTENSION: where the dialog opens. A folder, or a full file path whose
+		//	folder is opened and whose name is pre-filled (the useful form for SAVE).
+		//	Empty = the platform's own choice, which is usually the last folder used.
+		std::string default_path;
 	};
 	void FileDialog(const FileDialogParams& params, const std::function<void(std::string fileName)>& onSuccess, const std::function<void()>& onFailure = nullptr);
 

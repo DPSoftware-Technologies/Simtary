@@ -264,6 +264,33 @@ namespace wi::terrain
 	struct Modifier;
 	struct Generator;
 
+	// --- SIMTARY EXTENSION: authored terrain ---
+	//
+	//	A Source replaces the procedural inputs of chunk generation with authored data. The
+	//	engine does not own that data and does not know its format: the framework
+	//	(Framework/terrain) keeps it, installs a Source on the terrain, and stores its bytes in
+	//	Terrain::authored_data so they save and load with the scene.
+	//
+	//	With Terrain::source set:
+	//	  - a vertex's height is Source::Height() in metres, instead of the modifier stack
+	//	    (terrain modifier splines still apply on top, so roads keep working)
+	//	  - the material blend weights are Source::Surface(), one per materialEntities entry,
+	//	    instead of the automatic slope/altitude regions
+	//	  - the virtual texture is always on, so a layer with only a base colour still shows
+	//
+	//	Both are called from the generator's job threads, many vertices at once. The framework
+	//	only writes its data while IsGenerationBusy() is false, so a plain read is safe.
+	struct Source
+	{
+		virtual ~Source() = default;
+		// Ground height in metres at a world XZ position.
+		virtual float Height(const XMFLOAT2& world_pos) const = 0;
+		// Fill `weights[0..layer_count)` with the blend weights the virtual texture expects
+		//	(stacked top-down like decals: layer N covers layers below it by its weight).
+		//	Returns the grass amount at this position, 0..1.
+		virtual float Surface(const XMFLOAT2& world_pos, float* weights, uint32_t layer_count) const = 0;
+	};
+
 	struct Terrain
 	{
 		enum FLAGS
@@ -342,6 +369,31 @@ namespace wi::terrain
 
 		wi::vector<wi::allocator::shared_ptr<Modifier>> modifiers;
 		wi::vector<Modifier*> modifiers_to_remove;
+
+		// SIMTARY EXTENSION: authored terrain (see Source above). Not serialized: the
+		//	framework re-installs it from authored_data after a load.
+		std::shared_ptr<Source> source;
+		// Opaque bytes owned by whoever installs the source. Serialized from terrain version 7.
+		wi::vector<uint8_t> authored_data;
+		// SIMTARY EXTENSION: while set, chunks are generated around focus_position instead of
+		//	the camera handed to Generation_Update. The editor sets it to its free camera, which
+		//	is not the scene's camera, so the ground you are sculpting is the ground that exists.
+		//	Not serialized.
+		bool focus_override = false;
+		XMFLOAT3 focus_position = XMFLOAT3(0, 0, 0);
+		// Number of blend layers a chunk carries: one per material, never fewer than the four
+		//	the prop placement indexes.
+		uint32_t GetLayerCount() const;
+		// Regenerate every chunk that overlaps the world XZ rectangle [min, max], ahead of
+		//	the normal outward spiral. Used after an edit to the authored data.
+		void InvalidateChunksInRegion(const XMFLOAT2& min, const XMFLOAT2& max);
+		// Update the chunks overlapping [min, max] IN PLACE from the source: vertex heights,
+		//	normals, the heightfield physics shape, the blend map, and only the resident virtual
+		//	texture tiles the edit touched. Unlike InvalidateChunksInRegion this keeps each
+		//	chunk's entity, material and virtual texture, so a brush dabbing every frame never
+		//	sees a chunk with no texture yet (which renders black). Grass and props are not
+		//	re-placed. Main thread only, generator idle, source set; returns false otherwise.
+		bool RefreshChunksInRegion(const XMFLOAT2& min, const XMFLOAT2& max);
 
 		Terrain();
 		~Terrain();

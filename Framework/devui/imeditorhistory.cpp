@@ -166,6 +166,23 @@ void st::EditorHistory::RecordCreatedMany(wi::scene::Scene& scene,
 	Push(std::move(step));
 }
 
+void st::EditorHistory::PushCustom(const char* label, Entity entity, std::function<void(bool redo)> apply)
+{
+	if (!apply)
+		return;
+	// No Abort() here, unlike the Record* calls: a terrain stroke is pushed a frame or two
+	//	after the mouse lets go (when the terrain generator is next idle), and by then the user
+	//	may well be dragging a Properties field whose capture must survive.
+
+	Step step;
+	step.kind = Step::Kind::Custom;
+	step.label = label;
+	if (entity != INVALID_ENTITY)
+		step.entities.push_back(entity);
+	step.custom = std::move(apply);
+	Push(std::move(step));
+}
+
 void st::EditorHistory::CaptureInto(wi::scene::Scene& scene, Step& step, bool after)
 {
 	wi::vector<wi::Archive>& archives = after ? step.archivesAfter : step.archivesBefore;
@@ -241,6 +258,12 @@ void st::EditorHistory::ApplyState(wi::scene::Scene& scene, Step& step, bool use
 		const TransformSnapshot& snap = useAfter ? step.transformsAfter[0] : step.transformsBefore[0];
 		if (wi::scene::TransformComponent* t = scene.transforms.GetComponent(step.entities[0]))
 			snap.Apply(*t);
+		return;
+	}
+
+	if (step.kind == Step::Kind::Custom)
+	{
+		step.custom(useAfter);
 		return;
 	}
 

@@ -14,6 +14,8 @@
 #include "imassets.h"
 #include "imgraphicsettings.h"
 #include "input/InputSystem.h"
+#include "terrain/TerrainSystem.h"
+#include "dev/DevBuild.h"
 
 #include "wiScene.h"
 #include "wiPhysics.h"
@@ -53,6 +55,7 @@ constexpr const char* kImportOptions  = "Import Options##editor";
 // copy, so docking one does not move or close the other. Both drive the same
 // AssetExplorer object through App::Resources().
 constexpr const char* kResources      = "Resource Explorer##editor";
+constexpr const char* kTerrain        = "Terrain##editor";
 constexpr const char* kDockHost       = "##SimtaryEditorDockHost";
 
 constexpr float kPitchLimit = 1.55f; // ~89 degrees; stops the freecam flipping over the pole
@@ -376,6 +379,7 @@ void st::EditorUI::SetEnabled(bool on)
 			editorPath_.reset();
 		}
 		editorViewLive_ = false;
+		st::terrain::TerrainSystem::Get().SetFocus(false); // terrain follows the game camera again
 		ReleaseFreeCamLook();
 		ReleaseInputCapture();
 	}
@@ -492,6 +496,11 @@ void st::EditorUI::BuildDefaultLayout(ImGuiID dockspaceID, ImVec2 size)
 	// wide, short, and under the thing it feeds.
 	ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.30f, nullptr, &centre);
 
+	// The terrain tools on the left, where Roblox Studio keeps its terrain editor: next to the
+	// viewport the brush is used in.
+	ImGuiID left = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Left, 0.22f, nullptr, &centre);
+
+	ImGui::DockBuilderDockWindow(kTerrain, left);
 	ImGui::DockBuilderDockWindow(kHierarchy, right);
 	ImGui::DockBuilderDockWindow(kProperties, rightBottom);
 	ImGui::DockBuilderDockWindow(kResources, bottom);
@@ -531,8 +540,12 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 		if (ImGui::BeginMenu("Scene"))
 		{
 			const bool hasPath = !scenePath_.empty();
-			if (ImGui::MenuItem("Save", "Ctrl+S", false, hasPath))
-				SaveScene(scene, scenePath_);
+			const std::string mapPath = hasPath ? scenePath_ : CurrentSceneMap();
+			if (ImGui::MenuItem("Save", "Ctrl+S"))
+				QuickSave(scene);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("%s", mapPath.empty() ? "No file yet: asks where to save"
+				                                        : ("Saves to " + mapPath).c_str());
 			if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S"))
 				RequestSaveAs("stsd");
 			if (ImGui::IsItemHovered())
@@ -577,7 +590,8 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 				ImGui::SetTooltip("The panel that offers grouping, placement, animations, "
 					"skins and scale before an import runs.");
 			ImGui::Separator();
-			ImGui::TextDisabled("%s", hasPath ? scenePath_.c_str() : "(never saved)");
+			ImGui::TextDisabled("%s", hasPath ? scenePath_.c_str()
+				: mapPath.empty() ? "(never saved)" : ("map: " + mapPath).c_str());
 			if (!lastImportMessage_.empty())
 				ImGui::TextDisabled("%s", lastImportMessage_.c_str());
 			ImGui::EndMenu();
@@ -1038,13 +1052,20 @@ void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3
 	//	moment you pick something is useless. Only one viewport can actually drag it: each
 	//	passes its own ImGuizmo id, and ImGuizmo itself refuses input unless its drawlist's
 	//	window is the one under the pointer.
+	// A terrain brush owns the left button while it is up (Framework/devui/imterrain.h), so
+	//	the gizmo and click-to-select stand aside rather than fire on every dab.
+	bool terrainBusy = false;
+	if (imageDrawn)
+		terrainBusy = terrain_.ViewportInput(scene, history_, path, cam, imagePos, imageSize,
+			hovered, ImGui::GetIO().DeltaTime);
+
 	bool gizmoBusy = false;
-	if (imageDrawn && selected != INVALID_ENTITY)
+	if (imageDrawn && selected != INVALID_ENTITY && !terrainBusy)
 		gizmoBusy = DrawGizmo(scene, selected, cam, imagePos, imageSize);
 
 	// Click to select. Skipped while the pointer is on the gizmo, otherwise grabbing an
 	// axis would immediately reselect whatever is behind it.
-	if (hovered && !gizmoBusy && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+	if (hovered && !gizmoBusy && !terrainBusy && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
 	{
 		const ImVec2 m = ImGui::GetIO().MousePos;
 		const float u = (m.x - imagePos.x) / std::max(1.0f, imageSize.x);
@@ -1460,12 +1481,160 @@ void st::EditorUI::SaveScene(wi::scene::Scene& scene, const std::string& path)
 	for (char& c : ext)
 		if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
 
+	// Authored terrain lives in st::terrain::TerrainData between saves; this writes it into
+	//	the terrain components, which is what the serializer actually sees.
+	st::terrain::TerrainSystem::Get().Flush(scene);
+
+	// Saving a C++ scene into its OWN map: leave out what the scene's code builds, because
+	//	the code builds it again on the next load and it would exist twice. Each is archived,
+	//	stripped for the length of the save, and laid back down - at the component-manager
+	//	level, the same way undo does it, so native component instances and scripts carry on
+	//	as if nothing happened. A save to any other file keeps everything: that map is then
+	//	standalone, and nothing will rebuild those objects for it.
+	std::vector<Entity> stripped;
+	std::vector<wi::Archive> strippedArchives;
+	{
+		bool composite = false;
+		const std::string ownMap = CurrentSceneMap(&composite);
+		const bool intoOwnMap = composite && !ownMap.empty() &&
+			wi::helper::toLower(wi::helper::GetFileNameFromPath(path)) ==
+			wi::helper::toLower(wi::helper::GetFileNameFromPath(ownMap));
+		if (intoOwnMap && app_ != nullptr)
+		{
+			for (Entity e : app_->sceneManager.CodeEntities())
+			{
+				bool exists = false;
+				for (auto& kv : scene.componentLibrary.entries)
+					if (kv.second.component_manager && kv.second.component_manager->Contains(e)) { exists = true; break; }
+				if (!exists)
+					continue;
+				wi::Archive& archive = strippedArchives.emplace_back();
+				archive.SetReadModeAndResetPos(false);
+				wi::ecs::EntitySerializer seri;
+				seri.allow_remap = false;
+				scene.Entity_Serialize(archive, seri, e, wi::scene::Scene::EntitySerializeFlags::KEEP_INTERNAL_ENTITY_REFERENCES);
+				for (auto& kv : scene.componentLibrary.entries)
+					if (kv.second.component_manager && kv.second.component_manager->Contains(e))
+						kv.second.component_manager->Remove(e);
+				stripped.push_back(e);
+			}
+		}
+	}
+
+	// Authored terrain: everything under the engine's "chunks" group - render meshes, grass,
+	//	props - and the per-chunk heightmap / blend data are BUILT from authored_data, so
+	//	saving them only bloats the map (tens of MB for a 1 km terrain) with a copy that the
+	//	next load throws away anyway. They are left out the same way as the code-made
+	//	objects above, and the terrain is saved as "not generated yet", which makes the
+	//	generator rebuild them around the camera on load.
+	struct TerrainSaveState
+	{
+		wi::terrain::Terrain* terrain = nullptr;
+		decltype(wi::terrain::Terrain::chunks) chunks;
+		bool started = false;
+	};
+	std::vector<TerrainSaveState> terrainStates;
+	std::vector<wi::Archive> chunkArchives;
+	// A chunk's material points at the terrain's virtual texture, which is runtime state the
+	//	archive does not carry; it is only re-bound when the chunk changes resolution, so the
+	//	restored material would render black. Kept by value and laid back over the restore.
+	std::vector<std::pair<Entity, wi::scene::MaterialComponent>> chunkMaterials;
+	{
+		st::terrain::TerrainSystem& terrainSystem = st::terrain::TerrainSystem::Get();
+		std::vector<Entity> chunkEntities;
+		for (size_t i = 0; i < scene.terrains.GetCount(); ++i)
+		{
+			const Entity terrainEntity = scene.terrains.GetEntity(i);
+			if (!terrainSystem.IsAuthored(terrainEntity))
+				continue;
+			wi::terrain::Terrain& terrain = scene.terrains[i];
+			if (terrain.IsGenerationBusy())
+				terrain.Generation_Cancel(); // it carries on by itself on the next update
+			const Entity group = terrain.chunkGroupEntity;
+			if (group != INVALID_ENTITY && group != terrainEntity)
+			{
+				chunkEntities.push_back(group);
+				for (size_t h = 0; h < scene.hierarchy.GetCount(); ++h)
+				{
+					const Entity e = scene.hierarchy.GetEntity(h);
+					if (scene.Entity_IsDescendant(e, group))
+						chunkEntities.push_back(e);
+				}
+			}
+			TerrainSaveState& state = terrainStates.emplace_back();
+			state.terrain = &terrain;
+			state.started = terrain.IsGenerationStarted();
+			state.chunks = std::move(terrain.chunks);
+			terrain.chunks.clear();
+			terrain.SetGenerationStarted(false);
+		}
+		for (Entity e : chunkEntities)
+		{
+			if (const wi::scene::MaterialComponent* m = scene.materials.GetComponent(e))
+				chunkMaterials.emplace_back(e, *m);
+			wi::Archive& archive = chunkArchives.emplace_back();
+			archive.SetReadModeAndResetPos(false);
+			wi::ecs::EntitySerializer seri;
+			seri.allow_remap = false;
+			scene.Entity_Serialize(archive, seri, e, wi::scene::Scene::EntitySerializeFlags::KEEP_INTERNAL_ENTITY_REFERENCES);
+			for (auto& kv : scene.componentLibrary.entries)
+				if (kv.second.component_manager && kv.second.component_manager->Contains(e))
+					kv.second.component_manager->Remove(e);
+		}
+	}
+
 	const bool ok = (ext == "wiscene") ? SaveSceneArchive(scene, path)
 	                                   : SaveSceneDescriptor(scene, path);
+
+	for (wi::Archive& archive : chunkArchives)
+	{
+		wi::ecs::EntitySerializer seri;
+		seri.allow_remap = false;
+		archive.SetReadModeAndResetPos(true);
+		scene.Entity_Serialize(archive, seri, INVALID_ENTITY, wi::scene::Scene::EntitySerializeFlags::KEEP_INTERNAL_ENTITY_REFERENCES);
+	}
+	for (auto& kv : chunkMaterials)
+		if (wi::scene::MaterialComponent* m = scene.materials.GetComponent(kv.first))
+			*m = kv.second;
+	for (TerrainSaveState& state : terrainStates)
+	{
+		state.terrain->chunks = std::move(state.chunks);
+		state.terrain->SetGenerationStarted(state.started);
+	}
+
+	for (wi::Archive& archive : strippedArchives)
+	{
+		wi::ecs::EntitySerializer seri;
+		seri.allow_remap = false;
+		archive.SetReadModeAndResetPos(true);
+		scene.Entity_Serialize(archive, seri, INVALID_ENTITY, wi::scene::Scene::EntitySerializeFlags::KEEP_INTERNAL_ENTITY_REFERENCES);
+	}
+	if (!stripped.empty())
+	{
+		std::string names;
+		for (Entity e : stripped)
+		{
+			if (const wi::scene::NameComponent* n = scene.names.GetComponent(e))
+				if (!n->name.empty())
+					names += (names.empty() ? "" : ", ") + n->name;
+		}
+		wi::backlog::post("Editor: left " + std::to_string(stripped.size()) + " code-made object(s) out of the map"
+			+ (names.empty() ? std::string() : " (" + names + ")") + " - the scene's code creates them on load");
+	}
 	if (ok)
 	{
 		scenePath_ = path;
 		wi::backlog::post("Editor: saved scene to " + path);
+
+		// Dev build: a map saved under the game's assets/ is build OUTPUT, which the next
+		//	launch sync or clean rebuild replaces. The copy that counts goes into the source
+		//	tree (assets/scenes/ for a map), where the sync picks it up from now on.
+		std::string sourceCopy;
+		if (st::dev::MirrorToSource(path, &sourceCopy))
+		{
+			wi::backlog::post("Editor: dev build - also saved to " + sourceCopy);
+			lastSaveMessage_ = "saved + source copy";
+		}
 	}
 	else
 	{
@@ -1964,6 +2133,119 @@ void st::EditorUI::DrawImportOptions(wi::scene::Scene& scene)
 	ImGui::EndPopup();
 }
 
+bool st::EditorUI::SaveSceneForTool(App& app, wi::scene::Scene& scene, const std::string& path)
+{
+	app_ = &app;
+	scenePath_.clear();
+	SaveScene(scene, path);
+	return scenePath_ == path; // SaveScene records the path only when the write succeeded
+}
+
+std::string st::EditorUI::CurrentSceneMap(bool* composite, std::string* sceneName) const
+{
+	if (composite) *composite = false;
+	if (sceneName) sceneName->clear();
+	if (app_ == nullptr)
+		return {};
+	const SceneManager& scenes = app_->sceneManager;
+	const std::string& name = scenes.CurrentName();
+	if (sceneName) *sceneName = name;
+	const Scene* current = scenes.Get(name);
+	if (current == nullptr)
+		return {};
+	const std::vector<std::string> files = current->SceneFiles();
+	if (files.empty())
+		return {};
+	// Declared by stem ("assets/scenes/s1map") or by file; either way the save is the
+	//	native .stsd beside it, which ResolveSceneFile already prefers on the next load.
+	const std::string& file = files.front();
+	const std::string ext = wi::helper::GetExtensionFromFileName(file);
+	const std::string stem = ext.empty() ? file : file.substr(0, file.size() - ext.size() - 1);
+	if (composite) *composite = (scenes.OriginOf(name) == SceneManager::Origin::Cpp);
+	return stem + ".stsd";
+}
+
+void st::EditorUI::QuickSave(wi::scene::Scene& scene)
+{
+	if (!scenePath_.empty())
+	{
+		SaveScene(scene, scenePath_);
+		return;
+	}
+	bool composite = false;
+	const std::string map = CurrentSceneMap(&composite);
+	if (map.empty())
+	{
+		RequestSaveAs();
+		return;
+	}
+	if (composite)
+	{
+		mapSaveConfirmPath_ = map;
+		mapSaveConfirmOpen_ = true;
+		return;
+	}
+	// A scene that IS a map file: the file is the scene, so Save means "write it back".
+	SaveScene(scene, map);
+}
+
+void st::EditorUI::DrawMapSaveConfirm(wi::scene::Scene& scene)
+{
+	constexpr const char* kPopup = "Save into map?##editor";
+	if (mapSaveConfirmOpen_)
+	{
+		ImGui::OpenPopup(kPopup);
+		mapSaveConfirmOpen_ = false;
+	}
+	if (!ImGui::BeginPopupModal(kPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		return;
+
+	std::string sceneName;
+	CurrentSceneMap(nullptr, &sceneName);
+	ImGui::Text("'%s' is a C++ scene: it loads %s", sceneName.c_str(), mapSaveConfirmPath_.c_str());
+	ImGui::TextWrapped("and builds some objects in its own code. Those are left OUT of the map - the "
+		"code makes them again on every load - so edits to them are not saved. To edit one "
+		"for good, move it into the map in the code (create it only when the map has none).");
+
+	// Name what is being left out: "edits to them are not saved" means nothing until you
+	//	know which objects "them" is.
+	if (app_ != nullptr && !app_->sceneManager.CodeEntities().empty())
+	{
+		std::string names;
+		int unnamed = 0;
+		for (Entity e : app_->sceneManager.CodeEntities())
+		{
+			const wi::scene::NameComponent* n = scene.names.GetComponent(e);
+			if (n == nullptr || n->name.empty()) { ++unnamed; continue; }
+			names += (names.empty() ? "" : ", ") + n->name;
+		}
+		if (unnamed > 0)
+			names += (names.empty() ? "" : ", ") + std::to_string(unnamed) + " unnamed";
+		ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "Made by code: %s", names.c_str());
+	}
+	ImGui::Spacing();
+	if (ImGui::Button("Save into map"))
+	{
+		SaveScene(scene, mapSaveConfirmPath_); // remembered: later Ctrl+S saves without asking
+		mapSaveConfirmPath_.clear();
+		ImGui::CloseCurrentPopup();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Save as new map..."))
+	{
+		mapSaveConfirmPath_.clear();
+		ImGui::CloseCurrentPopup();
+		RequestSaveAs();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+	{
+		mapSaveConfirmPath_.clear();
+		ImGui::CloseCurrentPopup();
+	}
+	ImGui::EndPopup();
+}
+
 void st::EditorUI::RequestSaveAs(const char* defaultExt)
 {
 	if (saveDialogOpen_)
@@ -1973,6 +2255,22 @@ void st::EditorUI::RequestSaveAs(const char* defaultExt)
 
 	wi::helper::FileDialogParams params;
 	params.type = wi::helper::FileDialogParams::SAVE;
+
+	// Open where a map belongs - the project's own assets/scenes/ in a dev build, the game's
+	//	otherwise - with the scene's name filled in, instead of wherever the OS last was
+	//	(usually Documents, which is never right for a map).
+	{
+		std::string sceneName;
+		const std::string map = CurrentSceneMap(nullptr, &sceneName);
+		std::string base = map.empty() ? sceneName : wi::helper::GetFileNameFromPath(map);
+		const std::string ext = wi::helper::GetExtensionFromFileName(base);
+		if (!ext.empty()) base = base.substr(0, base.size() - ext.size() - 1);
+		if (base.empty()) base = "Untitled";
+		std::string dir = st::dev::SourceSceneDir();
+		if (dir.empty())
+			dir = wi::helper::GetCurrentPath() + "/assets/scenes";
+		params.default_path = dir + "/" + base + "." + saveDefaultExt_;
+	}
 	// Native first. Both are offered in the one filter the Win32 helper builds, so the
 	// extension the user types still decides; this only sets what a bare name becomes.
 	if (saveDefaultExt_ == "wiscene")
@@ -2031,9 +2329,20 @@ void st::EditorUI::MenuItems()
 	ImGui::MenuItem("Resource Explorer (editor)", nullptr, &showResources_);
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("Docked asset package browser / editor");
+	ImGui::MenuItem("Terrain Editor (editor)", nullptr, &showTerrain_);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Create, sculpt and paint terrain");
 	if (ImGui::MenuItem("Reset Editor Layout"))
 		resetLayout_ = true;
 	ImGui::EndDisabled();
+
+	if (st::dev::IsDevBuild())
+	{
+		ImGui::Separator();
+		ImGui::TextDisabled("Dev build: saves go to %s", st::dev::SourceAssetsDir().c_str());
+		ImGui::TextDisabled("Launch sync: %s", st::dev::LastSync().message.c_str());
+		ImGui::TextDisabled("Restart to re-sync (--devsync forces, --no-devsync skips)");
+	}
 }
 
 // ------------------------------------------------------------------------ draw ---
@@ -2053,6 +2362,7 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 
 	// Everything the render pass needs from the app, grabbed while we still have one.
 	//	RenderEditorView / RenderCameraViews run later in the frame with no App& to hand.
+	app_            = &app;
 	gfxSettings_    = &app.Graphics();
 	gameColorSpace_ = gamePath.colorspace;
 	gamePath_       = &gamePath;
@@ -2073,6 +2383,10 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 		historySceneName_ = app.sceneManager.CurrentName();
 		history_.Clear();
 		gizmoDragging_ = false;
+		// The save path belongs to the scene it was chosen for. Keeping it across a switch
+		//	made Ctrl+S in scene B silently overwrite scene A's file.
+		scenePath_.clear();
+		mapSaveConfirmPath_.clear();
 	}
 
 	pendingSelection_ = INVALID_ENTITY;
@@ -2090,10 +2404,10 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	{
 		if (ImGui::IsKeyPressed(ImGuiKey_S, false))
 		{
-			if (io.KeyShift || scenePath_.empty())
+			if (io.KeyShift)
 				RequestSaveAs();
 			else
-				SaveScene(scene, scenePath_);
+				QuickSave(scene);
 		}
 		// Ctrl+Y and Ctrl+Shift+Z both redo; different editors trained different hands.
 		if (ImGui::IsKeyPressed(ImGuiKey_Z, false))
@@ -2122,6 +2436,19 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 
 	DrawCameraViews(scene, selected);
 
+	// Terrain is built in chunks around ONE point. While you work in the Editor Viewport that
+	//	has to be the free camera, or you would be sculpting ground that is not there; the
+	//	moment the Game Viewport has input it goes back to the game camera.
+	st::terrain::TerrainSystem::Get().SetFocus(editorViewLive_ && !gameViewFocused_, camPos_);
+
+	if (showTerrain_)
+	{
+		if (ImGui::Begin(kTerrain, &showTerrain_))
+			terrain_.Draw(scene, history_, selected);
+		ImGui::End();
+	}
+	terrain_.SetOpen(showTerrain_);
+
 	if (showHierarchy_)
 	{
 		if (ImGui::Begin(kHierarchy, &showHierarchy_))
@@ -2149,6 +2476,7 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	//	has to come after the panels: pressing Import inside it builds entities, and doing that
 	//	while the Hierarchy was mid-iteration would be editing the list it is walking.
 	DrawImportOptions(scene);
+	DrawMapSaveConfirm(scene);
 
 	// A gizmo drag is one undo step, closed when ImGuizmo lets the mouse go.
 	if (gizmoDragging_ && !ImGuizmo::IsUsingAny())

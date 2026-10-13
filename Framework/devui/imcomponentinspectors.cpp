@@ -2991,6 +2991,11 @@ void DrawTerrain(Scene& scene, Entity e, st::EditorHistory* history)
 	//	does NOT rebuild what is already generated, so the restart button is the other half of
 	//	every field in this panel.
 	ImGui::TextDisabled(t->IsGenerationBusy() ? "generating..." : "idle");
+	// An authored terrain (Framework/terrain) takes its height and paint from its own data,
+	//	so the modifier and region settings below do nothing to it.
+	if (t->source != nullptr)
+		ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f),
+			"Authored terrain: sculpt and paint it in the Terrain panel.");
 	if (ImGui::Button("Restart generation"))
 	{
 		if (history) history->BeginEntity(scene, e, "Restart Terrain");

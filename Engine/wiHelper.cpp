@@ -1512,6 +1512,28 @@ namespace wi::helper
 			ofn.lpstrInitialDir = NULL;
 			ofn.nFilterIndex = 1;
 
+			// SIMTARY EXTENSION: FileDialogParams::default_path
+			std::wstring initial_dir;
+			if (!params.default_path.empty())
+			{
+				std::string dir = params.default_path;
+				std::string file;
+				if (!GetExtensionFromFileName(params.default_path).empty())
+				{
+					dir = GetDirectoryFromPath(params.default_path);
+					file = GetFileNameFromPath(params.default_path);
+				}
+				for (auto& c : dir) if (c == '/') c = '\\';
+				StringConvert(dir, initial_dir);
+				ofn.lpstrInitialDir = initial_dir.c_str();
+				if (!file.empty())
+				{
+					std::wstring wfile;
+					StringConvert(file, wfile);
+					wcsncpy_s(szFile, arraysize(szFile), wfile.c_str(), _TRUNCATE);
+				}
+			}
+
 			// Slightly convoluted way to create the filter.
 			//	First string is description, ended by '\0'
 			//	Second string is extensions, each separated by ';' and at the end of all, a '\0'
@@ -1641,7 +1663,8 @@ namespace wi::helper
 			case FileDialogParams::SAVE:
 			{
 				static std::string recent_dir_path = "";
-				std::string destination = pfd::save_file("Save file", recent_dir_path, extensions).result();
+				const std::string start = params.default_path.empty() ? recent_dir_path : params.default_path; // SIMTARY EXTENSION
+				std::string destination = pfd::save_file("Save file", start, extensions).result();
 				if (!destination.empty())
 				{
 #ifdef PLATFORM_LINUX

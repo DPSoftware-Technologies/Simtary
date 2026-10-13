@@ -1,6 +1,7 @@
 #include "imassets.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -11,6 +12,7 @@
 #include "io/asset/SceneDescriptor.h"
 #include "io/asset/StHash.h"
 #include "devui/imscripteditor.h"
+#include "dev/DevBuild.h"
 #include "stApp.h"
 #include "wiHelper.h"
 #include "wiBacklog.h"
@@ -371,6 +373,7 @@ void AssetExplorer::BeginEdit (uint32_t mountIndex) {
         entry.origin      = Entry::Origin::Package;
         entry.sourceId    = a->id;
         entry.logicalPath = pack->NameString(*a);
+        entry.originalPath = entry.logicalPath;
         entry.type        = static_cast<asset::AssetType>(a->type);
         entry.codec       = static_cast<asset::Codec>(a->codec);
         entry.autoCodec   = false;   // keep what the package already decided
@@ -474,6 +477,14 @@ bool AssetExplorer::SaveWorkingSet (const std::string& outDir, const std::string
     if (outDir.empty() || baseName.empty()) {
         if (error) *error = "output folder and package name are both required";
         return false;
+    }
+
+    // 0. dev build: the edits go back to the source tree FIRST, while every row's bytes are
+    // still readable. This package is the one the launch sync rebuilds from source.
+    std::string devSummary;
+    if (dev::IsDevPackage(outDir, baseName)) {
+        if (!ExportEditsToSource(&devSummary, error)) return false;
+        if (!devSummary.empty()) wi::backlog::post("Resource Explorer: dev build - " + devSummary);
     }
 
     std::error_code ec;
@@ -580,6 +591,61 @@ bool AssetExplorer::SaveWorkingSet (const std::string& outDir, const std::string
     } else {
         editing_ = false;
         entries_.clear();
+    }
+    return true;
+}
+
+bool AssetExplorer::ExportEditsToSource (std::string* summary, std::string* error) {
+    uint32_t written = 0, trashed = 0;
+
+    // A .stsd is a map, and maps live in the source scenes folder, not among the resources.
+    auto targetFor = [](const std::string& name) {
+        std::string ext = U8Path(name).extension().string();
+        for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+        if (ext == ".stsd" && !dev::SourceSceneDir().empty())
+            return dev::SourceSceneDir() + "/" + U8Path(name).filename().string();
+        const std::string existing = dev::SourceFileForPackageAsset(name);
+        return existing.empty() ? dev::NewSourceFileForPackageAsset(name) : existing;
+    };
+
+    for (const Entry& entry : entries_) {
+        const bool fromPackage = entry.origin == Entry::Origin::Package;
+        if (entry.removed) {
+            // Out of the source tree too, or the next sync puts it straight back. Moved,
+            // never deleted: assets/.trash/ keeps it until someone empties it by hand.
+            if (!fromPackage) continue; // added and removed again: nothing on disk
+            const std::string file = dev::SourceFileForPackageAsset(
+                entry.originalPath.empty() ? entry.logicalPath : entry.originalPath);
+            if (!file.empty() && dev::TrashSourceFile(file)) ++trashed;
+            continue;
+        }
+        if (fromPackage && !entry.renamed && !entry.added) continue; // untouched
+
+        std::vector<uint8_t> bytes;
+        if (!ResolveBytes(entry, bytes, error)) return false;
+        const std::string target = targetFor(entry.logicalPath);
+        if (target.empty()) continue;
+        if (!WriteWholeFile(target, bytes.data(), bytes.size())) {
+            if (error) *error = "dev build: cannot write " + target;
+            return false;
+        }
+        ++written;
+
+        // A rename leaves the file under its old name behind, which the sync would pack
+        // as a second asset.
+        if (fromPackage && entry.renamed && !entry.originalPath.empty()) {
+            const std::string old = dev::SourceFileForPackageAsset(entry.originalPath);
+            std::error_code same; // the error_code overload: the throwing one is a crash with /EHsc-
+            if (!old.empty() && !fs::equivalent(U8Path(old), U8Path(target), same) && dev::TrashSourceFile(old))
+                ++trashed;
+        }
+    }
+
+    if (summary) {
+        summary->clear();
+        if (written + trashed > 0)
+            *summary = std::to_string(written) + " file(s) written to " + dev::SourceAssetsDir() +
+                       (trashed ? ", " + std::to_string(trashed) + " moved to assets/.trash" : std::string());
     }
     return true;
 }

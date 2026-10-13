@@ -25,7 +25,7 @@ Simtary/
 ├── crashreporter/  SimtaryCrashReporter — one reporter GUI for all games
 ├── cmake/          SimtaryBootstrap, SimtaryApp, SimtaryPlatform, IncrementBuild
 ├── tests/ tools/   nbt_test, asset_pack_test, model_import_test, stpack, stshaderc,
-│                   make_player_descriptor
+│                   make_player_descriptor, mcp/simtary_mcp.py (MCP server over the editor bridge)
 └── CMakeLists.txt
 ```
 
@@ -67,6 +67,12 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `scene/Ray.*` | `st::Raycast` / `st::RayHit` / `st::RayQuery` — one raycast over either backend: `Mesh` (`Scene::Intersects`, hits anything drawn, no body needed), `Physics` (`wi::physics::Intersects`, Jolt bodies only), `Both` (nearer wins) or `None`. Also `st::LocalAxes` — the ONE forward-axis table, shared by the projector, laser, ray and optics. |
 | `scene/DayNight.*` | `st::DayNight` - the daylight / time-of-day system. One clock drives one directional light plus the scene's weather: the sun's arc, its colour and intensity, the ambient level, the stars and the sky exposure. The sun is placed ASTRONOMICALLY by default (NOAA solar position from latitude, longitude, time zone and day of year), so it rises in the east and the day is the right length for the place and season; `geographic` off falls back to the simple overhead hoop a hand-rolled cycle usually is. `AppConfig::dayNight` (Off / Adopt / Create) decides what a scene load binds it to. Reach it anywhere via `st::DayNight::Get()`, panel in `Simtary > Day / Night & Weather`. It also owns the WEATHER: `WeatherState` is the continuous half (cloudiness, cloud darkness, fog density/start/band, wind speed/heading/turbulence, rain, exposure and ambient scaling) and seven named `WeatherPreset`s expand into it. `SetWeather(preset)` eases from what is on screen into the new state over `transitionSeconds`; `Weather()` is what the scene is showing this frame and is what gameplay should read. `autoWeather` re-rolls a preset every `autoIntervalHours` of GAME time from a seeded LCG, so the same seed gives the same weather everywhere. |
 | `scene/PlayControl.*` | `st::PlayControl` - the scene transport. `st::App::Update` hands it the real frame delta and passes what comes back to the scene and the daylight system, so ONE place decides how much time the world sees: `Playing` (realtime x `timeScale`), `PlayingNoPhysics` (animation and logic run, `wi::physics::SetSimulationEnabled(false)`), `Paused` (dt = 0, physics off, `Step()` lets single frames through at `stepDelta`). `Reset()` is a real `SceneManager::Reload()` - Unload + Load - because a scene made of native components holding their own state cannot be rewound. The transport row is drawn on the EDITOR TOOLBAR, beside the gizmo buttons - `GUI(compact)` is the SmallButton form that fits a menu-bar row. It is not on the DevUI menu bar: that is the application's menus, and five buttons plus a slider across it pushed Help and the fps readout off the end. `Simtary > Play/Pause/...` and F5/F6/F7/F8 reach the same transport with no editor open. |
+| `dev/DevBuild.*` | **Dev build mode** (`-DSIMTARY_DEV_BUILD=ON`, or a game's `win_x86-64-dev` preset). Editor saves under the game's `assets/` are mirrored into the project's source `assets/` (`MirrorToSource`), Resource Explorer edits to the dev package are written back as source files (`AssetExplorer::ExportEditsToSource`, removals go to `assets/.trash/`), and `st::Run` re-runs the build's stpack conversion at launch when the source tree changed (`SyncAssets`, before anything is mounted). `--devsync` forces, `--no-devsync` skips. No-ops in a normal build. |
+| `vehicle/` | **Drivable vehicles** on the engine's Jolt vehicle. `VehiclePreset` is real vehicles as data (HMMWV M1097A2: published specs, estimates marked). `VehicleComponent` is the `"stVehicle"` native component: applies a preset to its entity's rigid body (`applyPreset` off keeps hand tuning), binds visual wheels by name, turns an `stInput` "Vehicle" map into driver input (rate-limited steering, brake-to-reverse) and reads `wi::physics::GetVehicleTelemetry` back every frame. `FitVisual()` (inspector button, bridge `vehicle.fit_visual`) scales a child model to the preset wheelbase, turns its front to +Z and puts its wheel centres on the simulated ones - an authoring step, saved with the map. `VehicleHudComponent.cpp` is `"stVehicleHud"`: speed/gear/rpm, simulated-vs-published table (top speed, 0-48, 0-80, braking 50-0), telemetry and the terrain layer under each tyre, drawn through `GuiHooks`. The seam the tyre, drivetrain and soil models plug into. |
+| `scene/ChaseCameraComponent.cpp` | `"stChaseCamera"`: the game camera follows its entity from behind (+Z forward), eased, right mouse orbits, wheel zooms, never below authored ground. Runs on `PlayControl::RealDelta()`. |
+| `scene/GuiHooks.*` | `st::GuiHooks::Get().Add(fn)` / `Remove(id)`: GAME UI a native component draws, called from `SceneManager::OnGUI` after the scene's own. Add in `Start`, remove in `Destroy`. |
+| `dev/EditorBridge.*`, `dev/Json.*` | **Editor bridge** (dev build only, `--no-devbridge` to skip): newline-JSON over TCP 127.0.0.1:57230, token in `<cwd>/devbridge.json`, every request run on the main thread in `Pump()` (from `st::App::Update` after input). Commands: scene, entity, metadata, native, rigidbody, model import, terrain create/generate/brush/sample, play transport, input injection (`st::input::InjectAction`, works unfocused), camera, screenshot, editor mode, Taipan, vehicle fit/reset/telemetry - `help` lists them. `Json` is exception-free (array access via `At(i)`). |
+| `terrain/` | **Authored terrain** - what `wi::terrain` lacked: data you can edit. `TerrainData` is a sparse tiled grid (128² samples per tile, height + normalised paint weights per layer, `SoilParams` per layer for tyres/soil). `TerrainGenerate` writes biomes or a heightmap INTO it once. `TerrainSystem` installs a `wi::terrain::Source` on the engine terrain so every chunk (mesh, Jolt heightfield, blend layers, grass) is built from the data, runs edits only while the generator is idle, writes the data into `Terrain::authored_data` on `Flush()` (the editor calls it before every save), and is the ground query physics reads (`Sample`, `Soil`, `Raycast`). Panel: `devui/imterrain.*`, the docked **Terrain** window (Create / Edit / Layers, Roblox-style brushes in the Editor Viewport). Test: `tests/terrain_data_test.cpp`. |
 | `scene/DayNightComponent.cpp` | The `"sticDayNight"` NATIVE COMPONENT - the same system attached from the editor, so place, date, clock speed, look and weather are scene data that saves with the map and needs no game code. `NCA_*_weatherPreset` names the sky, so a map opens in the weather it was designed for. |
 | `scene/RayComponent.*` | The `"sticRay"` native component: a raycast bolted to an entity, re-cast every frame. The shared seam for a laser sight, a rangefinder, an interaction prompt and an “am I aiming at it” HUD. |
 | `render/Framebuffer.*` | `st::gfx::Framebuffer` — an off-screen surface you draw into and hand to a material, a light mask or a projector. CPU mode wraps libgfx (`GFXcanvas`) and owns the staging texture, row pitch and flip; GPU mode is a render target you draw into with `wi::image`/`wi::font` between `Begin()`/`End()`. |
@@ -469,6 +475,99 @@ if its own `max_steer_angle` is non-zero. A **negative** angle is legal (Jolt as
 `abs(angle) > 90°`, not on the sign) and steers that wheel against the input, which is
 what rear-axle counter-steering is. `Vehicle::SteeringLayout` only decides what a freshly
 generated vehicle starts with; the per-wheel angles stay editable afterwards.
+
+**A dev build closes the save loop and the sync loop; a normal build does neither.** In
+a normal build `assets/` is build INPUT and `<exe>/assets` is output, so anything the game
+saves lands in output and an edited asset waits for the next build. `SIMTARY_DEV_BUILD`
+bakes the source folders and `$<TARGET_FILE:stpack>` into the framework (definitions on
+the framework target only, so flipping it recompiles nothing else). Three rules hold it up:
+
+- **The sync runs before the mounts, in `st::Run`.** A mounted package is memory-mapped and
+  Windows will not replace a mapped file. The check is a hash of every source file's
+  (path, size, mtime) against `<exe>/assets/.devsync`, so a deletion or a file restored from
+  an older copy counts as a change; nothing changed costs one stat per file. The stamp is
+  written from a SECOND hash taken after stpack ran, because `--mirror-resources` writes into
+  the source tree and that must not trigger a sync on every launch. zstd level 3, not the
+  build's 9: someone is waiting for the window.
+- **The source tree is the truth, so in-game edits must reach it or be undone.** That is why
+  saving the dev package in the Resource Explorer exports first - the next launch would
+  otherwise rebuild the old package from source. Codec choices made there are not carried;
+  the packer re-decides from the file.
+- **Nothing is deleted.** A removal from inside the game moves the source file to
+  `assets/.trash/<session>/`. A build tool writing into a developer's tree should never be
+  the reason work is lost.
+
+**The editor bridge is how tools (and Claude) drive a running dev build.** `dev/EditorBridge`
+listens on 127.0.0.1 only, starts only in a dev build, and refuses a request without the token
+the game writes to `<cwd>/devbridge.json` on start (deleted on exit). Requests are queued from the
+socket thread and executed in `Pump()` on the main thread, so a command can touch the scene, the
+physics and ImGui state exactly as editor code does. `tools/mcp/simtary_mcp.py` (stdlib only) is
+an MCP stdio server that maps each command to a tool, returns `screenshot` as an image, and adds
+`game_launch` / `game_stop` / `game_wait` / `game_build`; `E:/HMMWV4/.mcp.json` registers it as
+`simtary`. Two things to know: attaching a native component is a metadata write, so its instance
+(and `vehicle.*` on it) exists from the NEXT frame; and `screenshot` is the last post-processed
+frame, without ImGui. Scenes authored this way are plain maps - Milistry's `vehicletest.stsd` was
+built entirely through the bridge (terrain, pad, model, `stInput`/`stVehicle`/`stChaseCamera`/
+`stVehicleHud`) and replaced a C++ scene.
+
+**Saving a C++ scene into its own map leaves the code-made objects out.** A scene like
+Milistry's Scene1 loads a map AND builds objects in `Load()`. Saving everything into the
+map made those objects exist twice on the next load (a moved cube became two cubes).
+`SceneManager` brackets every `Scene::Load()` (plus the loaded hooks) with the map-entity
+log in `scene/SceneFile.h`: whatever is new afterwards and did not come out of a
+`LoadSceneFileFlat()` is `CodeEntities()`. `EditorUI::SaveScene` strips exactly those,
+for the length of the save only, when the target is the scene's own map, and lays them
+back down the way undo does (component managers, not `Entity_Remove`). Objects code
+spawns AFTER load are not tracked. A scene that wants an object to be editable makes it
+only when the map has none (`Entity_FindByName` first), as Scene1 does for TaipanDemo.
+
+**Authored terrain drives the engine's generator; it does not replace it.** `wi::terrain`
+builds good chunks (LOD meshes, the blended virtual texture, grass, props, heightfield
+physics) but from noise re-evaluated per chunk, so nothing it made was editable. The
+`Source` hook in `wiTerrain.h` (SIMTARY EXTENSION) swaps the noise for `Framework/terrain`'s
+data: height in metres, and one blend weight per `materialEntities` entry. Four things about
+it are load-bearing:
+
+- **The data only changes while the generator is idle.** The generator reads it from job
+  threads, so `TerrainSystem::Edit()` queues and runs the op in `Update()` (before the scene
+  update) only when `IsGenerationBusy()` is false. Never write `TerrainData` from anywhere else.
+- **Brushes refresh chunks in place; only region edits rebuild them.** A full rebuild
+  (`InvalidateChunksInRegion`) replaces the chunk's entity and material, which throws its
+  virtual texture away - with a dab every frame the chunk under the brush never got its
+  texture back and rendered BLACK. `RefreshChunksInRegion` rewrites heights, normals, the
+  heightfield shape and the blend map on the existing chunk and re-renders only the resident
+  texture tiles the edit touched. `Edit(..., rebuild = true)` is for Generate / Import /
+  Clear / Fill / layer changes, where rebuilding on the generator's threads is cheaper.
+- **Paint is stored normalised and converted on the way out.** The blend shader stacks layers
+  top-down like decals; `StackedWeights` turns Unity-style weights (sum to 1) into that.
+  A terrain always carries at least four blend layers because prop placement indexes four.
+- **`authored_data` is only as new as the last `Flush()`.** When the engine drops the source
+  (a load, or an undo that rewrote the component), `TerrainSystem` compares the bytes' hash
+  with what it last wrote: the same bytes mean memory is the same or newer, so it keeps
+  memory - undoing an unrelated property edit must not throw a sculpt away. A brush stroke is
+  undone through `EditorHistory::PushCustom` with tile snapshots, not through an entity archive.
+- **The source is bound straight after a load, not only in `Update()`.** `TerrainSystem::Update`
+  runs before `sceneManager.Update`, and a scene that loads also updates in that same frame, so
+  the engine generated the first chunks from its own noise before the authored source existed -
+  a raised, untextured plateau with its own heightfield, which pushed a spawned vehicle under
+  the world. `st::App`'s scene-loaded callback calls `TerrainSystem::BindAll()`, and a decode
+  that finds chunks already built resets the terrain to not-generated so they are rebuilt.
+  `stVehicle` additionally holds its body where it was placed until a physics ray finds ground
+  under it, and puts it back on top if it ever ends up 5 m below an authored terrain.
+- **A save leaves the chunks out.** Everything under the terrain's "chunks" group and the
+  per-chunk data in `Terrain::chunks` are rebuilt from `authored_data`, so `EditorUI::SaveScene`
+  strips them for the length of the save (archive + restore, like code-made objects) and writes
+  the terrain as not-generated; the load regenerates them. Chunk materials are restored BY VALUE
+  afterwards - their virtual-texture binding is runtime state the archive loses, and the engine
+  only re-binds it on a resolution change, so an archive-restored chunk renders black.
+- **Chunks are built around ONE point.** In the editor that has to be the free camera
+  (`Terrain::focus_override`, set by `EditorUI::Draw`), or you would sculpt ground that does not
+  exist; it falls back to the game camera when the Game Viewport has input. While paused
+  (`sceneDt == 0`) `Scene::Update` skips terrain generation, so `TerrainSystem` pumps it.
+
+Also fixed on the way: `wi::terrain`'s priority invalidation queue passed ABSOLUTE chunk
+coordinates to `request_chunk`, which takes an offset from the centre chunk - spline edits
+away from the origin regenerated the wrong chunks.
 
 **Collision geometry does not have to be what is drawn, and the loader is a HOOK.**
 `RigidBodyPhysicsComponent::mesh_source` picks between the mesh on the entity, a

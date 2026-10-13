@@ -7,6 +7,9 @@
 #include "io/asset/AssetSystem.h"
 #include "io/model/ModelImporter.h"
 #include "script/ScriptSystem.h"
+#include "terrain/TerrainSystem.h"
+#include "dev/DevBuild.h"
+#include "dev/EditorBridge.h"
 #include "wiPhysics.h"
 #include "wiScene.h"
 #include "wiHelper.h"
@@ -238,6 +241,9 @@ void st::App::Initialize() {
     // retune the cycle it was given.
     sceneManager.SetCallbacks(
         [this](const std::string& name) {
+            // The scene updates in this same frame, before TerrainSystem::Update runs again:
+            // bind now, or its first chunks are generated from the engine's noise.
+            st::terrain::TerrainSystem::Get().BindAll(wi::scene::GetScene());
             switch (Config().dayNight) {
                 case st::DayNightMode::Adopt:  st::DayNight::Get().Adopt(wi::scene::GetScene()); break;
                 case st::DayNightMode::Create: st::DayNight::Get().Create(wi::scene::GetScene()); break;
@@ -374,6 +380,13 @@ void st::App::Initialize() {
         zmqHandler.Start(Config().zmqEndpoint);
     }
 
+    // Dev build: the editor bridge, the socket tools (and tools/mcp) drive the game through.
+    // Never started in a normal build - a shipped game opens no port.
+    if (st::dev::IsDevBuild() && !wi::arguments::HasArgument("--no-devbridge") &&
+        !wi::arguments::HasArgument("no-devbridge")) {
+        st::dev::EditorBridge::Get().Start(*this);
+    }
+
     // Load the starting scene immediately so entities exist before the first
     // frame's scene->Update() runs.
     if (!Config().startupScene.empty()) {
@@ -416,6 +429,9 @@ void st::App::Update(float dt) {
     // before scenes/components read it in sceneManager.Update.
     st::InputSystem::Get().Update(dt);
 
+    // Tool requests run here: main thread, between frames, before the scene sees this frame.
+    st::dev::EditorBridge::Get().Pump();
+
     // Scene::Load() blocks this thread, so no ImGui frame can be drawn while a
     // transition runs. The native loading window lives on its own thread and keeps
     // painting, which is the only thing that works here - same reason startup uses it.
@@ -440,6 +456,10 @@ void st::App::Update(float dt) {
     // the sky a frame late - which reads as the sky lagging behind the sun at dawn.
     // On the scene's clock too, or a paused world would keep moving through its own day.
     st::DayNight::Get().Update(wi::scene::GetScene(), sceneDt);
+
+    // Before the scene update too: an edit queued this frame lands in the terrain data
+    // before the scene kicks the chunk generator off again (Framework/terrain).
+    st::terrain::TerrainSystem::Get().Update(wi::scene::GetScene(), sceneDt);
 
     st::ScriptSystem::Get().BeginFrame(sceneDt, dt); // Time.deltaTime, Input.* for this frame
     sceneManager.Update(sceneDt);
@@ -542,6 +562,8 @@ void st::App::Compose(wi::graphics::CommandList cmd) {
 
 void st::App::Exit() {
     OnExit();
+
+    st::dev::EditorBridge::Get().Stop();
 
     // Frees the editor's render path (and waits for the GPU) before the device goes away.
     editor_.Shutdown();

@@ -8,6 +8,9 @@
 #include "io/UserData.h"
 #include "io/asset/AssetSystem.h"
 #include "input/InputSystem.h"
+#include "dev/DevBuild.h"
+#include "SubWinStatus.h"
+#include "wiBacklog.h"
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -102,8 +105,40 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
 
     // Then the project properties: the crash reporter, the user-data folder and
     // App::Config() all read from here during startup.
+    // --scene=<name> starts in that scene instead of AppConfig::startupScene - for jumping
+    //	straight into a test scene, or a shortcut that opens one level.
+    for (int i = 1; i < argc; ++i) {
+        const char* prefix = "--scene=";
+        if (std::strncmp(argv[i], prefix, std::strlen(prefix)) == 0)
+            config.startupScene = argv[i] + std::strlen(prefix);
+    }
+
     st::detail::SetActiveConfig(&config);
     st::userdata::Configure(config.organization, config.name);
+
+    // Dev build: bring <exe>/assets up to date with the project's SOURCE assets first.
+    // It has to come before the mounts below - a mounted package is memory-mapped, which
+    // on Windows locks the very files the sync replaces. Nothing changed costs one stat
+    // per source file; the native loading window only appears when there is real work.
+    if (st::dev::IsDevBuild() && !wi::arguments::HasArgument("--no-devsync") &&
+        !wi::arguments::HasArgument("no-devsync")) {
+        const bool force = wi::arguments::HasArgument("--devsync") || wi::arguments::HasArgument("devsync");
+        SubWinStatus syncWindow(config.name, 470, 124);
+        bool windowShown = false;
+        const st::dev::SyncReport sync = st::dev::SyncAssets(force, [&](const std::string& phase) {
+            if (phase.rfind("Checking", 0) == 0) return; // the cheap part: no window for it
+            if (!windowShown) {
+                syncWindow.Show();
+                windowShown = true;
+            }
+            syncWindow.SetProgress(0);
+            syncWindow.SetStatus(phase, "dev build: assets/ changed since the last sync");
+        });
+        if (windowShown) syncWindow.Hide();
+        printf("Dev asset sync: %s\n", sync.message.c_str());
+        wi::backlog::post("Dev asset sync: " + sync.message,
+                          sync.ok ? wi::backlog::LogLevel::Default : wi::backlog::LogLevel::Error);
+    }
 
     // Asset packages, before ANYTHING reads content. wi::helper::FileRead is the single
     // path every engine load goes through, and installing the override here means the

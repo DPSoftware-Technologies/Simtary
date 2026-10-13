@@ -7,6 +7,20 @@
 
 namespace st {
 
+namespace {
+bool g_mapLogActive = false;
+std::vector<wi::ecs::Entity> g_mapLog;
+} // namespace
+
+void BeginMapEntityLog () {
+    g_mapLog.clear();
+    g_mapLogActive = true;
+}
+
+void EndMapEntityLog () { g_mapLogActive = false; }
+
+const std::vector<wi::ecs::Entity>& MapEntityLog () { return g_mapLog; }
+
 bool IsSceneFileExtension (const std::string& extensionLower) {
     return extensionLower == "stsd" || extensionLower == "wiscene";
 }
@@ -97,6 +111,9 @@ LoadedSceneFile LoadSceneFileFlat (wi::scene::Scene& target,
 
     target.Merge(temporary);
     out.ok = true;
+    // Merge keeps entity IDs, so these are the IDs the live scene now has.
+    if (g_mapLogActive)
+        g_mapLog.insert(g_mapLog.end(), out.entities.begin(), out.entities.end());
     return out;
 }
 

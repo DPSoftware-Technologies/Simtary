@@ -250,6 +250,7 @@ public:
     bool IsEditorMode() const { return editor_.IsEnabled(); }
     void SetEditorMode(bool on) { editor_.SetEnabled(on); }
     void ToggleEditorMode() { editor_.Toggle(); }
+    EditorUI& Editor() { return editor_; }
 
     // display
     // Window mode, monitor, resolution, v-sync, frame cap and render scale. Render

@@ -53,6 +53,7 @@
 #include "imgui.h"
 #include "ImGuizmo.h"
 #include "imeditorhistory.h"
+#include "imterrain.h"
 #include "io/model/ModelImporter.h"
 
 #include <memory>
@@ -109,6 +110,11 @@ public:
 
     // Frees the editor render path. Called from st::App::Exit().
     void Shutdown();
+
+    // Save the scene exactly as Scene > Save does - terrain flush, resource export, the dev
+    // build's source mirror - for a tool that is not the editor UI (dev/EditorBridge). True
+    // when the file was written.
+    bool SaveSceneForTool(App& app, wi::scene::Scene& scene, const std::string& path);
 
 private:
     void EnsureEditorPath();
@@ -196,9 +202,24 @@ private:
     // the project set one, otherwise the assets/resources the build baked in. Empty means
     // the export is off - no folder was configured and nothing is guessed.
     static std::string ResourceExportDir();
-    // `defaultExt` is appended when the user types a bare name in the dialog.
+    // `defaultExt` is appended when the user types a bare name in the dialog. The dialog
+    // opens in the project's scene folder (the SOURCE one in a dev build) with the current
+    // scene's name filled in.
     void RequestSaveAs(const char* defaultExt = "stsd");
     void FlushPendingSave(wi::scene::Scene& scene);
+
+    // Ctrl+S. Saves to the path this session already saved to; failing that, to the map
+    // the current scene was loaded from (a scene that IS a map file); failing that, asks.
+    // A C++ scene that loads a map AND builds objects in code is asked about first - see
+    // DrawMapSaveConfirm.
+    void QuickSave(wi::scene::Scene& scene);
+    // The map file the current scene stands for, as a runtime path ("assets/scenes/
+    // s1map.stsd"), or "" for a scene with none. `composite` is set for a C++ scene, whose
+    // code adds entities of its own on top of the map.
+    std::string CurrentSceneMap(bool* composite = nullptr, std::string* sceneName = nullptr) const;
+    // "Save Scene1 into s1map?" - saving a composite scene writes the code-made objects
+    // into the map too, and the next load would then create them twice.
+    void DrawMapSaveConfirm(wi::scene::Scene& scene);
 
     // Open the "import into this scene" file dialog. The result goes through
     // QueueImportModel, so the load itself happens on the main thread.
@@ -225,6 +246,11 @@ private:
     bool showHierarchy_      = true;
     bool showProperties_     = true;
     bool showResources_      = true;
+    bool showTerrain_        = true;
+
+    // Create / sculpt / paint terrain (Framework/devui/imterrain.h). Also hooked into the
+    // Editor Viewport, which is where its brushes are used.
+    TerrainEditor terrain_;
 
     bool layoutBuilt_ = false;   // dock layout authored (or restored from imgui.ini)
     bool resetLayout_ = false;   // "Reset Layout" was clicked; rebuild next frame
@@ -350,7 +376,10 @@ private:
 
     // scene save
     std::string saveDefaultExt_ = "stsd";  // what Save As appends to a bare name
-    std::string scenePath_;        // last saved/chosen path; "" until the first Save As
+    std::string scenePath_;        // last saved/chosen path this scene; "" until the first save
+    std::string mapSaveConfirmPath_;  // the confirm popup is up for this map ("" = closed)
+    bool        mapSaveConfirmOpen_ = false; // open it on the next frame
+    App*        app_ = nullptr;    // captured in Draw(): the scene manager is how a scene's map is found
     std::string lastSaveMessage_;  // shown in the toolbar
     bool        saveDialogOpen_ = false;
     // Written by the file dialog's own thread, drained on the main thread in Draw().
