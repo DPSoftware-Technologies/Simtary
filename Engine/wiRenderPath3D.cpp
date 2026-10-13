@@ -1,4 +1,5 @@
 #include "wiRenderPath3D.h"
+#include "wiArguments.h"
 #include "wiRenderer.h"
 #include "wiImage.h"
 #include "wiHelper.h"
@@ -1592,12 +1593,17 @@ namespace wi
 				vp.min_depth = 0;
 				vp.max_depth = 1;
 				device->BindViewports(1, &vp, cmd);
+				// SIMTARY bring-up switches (GPU fault bisect on Mali): debug_nomeshes / debug_nosky
+				static const bool debug_nomeshes = wi::arguments::HasArgument("debug_nomeshes");
+				static const bool debug_nosky = wi::arguments::HasArgument("debug_nosky");
+				if (!debug_nomeshes)
 				wi::renderer::DrawScene(
 					visibility_main,
 					RENDERPASS_MAIN,
 					cmd,
 					drawscene_flags
 				);
+				if (!debug_nosky)
 				wi::renderer::DrawSky(*scene, cmd, false); // Note: volumetric cloud sampling disabled in sky shader, instead the postprocess will be used for a high quality effect
 				wi::profiler::EndRange(range); // Opaque Scene
 			}
@@ -2559,6 +2565,12 @@ namespace wi
 			lastPostprocessRT = rt_read;
 
 			// GUI Background blurring:
+#ifdef __ANDROID__
+			// SIMTARY: off on Android - this chain (2x downsample + gaussian, every frame,
+			// only for a blurred ImGui backdrop) faults Mali-G68 intermittently. Not yet
+			// root-caused; see Simtary/PORTING-ANDROID.md.
+			if (false)
+#endif
 			{
 				auto range = wi::profiler::BeginRangeGPU("GUI Background Blur", cmd);
 				device->EventBegin("GUI Background Blur", cmd);

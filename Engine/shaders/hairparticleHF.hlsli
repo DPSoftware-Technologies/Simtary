@@ -12,7 +12,7 @@ struct VertexToPixel
 	precise float4 pos : SV_POSITION;
 	float2 tex : TEXCOORD;
 	half4 nor_wet : NORMAL_WET;
-	float clip : SV_ClipDistance0;
+	float clip : ST_CLIP_DISTANCE;
 	nointerpolation float fade : DITHERFADE;
 	nointerpolation uint primitiveID : PRIMITIVEID;
 	

@@ -57,6 +57,11 @@ option(SIMTARY_LARGE_WORLD "Store absolute world positions in 64-bit precision" 
 
 option(WICKED_DYNAMIC_LIBRARY "Build the engine as a dynamic library" OFF)
 option(WICKED_PIC "Build the engine as position-independent code" WICKED_DYNAMIC_LIBRARY)
+# Android: everything ends up inside libmain.so, a shared object, so every static
+# archive linked into it has to be position-independent.
+if (ANDROID)
+    set(WICKED_PIC ON CACHE BOOL "" FORCE)
+endif()
 option(USE_LIBCXX "Link the engine to llvm libc++ library - only available with the Clang compiler" OFF)
 
 option(WICKED_ENABLE_IPO "Enable IPO/LTO in non-debug builds" NO)
@@ -167,7 +172,12 @@ foreach(_entry IN LISTS _dep_markers)
     endif()
 endforeach()
 
-set(SENTRY_BACKEND           crashpad CACHE STRING "" FORCE)
+# Crashpad has no Android port; sentry-native's in-process handler does.
+if (ANDROID)
+    set(SENTRY_BACKEND       inproc   CACHE STRING "" FORCE)
+else()
+    set(SENTRY_BACKEND       crashpad CACHE STRING "" FORCE)
+endif()
 set(SENTRY_BUILD_SHARED_LIBS OFF      CACHE BOOL   "" FORCE)
 set(SENTRY_BUILD_TESTS       OFF      CACHE BOOL   "" FORCE)
 set(SENTRY_BUILD_EXAMPLES    OFF      CACHE BOOL   "" FORCE)
@@ -308,8 +318,8 @@ if (SIMTARY_ENABLE_STEAMAUDIO)
         set(_sa_root "${_sa_root}/steamaudio")
     endif()
 
-    # Platform subdirectory inside lib/. Only the desktop targets this workspace
-    # builds for are mapped; add android-*/ios here if a project ever needs them.
+    # Platform subdirectory inside lib/. Desktop targets plus Android; add ios here if a
+    # project ever needs it.
     if (WIN32)
         if (CMAKE_SIZEOF_VOID_P EQUAL 8)
             set(_sa_libdir "windows-x64")
@@ -318,6 +328,16 @@ if (SIMTARY_ENABLE_STEAMAUDIO)
         endif()
         set(_sa_shared "${_sa_root}/lib/${_sa_libdir}/phonon.dll")
         set(_sa_implib "${_sa_root}/lib/${_sa_libdir}/phonon.lib")
+    elseif (ANDROID)
+        if (CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a")
+            set(_sa_libdir "android-armv7")
+        elseif (CMAKE_ANDROID_ARCH_ABI STREQUAL "x86_64")
+            set(_sa_libdir "android-x64")
+        else()
+            set(_sa_libdir "android-armv8")
+        endif()
+        set(_sa_shared "${_sa_root}/lib/${_sa_libdir}/libphonon.so")
+        set(_sa_implib "${_sa_shared}")
     elseif (APPLE)
         set(_sa_libdir "osx")
         set(_sa_shared "${_sa_root}/lib/${_sa_libdir}/libphonon.dylib")
@@ -863,72 +883,95 @@ include(SimtaryApp)
 # It links Framework/io only, never the engine, so it builds in seconds and can run
 # before any engine target exists. zstd is compiled into it directly for the same
 # reason (tools/stpack_zstd.cpp).
-add_executable(stpack
-    tools/stpack.cpp
-    tools/stpack_zstd.cpp
-    Framework/io/Nbt.cpp
-    Framework/io/asset/AssetPack.cpp
-    Framework/io/asset/AssetPackWriter.cpp
-    Framework/io/asset/SceneDescriptor.cpp
-)
-target_include_directories(stpack PRIVATE Framework Engine)
-target_link_libraries(stpack PRIVATE Simtary::AppFlags)
-set_target_properties(stpack PROPERTIES FOLDER "Simtary/Tools")
-# zstd is third-party C: it must not inherit the /W3 the app flags carry, or every
-# build of it buries the real warnings under a few hundred of its own.
-if (MSVC)
-    set_source_files_properties(tools/stpack_zstd.cpp PROPERTIES COMPILE_OPTIONS "/w")
+# Cross builds (Android): both tools run on the BUILD machine, so a copy compiled for
+# the device is useless. They come from a host build of the same workspace instead -
+# SIMTARY_HOST_TOOLS_DIR names the folder holding stpack and stshaderc (with
+# dxcompiler beside it), e.g. <project>/build/win_x86-64/_simtary/Release.
+if (CMAKE_CROSSCOMPILING)
+    set(SIMTARY_HOST_TOOLS_DIR "" CACHE PATH "Host-built stpack/stshaderc for cross builds")
+    if (CMAKE_HOST_WIN32)
+        set(_host_exe ".exe")
+    else()
+        set(_host_exe "")
+    endif()
+    foreach (_tool stpack stshaderc)
+        if (NOT EXISTS "${SIMTARY_HOST_TOOLS_DIR}/${_tool}${_host_exe}")
+            message(FATAL_ERROR "Cross build: no host ${_tool}${_host_exe} in SIMTARY_HOST_TOOLS_DIR "
+                                "('${SIMTARY_HOST_TOOLS_DIR}'). Build the desktop preset first.")
+        endif()
+        add_executable(${_tool} IMPORTED GLOBAL)
+        set_target_properties(${_tool} PROPERTIES
+            IMPORTED_LOCATION "${SIMTARY_HOST_TOOLS_DIR}/${_tool}${_host_exe}")
+    endforeach()
+    message(STATUS "Simtary: host tools from ${SIMTARY_HOST_TOOLS_DIR}")
 else()
-    set_source_files_properties(tools/stpack_zstd.cpp PROPERTIES COMPILE_OPTIONS "-w")
-endif()
+    add_executable(stpack
+        tools/stpack.cpp
+        tools/stpack_zstd.cpp
+        Framework/io/Nbt.cpp
+        Framework/io/asset/AssetPack.cpp
+        Framework/io/asset/AssetPackWriter.cpp
+        Framework/io/asset/SceneDescriptor.cpp
+    )
+    target_include_directories(stpack PRIVATE Framework Engine)
+    target_link_libraries(stpack PRIVATE Simtary::AppFlags)
+    set_target_properties(stpack PROPERTIES FOLDER "Simtary/Tools")
+    # zstd is third-party C: it must not inherit the /W3 the app flags carry, or every
+    # build of it buries the real warnings under a few hundred of its own.
+    if (MSVC)
+        set_source_files_properties(tools/stpack_zstd.cpp PROPERTIES COMPILE_OPTIONS "/w")
+    else()
+        set_source_files_properties(tools/stpack_zstd.cpp PROPERTIES COMPILE_OPTIONS "-w")
+    endif()
 
-# stshaderc: the framework's shader compiler
-# One HLSL file -> DXIL or SPIR-V, through wi::shadercompiler and the dxcompiler.dll
-# vendored in Engine/. It replaced a direct dxc.exe call in simtary_compile_shader for
-# two reasons: the Windows SDK's dxc.exe cannot emit SPIR-V at all, which left a Windows
-# machine with no Vulkan SDK unable to build the framework's shaders for a Vulkan run;
-# and the DX12 root signature and Vulkan binding shifts now come from the engine's own
-# constants instead of a copy of them in CMake.
-#
-# Outside SIMTARY_BUILD_TESTS for the same reason stpack is: a game adds this workspace
-# EXCLUDE_FROM_ALL, and its shader step depends on this tool.
-add_executable(stshaderc tools/stshaderc.cpp)
-target_link_libraries(stshaderc PRIVATE Simtary::AppFlags Simtary_ext_shaders)
-set_target_properties(stshaderc PROPERTIES FOLDER "Simtary/Tools")
+    # stshaderc: the framework's shader compiler
+    # One HLSL file -> DXIL or SPIR-V, through wi::shadercompiler and the dxcompiler.dll
+    # vendored in Engine/. It replaced a direct dxc.exe call in simtary_compile_shader for
+    # two reasons: the Windows SDK's dxc.exe cannot emit SPIR-V at all, which left a Windows
+    # machine with no Vulkan SDK unable to build the framework's shaders for a Vulkan run;
+    # and the DX12 root signature and Vulkan binding shifts now come from the engine's own
+    # constants instead of a copy of them in CMake.
+    #
+    # Outside SIMTARY_BUILD_TESTS for the same reason stpack is: a game adds this workspace
+    # EXCLUDE_FROM_ALL, and its shader step depends on this tool.
+    add_executable(stshaderc tools/stshaderc.cpp)
+    target_link_libraries(stshaderc PRIVATE Simtary::AppFlags Simtary_ext_shaders)
+    set_target_properties(stshaderc PROPERTIES FOLDER "Simtary/Tools")
 
-# dxcompiler is loaded BY NAME at runtime (wiShaderCompiler.cpp), and the loader looks
-# in the calling executable's own directory first - which is this one, not the Engine
-# binary directory the engine's own copy lands in. Named by file rather than through
-# Engine's `dxcompiler` imported target: that target is not GLOBAL, so it does not
-# exist in this scope.
-if (WIN32)
-    set(SIMTARY_DXCOMPILER "${CMAKE_CURRENT_SOURCE_DIR}/Engine/dxcompiler.dll")
-elseif (APPLE)
-    set(SIMTARY_DXCOMPILER "${CMAKE_CURRENT_SOURCE_DIR}/Engine/libdxcompiler.dylib")
-else()
-    set(SIMTARY_DXCOMPILER "${CMAKE_CURRENT_SOURCE_DIR}/Engine/libdxcompiler.so")
-endif()
-# It links the engine, so its import table pulls in the engine's own runtime libraries
-# even though a shader compile touches neither audio nor a window. They go next to the
-# tool rather than being found through a working directory, because the working
-# directory a shader build step runs in is this one (see simtary_compile_shader).
-add_custom_command(TARGET stshaderc POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${SIMTARY_DXCOMPILER}" $<TARGET_FILE_DIR:stshaderc>
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:stshaderc>
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:OpenAL> $<TARGET_FILE_DIR:stshaderc>
-    COMMENT "Copying dxcompiler + runtime libraries next to stshaderc"
-    VERBATIM
-)
-if (TARGET SteamAudio)
+    # dxcompiler is loaded BY NAME at runtime (wiShaderCompiler.cpp), and the loader looks
+    # in the calling executable's own directory first - which is this one, not the Engine
+    # binary directory the engine's own copy lands in. Named by file rather than through
+    # Engine's `dxcompiler` imported target: that target is not GLOBAL, so it does not
+    # exist in this scope.
+    if (WIN32)
+        set(SIMTARY_DXCOMPILER "${CMAKE_CURRENT_SOURCE_DIR}/Engine/dxcompiler.dll")
+    elseif (APPLE)
+        set(SIMTARY_DXCOMPILER "${CMAKE_CURRENT_SOURCE_DIR}/Engine/libdxcompiler.dylib")
+    else()
+        set(SIMTARY_DXCOMPILER "${CMAKE_CURRENT_SOURCE_DIR}/Engine/libdxcompiler.so")
+    endif()
+    # It links the engine, so its import table pulls in the engine's own runtime libraries
+    # even though a shader compile touches neither audio nor a window. They go next to the
+    # tool rather than being found through a working directory, because the working
+    # directory a shader build step runs in is this one (see simtary_compile_shader).
     add_custom_command(TARGET stshaderc POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${SIMTARY_STEAMAUDIO_RUNTIME}" $<TARGET_FILE_DIR:stshaderc>
-        COMMENT "Copying Steam Audio runtime library next to stshaderc"
+            "${SIMTARY_DXCOMPILER}" $<TARGET_FILE_DIR:stshaderc>
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:stshaderc>
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:OpenAL> $<TARGET_FILE_DIR:stshaderc>
+        COMMENT "Copying dxcompiler + runtime libraries next to stshaderc"
         VERBATIM
     )
+    if (TARGET SteamAudio)
+        add_custom_command(TARGET stshaderc POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${SIMTARY_STEAMAUDIO_RUNTIME}" $<TARGET_FILE_DIR:stshaderc>
+            COMMENT "Copying Steam Audio runtime library next to stshaderc"
+            VERBATIM
+        )
+    endif()
 endif()
 
 # Framework tests + tools

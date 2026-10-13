@@ -163,7 +163,11 @@ std::unique_ptr<wi::graphics::GraphicsDevice> CreateGraphicsDevice(
     // the lens flare, the projector and laser passes - resolves through it.
     if (api == GraphicsAPI::Vulkan) {
 #ifdef Simtary_BUILD_VULKAN
+#ifdef __ANDROID__
+        wi::renderer::SetShaderPath(wi::renderer::GetShaderPath() + "spirv_mobile/"); // SIMTARY_MOBILE set
+#else
         wi::renderer::SetShaderPath(wi::renderer::GetShaderPath() + "spirv/");
+#endif
         device = std::make_unique<wi::graphics::GraphicsDevice_Vulkan>(window, validation, preference);
 #endif
     } else {

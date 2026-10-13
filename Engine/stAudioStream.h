@@ -41,19 +41,24 @@
 
 namespace st::audio
 {
+	struct StreamConfig
+	{
+		bool loop = false;
+		float volume = 1.0f;
+		Submix submix = Submix::Music;
+		// Spatial streams work, and cost what any 3D emitter costs. Music wants
+		// false; a jukebox standing in the world wants true.
+		bool spatial = false;
+		std::string name = "stream";
+	};
+
 	class StreamPlayer
 	{
 	public:
-		struct Config
-		{
-			bool loop = false;
-			float volume = 1.0f;
-			Submix submix = Submix::Music;
-			// Spatial streams work, and cost what any 3D emitter costs. Music wants
-			// false; a jukebox standing in the world wants true.
-			bool spatial = false;
-			std::string name = "stream";
-		};
+		// Declared outside the class (StreamConfig, just above): clang
+		// refuses a default argument built from a nested struct's member initializers
+		// while the enclosing class is still incomplete.
+		using Config = StreamConfig;
 
 		StreamPlayer();
 		~StreamPlayer();

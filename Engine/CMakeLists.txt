@@ -24,6 +24,15 @@ option(USE_TZCNT "Enable TZCNT" ON)
 option(USE_F16C "Enable F16C" ON)
 option(USE_FMADD "Enable FMADD" ON)
 
+# SIMTARY: the options above are x86 instruction sets. On an ARM target (Android) they
+# would make DirectXMath and the spin lock include the SSE headers, which do not exist
+# there; DirectXMath picks NEON by itself once they are off.
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64|arm.*)$")
+    foreach (_x86_opt USE_SSE4_1 USE_SSE4_2 USE_AVX USE_AVX2 USE_AVX512 USE_LZCNT USE_TZCNT USE_F16C USE_FMADD)
+        set(${_x86_opt} OFF CACHE BOOL "" FORCE)
+    endforeach()
+endif()
+
 if (WICKED_DYNAMIC_LIBRARY)
     if (WIN32)
         message(WARNING "WICKED_DYNAMIC_LIBRARY is not supported on Windows/MSVC (no dllexport annotations). Falling back to static.")
@@ -43,12 +52,14 @@ if (WIN32)
             /bigobj
         )
     endif()
-else ()
-    find_package(SDL2 REQUIRED)
 endif()
 
 if (NOT WIN32)
-    find_package(SDL2 REQUIRED)
+    # SIMTARY: the workspace builds SDL2 from libs/SDL2 before this directory, so the
+    # target already exists; only look for a system SDL2 when it does not (Android has none).
+    if (NOT TARGET SDL2::SDL2)
+        find_package(SDL2 REQUIRED)
+    endif()
     find_package(OpenImageDenoise "${MIN_OpenImageDenoise_VERSION}" QUIET)
     find_package(Threads REQUIRED)
     if(NOT ${OpenImageDenoise_FOUND})
@@ -72,7 +83,14 @@ if (NOT WIN32)
     endif()
 
     # minimum sdl version is 2.0.14 for controller LED support
-    if((${SDL_VERSION_MAJOR} GREATER_EQUAL 2) AND (${SDL2_VERSION_MINOR} GREATER_EQUAL 0) AND (${SDL2_VERSION_PATCH} GREATER_EQUAL 14))
+    # SIMTARY: the in-tree libs/SDL2 sets no SDL2_VERSION_* variables (and the original
+    # test mixed SDL_ and SDL2_ prefixes), so compare a whole version string, and treat
+    # the vendored SDL2 - 2.30-series - as new enough.
+    if (DEFINED SDL2_VERSION AND NOT "${SDL2_VERSION}" STREQUAL "")
+        if (SDL2_VERSION VERSION_GREATER_EQUAL "2.0.14")
+            add_compile_definitions(SDL2_FEATURE_CONTROLLER_LED=1)
+        endif()
+    elseif (TARGET SDL2)
         add_compile_definitions(SDL2_FEATURE_CONTROLLER_LED=1)
     endif()
 endif()
@@ -333,6 +351,14 @@ set_property(TARGET dxcompiler PROPERTY
 
 add_executable(offlineshadercompiler
     offlineshadercompiler.cpp
+)
+# SIMTARY: dxcompiler is loaded by name from the EXECUTABLE's own directory. With a
+# multi-config generator that is <bin>/Release, not <bin> where the copy below lands, so
+# without this every compile failed - silently, because the games' warm step runs it with
+# "quiet" - and edited shaders never reached the cache.
+add_custom_command(
+    TARGET offlineshadercompiler POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/${LIBDXCOMPILER} $<TARGET_FILE_DIR:offlineshadercompiler>
 )
 
 # Copy the shader library next to the executable

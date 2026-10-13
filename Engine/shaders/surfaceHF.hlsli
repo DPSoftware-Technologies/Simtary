@@ -344,7 +344,7 @@ struct Surface
 		if (prim.instanceIndex >= GetScene().instanceCount)
 			return false;
 		inst = load_instance(prim.instanceIndex);
-		if (uid_validate != 0 && inst.uid != uid_validate)
+		if (uid_validate != 0 && inst.uid.x != uid_validate)
 			return false;
 
 		uint geometryIndex = inst.geometryOffset + prim.subsetIndex;

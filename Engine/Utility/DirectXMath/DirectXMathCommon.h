@@ -23,12 +23,12 @@
 #   else
 #       define BUILD_PLATFORM_OSX 1
 #   endif
+#elif defined(__ANDROID__) // SIMTARY: before __linux__, which Android also defines
+#   define BUILD_PLATFORM_ANDROID 1
 #elif defined(__linux__) || defined(__gnu_linux__) || defined(linux)
 #   define BUILD_PLATFORM_LINUX 1
 #elif defined(__unix__)
 #   define BUILD_PLATFORM_UNIX 1
-#elif defined(__ANDROID__)
-#   define BUILD_PLATFORM_ANDROID 1
 #endif
 
 /*
@@ -41,6 +41,13 @@
 #if defined(BUILD_PLATFORM_WIN)
 #   if !defined(BUILD_INTRINSICS_LEVEL)
 #       define BUILD_INTRINSICS_LEVEL 3
+#   endif
+#elif defined(BUILD_PLATFORM_ANDROID)
+    // SIMTARY: this copy's NEON path only compiles under MSVC (it leans on MSVC's loose
+    // NEON vector conversions and _ex intrinsics). Scalar until DirectXMath is updated
+    // to an upstream release with clang ARM64 support; Jolt keeps its own NEON code.
+#   if !defined(BUILD_INTRINSICS_LEVEL)
+#       define BUILD_INTRINSICS_LEVEL 0
 #   endif
 #else
 #   if !defined(BUILD_INTRINSICS_LEVEL)

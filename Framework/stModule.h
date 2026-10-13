@@ -118,6 +118,19 @@ typedef const stModuleDesc* (*stModuleEntryFn)(void);
         return &stModuleDescriptor;                                             \
     }
 
+#elif defined(__ANDROID__)
+
+// Android: SDL's Java activity loads libmain.so and calls SDL_main in it by name, so
+// that is the entry point - exported, C linkage, no main() at all.
+#define ST_APP_ENTRY(AppClass, ConfigureFn)                                     \
+    extern "C" __attribute__((visibility("default")))                           \
+    int SDL_main (int argc, char* argv[]) {                                     \
+        ::st::AppConfig config;                                                 \
+        ConfigureFn(config);                                                    \
+        AppClass app;                                                           \
+        return ::st::Run(argc, argv, config, app);                              \
+    }
+
 #else
 
 #define ST_APP_ENTRY(AppClass, ConfigureFn)                                     \

@@ -354,7 +354,7 @@ struct PixelInput
 // Reminder: SV_ClipDistance0 is not required in pixel shader, so it can be stripped out even though it is still used by rasterizer
 #ifndef OBJECTSHADER_COMPILE_PS
 #ifdef OBJECTSHADER_USE_CLIPPLANE
-	float clip : SV_ClipDistance0;
+	float clip : ST_CLIP_DISTANCE;
 #endif // OBJECTSHADER_USE_CLIPPLANE
 #endif // OBJECTSHADER_COMPILE_PS
 
@@ -1133,6 +1133,15 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	color.rgb = mul(saturationMatrix(material.GetSaturation()), color.rgb);
 
 	color = saturateMediump(color);
+
+#if defined(SIMTARY_MOBILE) && defined(DISABLE_ALPHATEST) && !defined(PREPASS) && !defined(ENVMAPRENDERING)
+	// SIMTARY: Mali-G68 (driver r38.1) miscompiles the opaque object shader into code that
+	// faults the GPU (VK_ERROR_DEVICE_LOST in the first frame) unless the exit is shaped
+	// like this. Nothing below runs for an opaque object anyway (no alpha test, no
+	// coverage), so this changes no result - only what the driver's compiler is handed.
+	// Found by bisecting the shader on the device; see Simtary/PORTING-ANDROID.md.
+	[branch] if (input.pos.x >= 0) return color;
+#endif
 
 	half alphatest = material.GetAlphaTest() + meshinstance.GetAlphaTest();
 

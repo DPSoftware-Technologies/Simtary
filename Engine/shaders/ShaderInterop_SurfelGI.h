@@ -57,7 +57,11 @@ struct alignas(16) Surfel
 // This per-surfel structure will store all additional persistent data per surfel that isn't needed at GI lookup
 struct SurfelData
 {
+#ifdef __cplusplus
 	uint64_t uid;
+#else
+	uint2 uid; // SIMTARY: see ShaderMeshInstance::uid
+#endif // __cplusplus
 	uint2 primitiveID;
 
 	uint bary;

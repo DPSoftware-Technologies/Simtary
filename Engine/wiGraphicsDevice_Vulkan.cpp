@@ -1,11 +1,19 @@
 #include "wiGraphicsDevice_Vulkan.h"
+#include "stTextureFallback.h"
 
 // pipeline state cache can be enabled here for Vulkan, but now it seems slower than not using it, so it's disabled by default:
 //#define VULKAN_PIPELINE_CACHE_ENABLED
+#if defined(__ANDROID__) && !defined(VULKAN_PIPELINE_CACHE_ENABLED)
+// SIMTARY: desktop drivers keep their own shader caches; Android Vulkan drivers do not, and
+// Mali-G68 takes ~3 minutes to build the renderer's pipelines from scratch. With the cache
+// (<cwd>/pso_cache_vulkan, the app's data folder) only the first launch pays it.
+#define VULKAN_PIPELINE_CACHE_ENABLED
+#endif
 
 #ifdef Simtary_BUILD_VULKAN
 #include "wiVersion.h"
 #include "wiTimer.h"
+#include "wiArguments.h"
 #include "wiUnorderedSet.h"
 
 #include "Utility/spirv_reflect.h"
@@ -891,6 +899,7 @@ namespace vulkan_internal
 		VkPipelineShaderStageCreateInfo stageInfo = {};
 		GraphicsDevice_Vulkan::PSOLayout layout;
 		std::string entrypoint;
+		std::string debug_name; // SIMTARY: kept even without debug utils, for driver-crash logs
 
 		~Shader_Vulkan()
 		{
@@ -1147,6 +1156,18 @@ namespace vulkan_internal
 			internal_state->swapChainExtent.height = std::max(swapchain_capabilities.minImageExtent.height, std::min(swapchain_capabilities.maxImageExtent.height, internal_state->swapChainExtent.height));
 		}
 
+		// SIMTARY: a tablet whose panel is natively portrait reports a 90 degree
+		// currentTransform while the app is landscape (Mali-G68 / SM-X510: transform
+		// ROTATE_90, currentExtent already the app's 2304x1440). The renderer never rotates
+		// what it draws, so it asks for IDENTITY and lets the compositor rotate. (Rendering
+		// pre-rotated saves the compositor's pass; it needs every viewport, scissor and
+		// projection rotated.)
+		VkSurfaceTransformFlagBitsKHR preTransform = swapchain_capabilities.currentTransform;
+		if (swapchain_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+		{
+			preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+		}
+
 		uint32_t imageCount = std::max(internal_state->desc.buffer_count, swapchain_capabilities.minImageCount);
 		if ((swapchain_capabilities.maxImageCount > 0) && (imageCount > swapchain_capabilities.maxImageCount))
 		{
@@ -1163,8 +1184,21 @@ namespace vulkan_internal
 		createInfo.imageArrayLayers = 1;
 		createInfo.imageUsage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 		createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		// SIMTARY: OPAQUE is not universal - Android surfaces commonly offer only INHERIT.
 		createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-		createInfo.preTransform = swapchain_capabilities.currentTransform;
+		if (!(swapchain_capabilities.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR))
+		{
+			const VkCompositeAlphaFlagBitsKHR fallbacks[] = { VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR, VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR, VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR };
+			for (VkCompositeAlphaFlagBitsKHR alpha : fallbacks)
+			{
+				if (swapchain_capabilities.supportedCompositeAlpha & alpha)
+				{
+					createInfo.compositeAlpha = alpha;
+					break;
+				}
+			}
+		}
+		createInfo.preTransform = preTransform;
 
 		createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR; // The only one that is always supported
 		if (!internal_state->desc.vsync)
@@ -1375,7 +1409,7 @@ using namespace vulkan_internal;
 		info.pPushConstantRanges = &range;
 		info.pushConstantRangeCount = 1;
 		info.pSetLayouts = descriptor_set_layouts;
-		info.setLayoutCount = arraysize(descriptor_set_layouts);
+		info.setLayoutCount = descriptor_set_count;
 		vulkan_check(vkCreatePipelineLayout(device, &info, nullptr, &layout.pipeline_layout));
 
 		static uint32_t next_layout_id = 0;
@@ -1447,7 +1481,56 @@ using namespace vulkan_internal;
 			submitInfo.signalSemaphoreInfoCount = (uint32_t)submit_signalSemaphoreInfos.size();
 			submitInfo.pSignalSemaphoreInfos = submit_signalSemaphoreInfos.data();
 
-			vulkan_check(vkQueueSubmit2(queue, 1, &submitInfo, fence));
+			if (device->breadcrumbs && submit_cmds.size() > 0)
+			{
+				// One command buffer per submit: waits on the first, signals + the frame
+				// fence on the last, a fence of our own on each, waited for up to 3 s.
+				for (size_t i = 0; i < submit_cmds.size(); ++i)
+				{
+					const bool first = i == 0;
+					const bool last = i + 1 == submit_cmds.size();
+					VkSubmitInfo2 one = {};
+					one.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+					one.commandBufferInfoCount = 1;
+					one.pCommandBufferInfos = &submit_cmds[i];
+					one.waitSemaphoreInfoCount = first ? (uint32_t)submit_waitSemaphoreInfos.size() : 0;
+					one.pWaitSemaphoreInfos = first ? submit_waitSemaphoreInfos.data() : nullptr;
+					one.signalSemaphoreInfoCount = last ? (uint32_t)submit_signalSemaphoreInfos.size() : 0;
+					one.pSignalSemaphoreInfos = last ? submit_signalSemaphoreInfos.data() : nullptr;
+
+					VkFenceCreateInfo fenceInfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+					VkFence crumbFence = VK_NULL_HANDLE;
+					vkCreateFence(device->device, &fenceInfo, nullptr, &crumbFence);
+					VkResult res = vkQueueSubmit2(queue, 1, &one, crumbFence);
+					if (res == VK_SUCCESS)
+						res = vkWaitForFences(device->device, 1, &crumbFence, VK_TRUE, 3000000000ull);
+					vkDestroyFence(device->device, crumbFence, nullptr);
+
+					std::string labels;
+					{
+						std::scoped_lock crumbLock(device->breadcrumb_locker);
+						auto it = device->breadcrumb_labels.find(submit_cmds[i].commandBuffer);
+						if (it != device->breadcrumb_labels.end())
+						{
+							labels = it->second;
+							device->breadcrumb_labels.erase(it);
+						}
+					}
+					if (res != VK_SUCCESS)
+					{
+						wilog_error("GPU BREADCRUMB: command buffer %u/%u on queue %p failed with %s. Its passes: %s",
+							(unsigned)(i + 1), (unsigned)submit_cmds.size(), (void*)queue, string_VkResult(res), labels.empty() ? "(no labels)" : labels.c_str());
+					}
+					if (last && fence != VK_NULL_HANDLE)
+					{
+						vulkan_check(vkQueueSubmit2(queue, 0, nullptr, fence)); // frame fence after everything
+					}
+				}
+			}
+			else
+			{
+				vulkan_check(vkQueueSubmit2(queue, 1, &submitInfo, fence));
+			}
 
 			submit_waitSemaphoreInfos.clear();
 			submit_signalSemaphoreInfos.clear();
@@ -1907,7 +1990,7 @@ using namespace vulkan_internal;
 			bindPoint,
 			commandlist.layout.pipeline_layout,
 			0,
-			arraysize(descriptor_sets.sets),
+			device->descriptor_set_count,
 			descriptor_sets.sets,
 			device->dynamic_cbv_count,
 			uniform_buffer_dynamic_offsets
@@ -1980,6 +2063,7 @@ using namespace vulkan_internal;
 	GraphicsDevice_Vulkan::GraphicsDevice_Vulkan(wi::platform::window_type window, ValidationMode validationMode_, GPUPreference preference)
 	{
 		wi::Timer timer;
+		breadcrumbs = wi::arguments::HasArgument("gpu_breadcrumbs"); // SIMTARY: see breadcrumb_labels
 		capabilities |= GraphicsDeviceCapability::ALIASING_GENERIC;
 
 		// This functionalty is missing from Vulkan but might be added in the future:
@@ -3276,22 +3360,27 @@ using namespace vulkan_internal;
 			assert(features_1_2.shaderUniformTexelBufferArrayNonUniformIndexing == VK_TRUE);
 			assert(features_1_2.shaderStorageTexelBufferArrayNonUniformIndexing == VK_TRUE);
 
-			allocationhandler->bindlessSamplers.init(this, VK_DESCRIPTOR_TYPE_SAMPLER, std::min(BINDLESS_SAMPLER_CAPACITY, properties_1_2.maxDescriptorSetUpdateAfterBindSampledImages));
+			// SIMTARY: the limits below are for the whole pipeline layout, and set 0 adds its
+			// own CBVs/SRVs/UAVs on top of the bindless arrays. A desktop limit (~1M+) never
+			// noticed; Mali-G68 reports exactly 500000, which the bindless arrays filled
+			// alone - the layout then exceeded it by set 0's 32 bindings.
+			auto headroom = [](uint32_t limit) { return limit > 2048u ? limit - 1024u : limit; };
+			allocationhandler->bindlessSamplers.init(this, VK_DESCRIPTOR_TYPE_SAMPLER, std::min(BINDLESS_SAMPLER_CAPACITY, headroom(properties_1_2.maxDescriptorSetUpdateAfterBindSampledImages)));
 			descriptor_sets.sets[DESCRIPTOR_SET_BINDLESS_SAMPLER] = allocationhandler->bindlessSamplers.descriptorSet;
 
-			allocationhandler->bindlessStorageBuffers.init(this, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, std::min(BINDLESS_RESOURCE_CAPACITY, properties_1_2.maxDescriptorSetUpdateAfterBindStorageBuffers));
+			allocationhandler->bindlessStorageBuffers.init(this, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, std::min(BINDLESS_RESOURCE_CAPACITY, headroom(properties_1_2.maxDescriptorSetUpdateAfterBindStorageBuffers)));
 			descriptor_sets.sets[DESCRIPTOR_SET_BINDLESS_STORAGE_BUFFER] = allocationhandler->bindlessStorageBuffers.descriptorSet;
 
-			allocationhandler->bindlessUniformTexelBuffers.init(this, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, std::min(BINDLESS_RESOURCE_CAPACITY, properties_1_2.maxDescriptorSetUpdateAfterBindSampledImages / 2));
+			allocationhandler->bindlessUniformTexelBuffers.init(this, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, std::min(BINDLESS_RESOURCE_CAPACITY, headroom(properties_1_2.maxDescriptorSetUpdateAfterBindSampledImages) / 2));
 			descriptor_sets.sets[DESCRIPTOR_SET_BINDLESS_UNIFORM_TEXEL_BUFFER] = allocationhandler->bindlessUniformTexelBuffers.descriptorSet;
 
-			allocationhandler->bindlessSampledImages.init(this, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, std::min(BINDLESS_RESOURCE_CAPACITY, properties_1_2.maxDescriptorSetUpdateAfterBindSampledImages / 2));
+			allocationhandler->bindlessSampledImages.init(this, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, std::min(BINDLESS_RESOURCE_CAPACITY, headroom(properties_1_2.maxDescriptorSetUpdateAfterBindSampledImages) / 2));
 			descriptor_sets.sets[DESCRIPTOR_SET_BINDLESS_SAMPLED_IMAGE] = allocationhandler->bindlessSampledImages.descriptorSet;
 
-			allocationhandler->bindlessStorageImages.init(this, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, std::min(BINDLESS_RESOURCE_CAPACITY, properties_1_2.maxDescriptorSetUpdateAfterBindStorageImages / 2));
+			allocationhandler->bindlessStorageImages.init(this, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, std::min(BINDLESS_RESOURCE_CAPACITY, headroom(properties_1_2.maxDescriptorSetUpdateAfterBindStorageImages) / 2));
 			descriptor_sets.sets[DESCRIPTOR_SET_BINDLESS_STORAGE_IMAGE] = allocationhandler->bindlessStorageImages.descriptorSet;
 
-			allocationhandler->bindlessStorageTexelBuffers.init(this, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, std::min(BINDLESS_RESOURCE_CAPACITY, properties_1_2.maxDescriptorSetUpdateAfterBindStorageImages / 2));
+			allocationhandler->bindlessStorageTexelBuffers.init(this, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, std::min(BINDLESS_RESOURCE_CAPACITY, headroom(properties_1_2.maxDescriptorSetUpdateAfterBindStorageImages) / 2));
 			descriptor_sets.sets[DESCRIPTOR_SET_BINDLESS_STORAGE_TEXEL_BUFFER] = allocationhandler->bindlessStorageTexelBuffers.descriptorSet;
 
 			if (CheckCapability(GraphicsDeviceCapability::RAYTRACING))
@@ -3303,6 +3392,13 @@ using namespace vulkan_internal;
 			{
 				// Unused, set dummy sampler set:
 				descriptor_sets.sets[DESCRIPTOR_SET_BINDLESS_ACCELERATION_STRUCTURE] = allocationhandler->bindlessSamplers.descriptorSet;
+				// SIMTARY: and do not bind it at all - see descriptor_set_count.
+				descriptor_set_count = DESCRIPTOR_SET_BINDLESS_ACCELERATION_STRUCTURE;
+			}
+			if (descriptor_set_count > properties2.properties.limits.maxBoundDescriptorSets)
+			{
+				wilog_messagebox("This GPU allows %u bound descriptor sets; the renderer needs %u.",
+					properties2.properties.limits.maxBoundDescriptorSets, descriptor_set_count);
 			}
 		}
 
@@ -3439,16 +3535,7 @@ using namespace vulkan_internal;
 
 		if (pipelineCache != VK_NULL_HANDLE)
 		{
-			// Get size of pipeline cache
-			size_t size{};
-			vulkan_check(vkGetPipelineCacheData(device, pipelineCache, &size, nullptr));
-
-			// Get data of pipeline cache
-			wi::vector<uint8_t> data(size);
-			vulkan_check(vkGetPipelineCacheData(device, pipelineCache, &size, data.data()));
-
-			// Write pipeline cache data to a file in binary format
-			wi::helper::FileWrite(get_shader_cache_path(), data.data(), size);
+			SavePipelineCache();
 
 			// Destroy Vulkan pipeline cache
 			vkDestroyPipelineCache(device, pipelineCache, nullptr);
@@ -3864,6 +3951,23 @@ using namespace vulkan_internal;
 	}
 	bool GraphicsDevice_Vulkan::CreateTexture(const TextureDesc* desc, const SubresourceData* initial_data, Texture* texture, const GPUResource* alias, uint64_t alias_offset) const
 	{
+		// SIMTARY: a BC texture on a GPU without BC sampling (every mobile GPU) - decode on
+		// the CPU instead of failing. See stTextureFallback.h.
+		if (IsFormatBlockCompressed(desc->format) && !CheckCapability(GraphicsDeviceCapability::TEXTURE_COMPRESSION_BC) && alias == nullptr)
+		{
+			TextureDesc decoded = *desc;
+			std::vector<std::vector<uint8_t>> storage;
+			std::vector<SubresourceData> subresources;
+			if (st::texfallback::Decode(decoded, initial_data, storage, subresources))
+				return CreateTexture(&decoded, subresources.data(), texture, alias, alias_offset);
+			// No data to decode (a target filled later): create it uncompressed anyway, so
+			// at least creation succeeds. Whatever copies BC blocks into it is wrong - the
+			// terrain virtual texture is the known case.
+			decoded.format = st::texfallback::DecodedFormat(desc->format);
+			if (decoded.format != desc->format)
+				return CreateTexture(&decoded, initial_data, texture, alias, alias_offset);
+		}
+
 		auto internal_state = wi::allocator::make_shared<Texture_Vulkan>();
 		internal_state->allocationhandler = allocationhandler;
 		internal_state->defaultLayout = _ConvertImageLayout(desc->layout);
@@ -4869,6 +4973,15 @@ using namespace vulkan_internal;
 	}
 	bool GraphicsDevice_Vulkan::CreatePipelineState(const PipelineStateDesc* desc, PipelineState* pso, const RenderPassInfo* renderpass_info) const
 	{
+		// SIMTARY: the object hull/domain shaders bind writable bindless images, which a
+		// tessellation stage may only do with vertexPipelineStoresAndAtomics. Mali-G68 has
+		// no such feature, and handing its compiler those pipelines anyway crashed it
+		// (SIGSEGV in remove_dead_code). No tessellation on such a device: refuse up front.
+		if ((desc->hs != nullptr || desc->ds != nullptr) && features2.features.vertexPipelineStoresAndAtomics != VK_TRUE)
+		{
+			return false;
+		}
+
 		auto internal_state = wi::allocator::make_shared<PipelineState_Vulkan>();
 		internal_state->allocationhandler = allocationhandler;
 		pso->internal_state = internal_state;
@@ -5022,7 +5135,8 @@ using namespace vulkan_internal;
 		switch (rs_desc.fill_mode)
 		{
 		case FillMode::WIREFRAME:
-			rasterizer.polygonMode = VK_POLYGON_MODE_LINE;
+			// SIMTARY: wireframe needs fillModeNonSolid (absent on Mali-G68) - solid instead.
+			rasterizer.polygonMode = features2.features.fillModeNonSolid ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
 			break;
 		case FillMode::SOLID:
 		default:
@@ -5052,6 +5166,9 @@ using namespace vulkan_internal;
 
 		// Depth clip will be enabled via Vulkan 1.1 extension VK_EXT_depth_clip_enable:
 		depthClipStateInfo.depthClipEnable = rs_desc.depth_clip_enable ? VK_TRUE : VK_FALSE;
+		static const bool debug_skyclip = wi::arguments::HasArgument("debug_skyclip"); // SIMTARY bring-up bisect
+		if (debug_skyclip)
+			depthClipStateInfo.depthClipEnable = VK_TRUE;
 
 		if (CheckCapability(GraphicsDeviceCapability::CONSERVATIVE_RASTERIZATION) && rs_desc.conservative_rasterization_enable)
 		{
@@ -5296,7 +5413,22 @@ using namespace vulkan_internal;
 			}
 			pipelineInfo.pNext = &renderingInfo;
 
+#ifdef __ANDROID__
+			// SIMTARY bring-up: the Mali compiler can crash inside this call; a "pso begin"
+			// with no matching "pso end" in logcat names the pipeline that did it.
+			std::string pso_names;
+			for (const Shader* sh : { desc->vs, desc->hs, desc->ds, desc->gs, desc->ps, desc->ms, desc->as })
+			{
+				if (sh != nullptr && sh->IsValid())
+					pso_names += (pso_names.empty() ? "" : " + ") + to_internal(sh)->debug_name;
+			}
+			wilog("pso begin: %s", pso_names.c_str());
+			wi::Timer pso_timer;
+#endif
 			res = vulkan_check(vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &internal_state->pipeline));
+#ifdef __ANDROID__
+			wilog("pso end: %s (%d ms)", pso_names.c_str(), (int)pso_timer.elapsed_milliseconds());
+#endif
 		}
 
 		return res == VK_SUCCESS;
@@ -5899,6 +6031,12 @@ using namespace vulkan_internal;
 		if (format_change != nullptr)
 		{
 			format = *format_change;
+			// SIMTARY: the texture was decoded to RGBA8/RG8/... (stTextureFallback); an sRGB or
+			// typeless BC view of it has to become the same view of the decoded format.
+			if (IsFormatBlockCompressed(format) && !IsFormatBlockCompressed(texture->GetDesc().format))
+			{
+				format = st::texfallback::DecodedFormat(format);
+			}
 		}
 
 		Texture_Vulkan::TextureSubresource subresource;
@@ -6472,6 +6610,8 @@ using namespace vulkan_internal;
 	}
 	void GraphicsDevice_Vulkan::SetName(Shader* shader, const char* name) const
 	{
+		if (shader != nullptr && shader->IsValid() && name != nullptr)
+			to_internal(shader)->debug_name = name;
 		if (!debugUtils || shader == nullptr || !shader->IsValid())
 			return;
 
@@ -6826,6 +6966,23 @@ using namespace vulkan_internal;
 	{
 		vulkan_check(vkDeviceWaitIdle(device));
 	}
+	void GraphicsDevice_Vulkan::SavePipelineCache() const
+	{
+		if (pipelineCache == VK_NULL_HANDLE)
+			return;
+		// Get size of pipeline cache
+		size_t size{};
+		vulkan_check(vkGetPipelineCacheData(device, pipelineCache, &size, nullptr));
+
+		// Get data of pipeline cache
+		wi::vector<uint8_t> data(size);
+		vulkan_check(vkGetPipelineCacheData(device, pipelineCache, &size, data.data()));
+
+		// Write pipeline cache data to a file in binary format
+		wi::helper::FileWrite(get_shader_cache_path(), data.data(), size);
+		wilog("Vulkan: pipeline cache saved (%.1f MB)", double(size) / (1024.0 * 1024.0));
+	}
+
 	void GraphicsDevice_Vulkan::ClearPipelineStateCache()
 	{
 		layout_locker.lock();
@@ -8896,6 +9053,14 @@ using namespace vulkan_internal;
 
 	void GraphicsDevice_Vulkan::EventBegin(const char* name, CommandList cmd)
 	{
+		if (breadcrumbs)
+		{
+			CommandList_Vulkan& crumbs = GetCommandList(cmd);
+			std::scoped_lock lock(breadcrumb_locker);
+			std::string& labels = breadcrumb_labels[crumbs.GetCommandBuffer()];
+			if (labels.size() < 4000)
+				labels += std::string(labels.empty() ? "" : " > ") + name;
+		}
 		if (!debugUtils)
 			return;
 		CommandList_Vulkan& commandlist = GetCommandList(cmd);

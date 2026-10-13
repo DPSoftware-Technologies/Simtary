@@ -24,7 +24,7 @@ struct VertextoPixel_MS
 	float4 pos : SV_POSITION;
 	float4 tex : TEXCOORD0;
 	half2 unrotated_uv : UNROTATED_UV;
-	float clip : SV_ClipDistance0;
+	float clip : ST_CLIP_DISTANCE;
 };
 struct VertextoPixel_MS_PRIM
 {

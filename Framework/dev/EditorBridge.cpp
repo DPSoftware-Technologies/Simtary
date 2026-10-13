@@ -647,6 +647,34 @@ void EditorBridge::RegisterAll () {
         return Value(true);
     });
 
+    Register("material.set", "{id|name, color:[r,g,b,a]?, opacity?, roughness?, metalness?, transmission?, blend=opaque|alpha|premultiplied|additive?}",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        wi::scene::MaterialComponent* m = scene.materials.GetComponent(e);
+        if (m == nullptr) { err = "that entity has no material"; return Value(); }
+        if (a["color"].IsArray()) {
+            XMFLOAT4 c = m->baseColor;
+            c.x = a["color"].At(0).AsFloat(c.x);
+            c.y = a["color"].At(1).AsFloat(c.y);
+            c.z = a["color"].At(2).AsFloat(c.z);
+            c.w = a["color"].At(3).AsFloat(c.w);
+            m->SetBaseColor(c);
+        }
+        if (a.Has("opacity")) m->SetOpacity(a["opacity"].AsFloat());
+        if (a.Has("roughness")) m->SetRoughness(a["roughness"].AsFloat());
+        if (a.Has("metalness")) m->SetMetalness(a["metalness"].AsFloat());
+        if (a.Has("transmission")) m->SetTransmissionAmount(a["transmission"].AsFloat());
+        const std::string blend = a["blend"].AsString();
+        if (blend == "opaque") m->userBlendMode = wi::enums::BLENDMODE_OPAQUE;
+        else if (blend == "alpha") m->userBlendMode = wi::enums::BLENDMODE_ALPHA;
+        else if (blend == "premultiplied") m->userBlendMode = wi::enums::BLENDMODE_PREMULTIPLIED;
+        else if (blend == "additive") m->userBlendMode = wi::enums::BLENDMODE_ADDITIVE;
+        m->SetDirty();
+        return Value(true);
+    });
+
     Register("model.import", "{path, name?, parent?, position?, rotation_deg?, scale?} -> root id", [S](const Value& a, std::string& err) {
         WScene& scene = S();
         const st::model::ImportResult r = st::model::Import(scene, a["path"].AsString());

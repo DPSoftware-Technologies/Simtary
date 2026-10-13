@@ -74,7 +74,11 @@ float computeLod(float pdf, uint width, uint sampleCount)
 	return lod;
 }
 
+#ifdef SIMTARY_MOBILE
+static const uint THREAD_OFFLOAD = 8; // SIMTARY: 8x8x16 = 1024 threads exceeds mobile maxComputeWorkGroupInvocations (512)
+#else
 static const uint THREAD_OFFLOAD = 16;
+#endif // SIMTARY_MOBILE
 groupshared uint2 shared_colors[GENERATEMIPCHAIN_2D_BLOCK_SIZE][GENERATEMIPCHAIN_2D_BLOCK_SIZE][THREAD_OFFLOAD];
 
 [numthreads(GENERATEMIPCHAIN_2D_BLOCK_SIZE, GENERATEMIPCHAIN_2D_BLOCK_SIZE, THREAD_OFFLOAD)]

@@ -14,7 +14,14 @@ struct PostProcess
 	float4 params1;
 };
 
+#if defined(SIMTARY_MOBILE) || defined(__ANDROID__)
+// SIMTARY: 32x32 = 1024 threads exceeds mobile maxComputeWorkGroupInvocations (512). Shared
+// with C++ (dispatch + histogram size), so the Android build and the mobile shader set
+// must agree - SIMTARY_MOBILE for the shaders, __ANDROID__ for the engine.
+static const uint LUMINANCE_BLOCKSIZE = 16;
+#else
 static const uint LUMINANCE_BLOCKSIZE = 32;
+#endif
 static const uint LUMINANCE_NUM_HISTOGRAM_BINS = LUMINANCE_BLOCKSIZE * LUMINANCE_BLOCKSIZE;
 static const uint LUMINANCE_BUFFER_OFFSET_EXPOSURE = 0;
 static const uint LUMINANCE_BUFFER_OFFSET_LUMINANCE = LUMINANCE_BUFFER_OFFSET_EXPOSURE + 4;

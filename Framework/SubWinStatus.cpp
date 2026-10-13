@@ -226,13 +226,27 @@ void SubWinStatus::ThreadMain() {
     UnregisterClassA(CLS, hInst);
 }
 
+#elif defined(__ANDROID__)
+
+// ============================================================================
+//  Android - no second native window exists; the activity owns the one surface.
+//  The thread only idles until Hide(), so Show()/Hide() keep their contract and the
+//  in-game loading screen is what the player sees.
+// ============================================================================
+#include <unistd.h>
+
+void SubWinStatus::ThreadMain() {
+    while (m_running.load())
+        usleep(16000);
+}
+
+#else
+
 // ============================================================================
 //  Linux - Xlib, double-buffered with a backing Pixmap
 //  (True system-native widgets on Linux would need GTK/Qt; this stays
 //   dependency-light and matches the dark loading style.)
 // ============================================================================
-#else
-
 #include <X11/Xlib.h>
 #include <unistd.h>
 

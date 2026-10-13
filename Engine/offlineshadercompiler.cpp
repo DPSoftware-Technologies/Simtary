@@ -379,6 +379,7 @@ struct Target
 {
 	wi::graphics::ShaderFormat format;
 	std::string dir;
+	wi::vector<std::string> extra_defines; // SIMTARY: added to every permutation
 };
 wi::vector<Target> targets;
 wi::unordered_map<std::string, wi::shadercompiler::CompilerOutput> results;
@@ -420,6 +421,7 @@ int main(int argc, char* argv[])
 	*out << "\tshaderdump : \t\tShaders will be saved to wiShaderDump.h C++ header file (can be combined with \"rebuild\")\n";
 	*out << "\tdebuginfo : \t\tKeep symbol data for shader debugging\n";
 	*out << "\tquiet : \t\tOnly print errors\n";
+	*out << "\tspirv_mobile : \tSPIR-V with SIMTARY_MOBILE into shaders/spirv_mobile/ (Android)\n";
 	*out << "\tsm6.1 : \t\tIncrease all compilations to shader model 6.1\n";
 	*out << "\tsm6.2 : \t\tIncrease all compilations to shader model 6.2\n";
 	*out << "\tsm6.3 : \t\tIncrease all compilations to shader model 6.3\n";
@@ -442,6 +444,12 @@ int main(int argc, char* argv[])
 	{
 		targets.push_back({ ShaderFormat::SPIRV, "shaders/spirv/" });
 		*out << "spirv ";
+	}
+	if (wi::arguments::HasArgument("spirv_mobile"))
+	{
+		// SIMTARY: the Android set - SPIR-V built with SIMTARY_MOBILE (no clip distance...)
+		targets.push_back({ ShaderFormat::SPIRV, "shaders/spirv_mobile/", { "SIMTARY_MOBILE" } });
+		*out << "spirv_mobile ";
 	}
 	if (wi::arguments::HasArgument("metal"))
 	{
@@ -689,6 +697,7 @@ int main(int argc, char* argv[])
 					input.include_directories.push_back(SHADERSOURCEPATH + wi::helper::GetDirectoryFromPath(shader.name));
 					input.minshadermodel = std::max(shader.minshadermodel, minshadermodel_override);
 					input.defines = permutation.defines;
+					input.defines.insert(input.defines.end(), target.extra_defines.begin(), target.extra_defines.end());
 
 					if (input.minshadermodel > ShaderModel::SM_5_0 && target.format == ShaderFormat::HLSL5)
 					{

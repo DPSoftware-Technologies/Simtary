@@ -1,6 +1,16 @@
 #ifndef WI_SHADER_GLOBALS_HF
 #define WI_SHADER_GLOBALS_HF
 
+// SIMTARY: shaders/spirv_mobile/ is compiled with SIMTARY_MOBILE (offlineshadercompiler
+// "spirv_mobile"). Mobile GPUs often lack shaderClipDistance (Mali-G68 does), and a shader
+// that declares the capability anyway is invalid there. The clip plane only serves planar
+// reflections, so on mobile it becomes an ordinary varying that clips nothing.
+#ifdef SIMTARY_MOBILE
+#define ST_CLIP_DISTANCE CLIPPLANEDISTANCE
+#else
+#define ST_CLIP_DISTANCE SV_ClipDistance0
+#endif // SIMTARY_MOBILE
+
 #ifdef __SPIRV__
 #define VIEWPORT_INDEX_TYPE int
 #else

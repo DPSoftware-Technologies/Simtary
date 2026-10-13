@@ -18,6 +18,60 @@
 #include <algorithm>
 
 namespace {
+
+// "mobile_minimal" (command line, or `adb shell am start ... --es args mobile_minimal` on
+// Android): every optional render pass and scene effect off. A bring-up tool for a new GPU -
+// get a stable frame first, then turn things back on one at a time to find what breaks.
+bool MobileMinimal() {
+    return wi::arguments::HasArgument("mobile_minimal");
+}
+
+void ApplyMobileMinimal(wi::RenderPath3D& path) {
+    path.setAO(wi::RenderPath3D::AO_DISABLED);
+    path.setSSREnabled(false);
+    path.setSSGIEnabled(false);
+    path.setRaytracedReflectionsEnabled(false);
+    path.setRaytracedDiffuseEnabled(false);
+    path.setReflectionsEnabled(false);
+    path.setShadowsEnabled(false);
+    path.setBloomEnabled(false);
+    path.setDepthOfFieldEnabled(false);
+    path.setMotionBlurEnabled(false);
+    path.setEyeAdaptionEnabled(false);
+    path.setLensFlareEnabled(false);
+    path.setLightShaftsEnabled(false);
+    path.setVolumeLightsEnabled(false);
+    path.setOcclusionCullingEnabled(false);
+    path.setMeshBlendEnabled(false);
+    path.setFSREnabled(false);
+    path.setFXAAEnabled(false);
+    path.setOutlineEnabled(false);
+    path.setVisibilityComputeShadingEnabled(false);
+    wi::renderer::SetDDGIEnabled(false);
+    wi::renderer::SetSurfelGIEnabled(false);
+    wi::renderer::SetTessellationEnabled(false);
+    wi::renderer::SetVariableRateShadingClassification(false);
+    wi::backlog::post("mobile_minimal: optional render passes off");
+}
+
+// Weather is rewritten every frame (DayNight), so its effects are switched off every frame.
+void ApplyMobileMinimalWeather(wi::scene::Scene& scene) {
+    for (size_t i = 0; i < scene.weathers.GetCount(); ++i) {
+        scene.weathers[i].SetVolumetricClouds(false);
+        scene.weathers[i].SetOceanEnabled(false);
+        // per-pixel atmosphere raymarch instead of the sky-view LUT: trips Mali's job timeout
+        scene.weathers[i].SetRealisticSkyHighQuality(false);
+        scene.weathers[i].SetRealisticSkyReceiveShadow(false);
+    }
+    scene.weather.SetVolumetricClouds(false);
+    scene.weather.SetOceanEnabled(false);
+    scene.weather.SetRealisticSkyHighQuality(false);
+    scene.weather.SetRealisticSkyReceiveShadow(false);
+}
+
+} // namespace
+
+namespace {
 // Owned by st::Run for the whole process; null until Run() installs it.
 const st::AppConfig* g_config = nullptr;
 
@@ -314,6 +368,7 @@ void st::App::Initialize() {
     // Get() constructs the manager on first call and its constructor already reads
     // options.stad (in AppData/LocalLow/PlatoonLabs/Milistry) - no explicit Load() needed.
     graphicsSettings.loadAndApply(st::SettingsManager::Get().GraphicsTag(), renderPath, *this);
+    if (MobileMinimal()) ApplyMobileMinimal(renderPath);
     // lensFlare.Init() already ran above; this just fills its settings from disk.
     lensFlare.LoadFrom(st::SettingsManager::Get().SubCompound("lensflare"));
     projectors_.LoadFrom(st::SettingsManager::Get().SubCompound("projectors"));
@@ -475,6 +530,7 @@ void st::App::Update(float dt) {
     }
 
     OnUpdate(dt);
+    if (MobileMinimal()) ApplyMobileMinimalWeather(wi::scene::GetScene());
 
     // After sceneManager.Update: the scene's light system has refreshed the sun's
     // direction and the camera has already moved this frame, so the projected sun

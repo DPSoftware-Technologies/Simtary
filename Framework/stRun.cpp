@@ -21,6 +21,11 @@
 #include <unistd.h>
 #endif
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#include <pthread.h>
+#endif
+
 #ifdef _WIN32
 #include <SDL_syswm.h>
 #include <dwmapi.h>
@@ -92,12 +97,64 @@ void RelaunchSelf(int argc, char* argv[]) {
 #endif
 }
 
+#ifdef __ANDROID__
+// stdout/stderr go nowhere on Android. Everything the engine prints - printf, the
+// backlog's DebugOut (std::cout/cerr) - is pushed through a pipe and out to logcat
+// under the tag "Simtary", one line per entry: `adb logcat -s Simtary`.
+void RedirectStdioToLogcat() {
+    static int pipeFds[2] = { -1, -1 };
+    if (pipeFds[0] != -1) return;
+    setvbuf(stdout, nullptr, _IOLBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+    if (pipe(pipeFds) != 0) return;
+    dup2(pipeFds[1], STDOUT_FILENO);
+    dup2(pipeFds[1], STDERR_FILENO);
+    pthread_t reader;
+    pthread_create(&reader, nullptr, [](void*) -> void* {
+        char buffer[1024];
+        std::string line;
+        ssize_t n;
+        while ((n = read(pipeFds[0], buffer, sizeof(buffer))) > 0) {
+            for (ssize_t i = 0; i < n; ++i) {
+                if (buffer[i] == '\n') {
+                    __android_log_write(ANDROID_LOG_INFO, "Simtary", line.c_str());
+                    line.clear();
+                } else {
+                    line += buffer[i];
+                }
+            }
+        }
+        return nullptr;
+    }, nullptr);
+    pthread_detach(reader);
+}
+
+// Every path the engine uses is relative ("assets/...", "shaders/spirv/..."), so the
+// working directory IS the install. Dev layout: the app's own external files folder
+// (/sdcard/Android/data/<package>/files), which adb can push the data into and which
+// is writable for settings, the shader cache and log.txt.
+void EnterAndroidDataFolder() {
+    const char* dir = SDL_AndroidGetExternalStoragePath();
+    if (dir == nullptr || chdir(dir) != 0)
+        printf("Android: cannot enter the data folder (%s)\n", dir ? dir : SDL_GetError());
+    else
+        printf("Android: data folder %s\n", dir);
+    // The engine's default shader path is built during static initialisation, when the
+    // working directory was still "/" - so it read "//shaders/". Re-derive it here.
+    wi::renderer::SetShaderPath(wi::helper::GetCurrentPath() + "/shaders/");
+}
+#endif
+
 } // namespace
 
 void st::RequestRestart()   { g_restartRequested = true; }
 bool st::RestartRequested() { return g_restartRequested; }
 
 int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
+#ifdef __ANDROID__
+    RedirectStdioToLogcat();
+    EnterAndroidDataFolder();
+#endif
     // Command line first. It used to be parsed after SetWindow(), which is AFTER the
     // graphics device is created - so "vulkan", "dx12", "debugdevice" and the GPU
     // preference flags were all read from an empty argument set and did nothing.
@@ -183,6 +240,9 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     // ask for it. See Framework/render/GraphicsAPI.h.
     const st::GraphicsAPI graphicsAPI = st::ResolveGraphicsAPI(config.graphicsAPI);
     Uint32 windowFlags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+#ifdef __ANDROID__
+    windowFlags |= SDL_WINDOW_FULLSCREEN; // the activity's surface is the whole screen
+#endif
     if (graphicsAPI == st::GraphicsAPI::Vulkan)
         windowFlags |= SDL_WINDOW_VULKAN;
 
@@ -196,7 +256,14 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     }
     // Splash screen. Optional: a project with no splashImage (or a missing file)
     // just gets a blank window until the graphics device comes up.
-    if (!config.splashImage.empty()) {
+#ifdef __ANDROID__
+    // No software splash: an SDL_Renderer on the activity's surface would have to be
+    // torn down before Vulkan can take the same ANativeWindow.
+    const bool showSplash = false;
+#else
+    const bool showSplash = !config.splashImage.empty();
+#endif
+    if (showSplash) {
         // SOFTWARE renderer - Vulkan ain't active yet, use this!
         SDL_Renderer* splashRenderer = SDL_CreateRenderer(window.get(), -1, SDL_RENDERER_SOFTWARE);
         if (splashRenderer) {

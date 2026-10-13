@@ -824,7 +824,17 @@ bool LoadShader(
 		wi::vector<uint8_t> buffer;
 		if (wi::helper::FileRead(shaderbinaryfilename, buffer))
 		{
+#ifdef __ANDROID__
+			// SIMTARY bring-up: on Mali every compute shader is a driver compile right here.
+			// "begin" without its "end" in logcat names the shader that hangs.
+			wi::backlog::post("shader begin: " + filename);
+			wi::Timer shaderTimer;
+#endif
 			bool success = device->CreateShader(stage, buffer.data(), buffer.size(), &shader, entrypoint.c_str());
+#ifdef __ANDROID__
+			wi::backlog::post("shader end: " + filename + " " + std::to_string((int)shaderTimer.elapsed_milliseconds()) + " ms" + (success ? "" : " FAILED"),
+				success ? wi::backlog::LogLevel::Default : wi::backlog::LogLevel::Error);
+#endif
 			if (success)
 			{
 				device->SetName(&shader, shaderbinaryfilename.c_str());
@@ -2891,6 +2901,9 @@ void Initialize()
 
 	wilog("wi::renderer Initialized (%d ms)", (int)std::round(timer.elapsed()));
 	initialized.store(true);
+	// SIMTARY: every pipeline the renderer pre-builds exists now - keep them for the next
+	// launch even if this one never shuts down cleanly.
+	device->SavePipelineCache();
 }
 void ClearWorld(Scene& scene)
 {
@@ -9163,6 +9176,8 @@ void DrawSky(const Scene& scene, CommandList cmd, bool clouds)
 	uint clouds_enabled = clouds ? 1 : 0;
 	device->PushConstants(&clouds_enabled, sizeof(clouds_enabled), cmd);
 
+	static const bool debug_skynodraw = wi::arguments::HasArgument("debug_skynodraw"); // SIMTARY bring-up bisect
+	if (!debug_skynodraw)
 	device->Draw(3, 0, cmd);
 
 	device->EventEnd(cmd);

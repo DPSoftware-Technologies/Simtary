@@ -393,9 +393,16 @@ namespace wi::jobsystem
 				size_t cpusetsize = sizeof(cpuset);
 
 				CPU_SET(core, &cpuset);
+#if defined(__ANDROID__)
+				// SIMTARY: bionic has no pthread_setaffinity_np; the kernel call takes the tid.
+				ret = sched_setaffinity(pthread_gettid_np(handle), cpusetsize, &cpuset);
+				if (ret != 0)
+					handle_error_en(errno, std::string(" sched_setaffinity[" + std::to_string(threadID) + ']').c_str());
+#else
 				ret = pthread_setaffinity_np(handle, cpusetsize, &cpuset);
 				if (ret != 0)
 					handle_error_en(ret, std::string(" pthread_setaffinity_np[" + std::to_string(threadID) + ']').c_str());
+#endif
 
 
 				if (priority == Priority::High)

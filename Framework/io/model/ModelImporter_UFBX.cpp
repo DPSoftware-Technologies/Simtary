@@ -504,6 +504,12 @@ bool ImportUFBX (ImportContext& ctx, Entity root)
 	opts.target_unit_meters      = 1.0f;
 	opts.space_conversion        = UFBX_SPACE_CONVERSION_MODIFY_GEOMETRY;
 	opts.handedness_conversion_axis = UFBX_MIRROR_AXIS_Z;
+	// FBX nodes may carry a GEOMETRIC transform (an offset of the mesh from its own node,
+	//	Max/Maya "pivot" style) on top of the node transform. The importer only applies
+	//	node->local_transform, so such meshes - the HMMWV's doors - landed in the wrong place.
+	//	Bake it into the vertices; ufbx falls back to helper nodes for instanced meshes, and
+	//	those arrive in fbx->nodes like any other node.
+	opts.geometry_transform_handling = UFBX_GEOMETRY_TRANSFORM_HANDLING_MODIFY_GEOMETRY;
 	opts.generate_missing_normals = ctx.options.generateMissingNormals;
 	opts.load_external_files      = true;
 	opts.ignore_missing_external_files = true;   // a missing .mtl is a warning, not a failure

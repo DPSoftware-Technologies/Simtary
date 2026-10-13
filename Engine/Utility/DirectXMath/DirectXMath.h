@@ -105,7 +105,9 @@
 #endif
 #endif // !_XM_ARM_NEON_INTRINSICS_ && !_XM_SSE_INTRINSICS_ && !_XM_NO_INTRINSICS_
 
-#if !defined(_XM_NO_XMVECTOR_OVERLOADS_) && (defined(__clang__) || defined(__GNUC__))
+// SIMTARY: clang/GCC vector types (__m128, float32x4_t) bring their own + - * /, which is
+// why the overloads are dropped there. The scalar struct does not, so it keeps them.
+#if !defined(_XM_NO_XMVECTOR_OVERLOADS_) && (defined(__clang__) || defined(__GNUC__)) && !defined(_XM_NO_INTRINSICS_)
 #define _XM_NO_XMVECTOR_OVERLOADS_
 #endif
 

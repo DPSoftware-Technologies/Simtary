@@ -16,6 +16,9 @@ class CPUInfo {
 		inline explicit CPUID(uint32_t funcId, uint32_t subFuncId) {
 #ifdef _WIN32
 			::__cpuidex((int*)regs, (int)funcId, (int)subFuncId);
+#elif !defined(__i386__) && !defined(__x86_64__)
+			// SIMTARY: no CPUID off x86 (ARM/Android) - every feature reads as absent.
+			(void)funcId; (void)subFuncId;
 #else
 			asm volatile
 				("cpuid" : "=a" (regs[0]), "=b" (regs[1]), "=c" (regs[2]), "=d" (regs[3])

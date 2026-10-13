@@ -219,6 +219,10 @@ namespace wi::graphics
 		{
 			VkDescriptorSet sets[DESCRIPTOR_SET_COUNT] = {};
 		}  descriptor_sets;
+		// SIMTARY: how many of DESCRIPTOR_SET_* are bound. The last one (acceleration
+		// structures) is a dummy without ray tracing, and Mali-G68 allows only 7 bound sets
+		// (maxBoundDescriptorSets) - asking for 8 corrupts the driver's stack.
+		uint32_t descriptor_set_count = DESCRIPTOR_SET_COUNT;
 
 		PSOLayout layout_template;
 		VkSampler immutable_samplers[STATIC_SAMPLER_COUNT] = {};
@@ -279,6 +283,14 @@ namespace wi::graphics
 
 		// Resource init transition helper:
 		mutable std::mutex transitionLocker;
+
+		// SIMTARY: GPU breadcrumbs ("gpu_breadcrumbs" argument). Every EventBegin label is
+		// remembered per command buffer, and each command buffer is then submitted and
+		// waited for ON ITS OWN, so the first one that loses the device names the pass that
+		// faulted - the only way to find a GPU fault on a driver that reports nothing else.
+		bool breadcrumbs = false;
+		mutable std::mutex breadcrumb_locker;
+		mutable wi::unordered_map<VkCommandBuffer, std::string> breadcrumb_labels;
 		mutable wi::vector<VkImageMemoryBarrier2> init_transitions;
 		struct TransitionHandler
 		{
@@ -575,6 +587,7 @@ namespace wi::graphics
 
 		void WaitForGPU() const override;
 		void ClearPipelineStateCache() override;
+		void SavePipelineCache() const override;
 		size_t GetActivePipelineCount() const override { return pipelines_global.size(); }
 
 		ShaderFormat GetShaderFormat() const override { return ShaderFormat::SPIRV; }

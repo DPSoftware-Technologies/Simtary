@@ -206,6 +206,12 @@ function(simtary_add_app)
     if (NOT APP_NAME)
         message(FATAL_ERROR "simtary_add_app: NAME is required")
     endif()
+    # Android: the app is ONE shared library that SDL's Java activity loads (libmain.so).
+    # There is no executable to host a module, so the exe + module split does not apply.
+    if (ANDROID AND APP_MODULE)
+        message(STATUS "simtary_add_app(${APP_NAME}): MODULE ignored on Android - one libmain.so")
+        set(APP_MODULE OFF)
+    endif()
     if (NOT APP_SOURCE_DIR)
         set(APP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
     endif()
@@ -368,7 +374,13 @@ function(simtary_add_app)
         set_target_properties(${_gamecode_target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
     else()
         set(_framework_target ${APP_NAME})
-        add_executable(${APP_NAME} ${_app_sources} ${_framework_sources} ${APP_EXTRA_SOURCES})
+        if (ANDROID)
+            # SDLActivity does System.loadLibrary("main") and calls SDL_main in it.
+            add_library(${APP_NAME} SHARED ${_app_sources} ${_framework_sources} ${APP_EXTRA_SOURCES})
+            set_target_properties(${APP_NAME} PROPERTIES OUTPUT_NAME main)
+        else()
+            add_executable(${APP_NAME} ${_app_sources} ${_framework_sources} ${APP_EXTRA_SOURCES})
+        endif()
     endif()
 
     # Every target that actually compiles C++ and therefore needs the include paths,
@@ -414,7 +426,7 @@ function(simtary_add_app)
     endif()
     string(REPLACE "." ";" _vparts "${_app_version}")
     list(LENGTH _vparts _vcount)
-    if (_vcount GREATER_EQUAL 3)
+    if (_vcount GREATER_EQUAL 3 AND NOT ANDROID) # a versioned libmain.so.1 would not load
         set_target_properties(${APP_NAME} PROPERTIES VERSION ${_app_version})
         list(GET _vparts 0 _vmajor)
         set_target_properties(${APP_NAME} PROPERTIES SOVERSION ${_vmajor})
@@ -542,6 +554,9 @@ function(simtary_add_app)
         target_link_libraries(${APP_NAME} PRIVATE user32 gdi32 dwmapi)
         # shell32/ole32: SHGetKnownFolderPath + CoTaskMemFree for the LocalLow user-data path
         target_link_libraries(${APP_NAME} PRIVATE shell32 ole32)
+    elseif (ANDROID)
+        # log: __android_log_print; android: AAssetManager, ANativeWindow
+        target_link_libraries(${APP_NAME} PRIVATE log android)
     elseif (UNIX)
         # X11: native Xlib loading window (Framework/SubWinStatus.cpp)
         find_package(X11 REQUIRED)
@@ -705,7 +720,9 @@ function(simtary_add_app)
     # crash reporter
     # The reporter GUI and the Crashpad handler must sit next to the game exe;
     # Framework/crash/CrashHandler.cpp looks for them there at runtime.
-    if (NOT APP_NO_CRASH_REPORTER)
+    # Not on Android: an app cannot launch a second process with a window there, and
+    # sentry runs its in-process backend instead of Crashpad.
+    if (NOT APP_NO_CRASH_REPORTER AND NOT ANDROID)
         add_dependencies(${APP_NAME} SimtaryCrashReporter)
         add_custom_command(TARGET ${APP_NAME} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -759,7 +776,9 @@ function(simtary_add_app)
 
     # Incremental pre-pass so the first launch is never a cold compile. Turn off with
     # NO_SHADER_WARM for the fastest possible build, at the cost of a slow first run.
-    if (NOT APP_NO_SHADER_WARM)
+    # Not when cross-compiling for Android: offlineshadercompiler is then built for the
+    # DEVICE and cannot run here. The APK takes the shared SPIR-V cache as it is.
+    if (NOT APP_NO_SHADER_WARM AND NOT ANDROID)
         # BOTH backends on Windows, because the build can start on either one and the
         # backend is chosen at launch, not here. It is not twice the work in practice:
         # Simtary/shaders/ ships a warm cache for both and this pre-pass is incremental,

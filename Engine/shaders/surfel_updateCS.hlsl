@@ -32,7 +32,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 	Surface surface;
 	surface.init();
-	surface.uid_validate = surfel_data.uid;
+	surface.uid_validate = surfel_data.uid.x;
 	if (surface.load(prim, unpack_half2(surfel_data.bary)))
 	{
 		if(surfel_data.IsBackfaceNormal())

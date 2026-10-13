@@ -2,7 +2,7 @@
 #include <atomic>
 #include <thread>
 
-#if defined(_M_ARM64) || defined(__arm64__)
+#if defined(_M_ARM64) || defined(__arm64__) || defined(__aarch64__)
 #ifdef _WIN32
 #include <intrin.h> // __yield()
 #else
@@ -27,7 +27,7 @@ namespace wi
 				if (spin < 10)
 				{
 					// SMT thread swap can occur here:
-#if defined(_M_ARM64) || defined(__arm64__)
+#if defined(_M_ARM64) || defined(__arm64__) || defined(__aarch64__)
 					__yield();
 #else
 					_mm_pause();

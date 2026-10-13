@@ -170,7 +170,11 @@ void Init(const char* /*exePath*/, const char* appName)
 #else
     g_exeDir       = ".";
     g_crashDir     = "crashreports";
+#if defined(__ANDROID__)
+    g_reporterPath.clear(); // no second process with a window on Android: dumps only
+#else
     g_reporterPath = "./SimtaryCrashReporter";
+#endif
     g_summaryPath  = g_crashDir + "/last_crash.txt";
 #endif
 

@@ -129,6 +129,10 @@ namespace wi::graphics
 
 		// The current PipelineState cache will be cleared. It is useful to clear this when reloading shaders, to avoid accumulating unused pipeline states
 		virtual void ClearPipelineStateCache() = 0;
+		// SIMTARY: write the driver's pipeline cache to disk now, not only at shutdown. A
+		// mobile app is usually killed rather than shut down, and a cache that is only
+		// written in the destructor is then never written at all. No-op where unused.
+		virtual void SavePipelineCache() const {}
 
 		// Returns the number of active pipelines. Active pipelines are the pipelines that were compiled internally for a set of render target formats
 		//	One PipelineState object can be compiled internally for multiple render target or depth-stencil formats, or sample counts

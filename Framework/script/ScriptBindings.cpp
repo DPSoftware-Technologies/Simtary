@@ -487,7 +487,8 @@ void TrTransformPoint (tb::Call* call, void* self, void*) {
     if (tb::Failed(call)) return;
     if (auto* t = TransformOf(call, self)) {
         XMFLOAT3 out;
-        XMStoreFloat3(&out, XMVector3Transform(XMLoadFloat3(&XMFLOAT3(v.x, v.y, v.z)), XMLoadFloat4x4(&t->world)));
+        const XMFLOAT3 p(v.x, v.y, v.z);
+        XMStoreFloat3(&out, XMVector3Transform(XMLoadFloat3(&p), XMLoadFloat4x4(&t->world)));
         tb::ReturnVector3(call, V(out));
     }
 }
@@ -498,7 +499,8 @@ void TrInverseTransformPoint (tb::Call* call, void* self, void*) {
     if (auto* t = TransformOf(call, self)) {
         XMFLOAT3 out;
         const XMMATRIX inv = XMMatrixInverse(nullptr, XMLoadFloat4x4(&t->world));
-        XMStoreFloat3(&out, XMVector3Transform(XMLoadFloat3(&XMFLOAT3(v.x, v.y, v.z)), inv));
+        const XMFLOAT3 p(v.x, v.y, v.z);
+        XMStoreFloat3(&out, XMVector3Transform(XMLoadFloat3(&p), inv));
         tb::ReturnVector3(call, V(out));
     }
 }

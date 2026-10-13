@@ -4,7 +4,7 @@
 struct VSOut
 {
 	precise float4 pos				: SV_Position;
-	float clip						: SV_ClipDistance0;
+	float clip						: ST_CLIP_DISTANCE;
 	float2 uv						: TEXCOORD;
 	uint slice						: SLICE;
 	nointerpolation float dither	: DITHER;

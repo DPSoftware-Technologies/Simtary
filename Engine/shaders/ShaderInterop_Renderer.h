@@ -512,13 +512,19 @@ static const uint SHADERTYPE_BIN_COUNT = 12;
 
 struct alignas(16) VisibilityTile
 {
-	uint64_t execution_mask;
+	// SIMTARY: the 64-thread mask as two 32-bit words instead of one uint64_t - same 8 bytes,
+	// but no shader that reads a tile needs the Int64 capability, which mobile GPUs
+	// (Mali-G68: shaderInt64 = false) do not have.
+	uint execution_mask_lo; // threads 0..31
+	uint execution_mask_hi; // threads 32..63
 	uint visibility_tile_id;
 	uint entity_flat_tile_index;
 
 	inline bool check_thread_valid(uint groupIndex)
 	{
-		return (execution_mask & (uint64_t(1) << uint64_t(groupIndex))) != 0;
+		return groupIndex < 32u
+			? (execution_mask_lo & (1u << groupIndex)) != 0
+			: (execution_mask_hi & (1u << (groupIndex - 32u))) != 0;
 	}
 };
 
@@ -707,7 +713,13 @@ struct alignas(16) ShaderTransform
 
 struct alignas(32) ShaderMeshInstance
 {
+#ifdef __cplusplus
 	uint64_t uid;
+#else
+	// SIMTARY: the same 8 bytes as two words - a 64-bit integer in a struct every object
+	// shader reads made all of them need the Int64 capability, which Mali-G68 lacks.
+	uint2 uid; // x = low 32 bits, y = high 32 bits
+#endif // __cplusplus
 	uint flags;	// high 8 bits: user stencilRef
 	uint layerMask;
 
