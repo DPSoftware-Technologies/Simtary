@@ -759,6 +759,14 @@ bool LoadShader(
 		shaderbinaryfilename += "." + ext;
 	}
 
+	// SIMTARY: a device that executes nothing (GraphicsDevice_Null - headless servers) needs no
+	//	shader bytes: skip the file read and the outdated-check recompile, which would otherwise
+	//	try to compile every shader of the engine on a machine with no shader compiler.
+	if (device != nullptr && device->GetShaderFormat() == ShaderFormat::NONE)
+	{
+		return device->CreateShader(stage, nullptr, 0, &shader, entrypoint.c_str());
+	}
+
 	if (device != nullptr)
 	{
 #ifdef SHADERDUMP_ENABLED

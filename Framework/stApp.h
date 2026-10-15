@@ -224,6 +224,8 @@ public:
     // calls this before SetWindow(); doing it afterwards is too late, because
     // SetWindow creates its own device when none exists yet.
     void CreateGraphicsDevice(st::GraphicsAPI api, wi::platform::window_type window);
+    // Headless (st::IsHeadless): the device that executes nothing (GraphicsDevice_Null).
+    void CreateHeadlessDevice();
 
     void Initialize() override;
     void Compose(wi::graphics::CommandList cmd) override;
@@ -393,6 +395,7 @@ private:
     DisplaySettings  displaySettings_;
     bool             xrVsyncOff_ = false;   // XR session forced the desktop v-sync off
     bool             xrDesktopOff_ = false; // XR session: the game path is not updated/rendered
+    bool             pathOff_ = false;      // xrDesktopOff_ or headless: game path not updated/rendered
     SubWinStatus m_loadingScreen;
 
     // Loads/unloads AOT Faust processors, played through the engine OpenAL stream.

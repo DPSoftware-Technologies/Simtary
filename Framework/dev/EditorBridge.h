@@ -69,6 +69,7 @@ private:
 
     App* app_ = nullptr;
     int  port_ = 0;
+    std::string infoFile_ = "devbridge.json";
     std::string token_;
     std::atomic<bool> running_{ false };
     std::thread thread_;

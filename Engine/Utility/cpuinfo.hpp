@@ -132,6 +132,10 @@ CPUInfo::CPUInfo()
 				default: break;
 				}
 			}
+			// SIMTARY: a hypervisor may leave the topology leaf empty (SMT level reports 0
+			//	threads per core) - dividing by it was a SIGFPE at startup on such VPS hosts.
+			if (mNumSMT == 0) mNumSMT = 1;
+			if (mNumLogCpus == 0) mNumLogCpus = mNumSMT;
 			mNumCores = mNumLogCpus / mNumSMT;
 			mIsHTT = mNumSMT > 1;
 		}

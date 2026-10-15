@@ -873,6 +873,19 @@ namespace wi
 
 	}
 
+	void Application::SetHeadless(uint32_t width, uint32_t height)
+	{
+		window = {};
+		wi::graphics::GetDevice() = graphicsDevice.get();
+		canvas.init(width, height, 96);
+		SwapChainDesc desc;
+		desc.buffer_count = 2;
+		desc.format = Format::R10G10B10A2_UNORM;
+		desc.width = width;
+		desc.height = height;
+		graphicsDevice->CreateSwapChain(&desc, window, &swapChain);
+	}
+
 	void Application::SetRenderResolution(uint32_t width, uint32_t height)
 	{
 		renderWidth = width;

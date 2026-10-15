@@ -4,10 +4,18 @@
 #include <string>
 #include <cstdio>
 
+// st::IsHeadless (stRun.h) - declared, not included: sentry.h above brings in windows.h, whose
+// min / max macros break the engine headers stRun.h pulls in.
+namespace st { bool IsHeadless (); }
+
 #if defined(_WIN32)
 #include <windows.h>
 #include <dbghelp.h>
 #pragma comment(lib, "dbghelp.lib")
+#elif defined(__linux__) && !defined(__ANDROID__)
+#include <dlfcn.h>
+#include <execinfo.h>
+#include <ucontext.h>
 #endif
 
 namespace st {
@@ -139,8 +147,37 @@ sentry_value_t OnCrash(const sentry_ucontext_t* uctx, sentry_value_t event, void
     if (uctx) WriteSummary(uctx->exception_ptrs);
     LaunchReporter();
 #else
-    (void)uctx;
-    if (!g_reporterPath.empty()) {
+    if (st::IsHeadless()) {
+        // A dedicated server has no desktop for the reporter GUI; its console / service log
+        // is where anyone will look, so the crash goes there.
+#if defined(__linux__) && !defined(__ANDROID__)
+        fprintf(stderr, "\n*** CRASH: signal %d\n", uctx ? uctx->signum : 0);
+#if defined(__x86_64__)
+        // backtrace() from a signal handler only sees the handler; the faulting instruction
+        // is in the saved context. Module + offset is what addr2line wants.
+        if (uctx && uctx->user_context) {
+            void* pc = reinterpret_cast<void*>(uctx->user_context->uc_mcontext.gregs[REG_RIP]);
+            Dl_info info = {};
+            if (dladdr(pc, &info) && info.dli_fname) {
+                fprintf(stderr, "*** at %s+0x%lx (%s)  [addr2line -f -C -e <that file> 0x%lx]\n",
+                        info.dli_fname, (unsigned long)((char*)pc - (char*)info.dli_fbase),
+                        info.dli_sname ? info.dli_sname : "?", (unsigned long)((char*)pc - (char*)info.dli_fbase));
+            } else {
+                fprintf(stderr, "*** at %p\n", pc);
+            }
+        }
+#endif
+        fprintf(stderr, "*** handler stack:\n");
+        void* frames[64];
+        const int n = backtrace(frames, 64);
+        backtrace_symbols_fd(frames, n, 2);
+        fprintf(stderr, "*** minidump in %s\n", g_crashDir.c_str());
+        fflush(stderr);
+#else
+        (void)uctx;
+#endif
+    } else if (!g_reporterPath.empty()) {
+        (void)uctx;
         std::string cmd = "\"" + g_reporterPath + "\" \"" + g_crashDir + "\" &";
         (void)system(cmd.c_str());
     }
@@ -204,7 +241,7 @@ void CheckPreviousCrash()
 #if defined(_WIN32)
         LaunchReporter();
 #else
-        if (!g_reporterPath.empty()) {
+        if (!g_reporterPath.empty() && !st::IsHeadless()) {
             std::string cmd = "\"" + g_reporterPath + "\" \"" + g_crashDir + "\" &";
             (void)system(cmd.c_str());
         }

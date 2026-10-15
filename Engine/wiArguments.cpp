@@ -37,4 +37,17 @@ namespace wi::arguments
 	{
 		return params.find(value) != params.end();
 	}
+
+	bool GetArgumentValue(const std::string& prefix, std::string& value)
+	{
+		for (const std::string& p : params)
+		{
+			if (p.size() >= prefix.size() && p.compare(0, prefix.size(), prefix) == 0)
+			{
+				value = p.substr(prefix.size());
+				return true;
+			}
+		}
+		return false;
+	}
 }

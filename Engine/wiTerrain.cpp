@@ -1574,6 +1574,10 @@ namespace wi::terrain
 
 	void Terrain::UpdateVirtualTexturesCPU()
 	{
+		// SIMTARY: the virtual texture is what the terrain LOOKS like; a device that draws
+		//	nothing (GraphicsDevice_Null, headless servers) has no feedback to stream from.
+		if (GetDevice()->GetShaderFormat() == ShaderFormat::NONE)
+			return;
 		wi::jobsystem::Wait(virtual_texture_ctx);
 		virtual_texture_ctx.priority = wi::jobsystem::Priority::Low;
 

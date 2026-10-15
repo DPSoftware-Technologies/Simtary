@@ -179,6 +179,9 @@ else()
     set(SENTRY_BACKEND       crashpad CACHE STRING "" FORCE)
 endif()
 set(SENTRY_BUILD_SHARED_LIBS OFF      CACHE BOOL   "" FORCE)
+# Crash reports stay on disk (no upload, see above), so no HTTP transport - which on Linux
+# would otherwise make every build, the dedicated server included, depend on libcurl.
+set(SENTRY_TRANSPORT     none     CACHE STRING "" FORCE)
 set(SENTRY_BUILD_TESTS       OFF      CACHE BOOL   "" FORCE)
 set(SENTRY_BUILD_EXAMPLES    OFF      CACHE BOOL   "" FORCE)
 FetchContent_Declare(
@@ -404,6 +407,38 @@ if (SIMTARY_ENABLE_OPENXR AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
     endif()
 else()
     message(STATUS "Simtary: OpenXR disabled (Windows x64 only for now).")
+endif()
+
+# GameNetworkingSockets (multiplayer)
+# Valve's GNS, prebuilt ONCE into deps/gns-install by tools/build_gns.ps1 (Windows; a Linux
+# script follows with the server port). Shared library with protobuf linked into it, so it
+# brings its own exception-enabled C++ and the engine only calls plain virtual interfaces.
+# Absent: Framework/net compiles to a stub and --server / --connect report it. MULTIPLAYER.md.
+if (WIN32)
+    set(_gns_default "${SIMTARY_DEPS_DIR}/gns-install")         # tools/build_gns.ps1
+else()
+    set(_gns_default "${SIMTARY_DEPS_DIR}/gns-install-linux")   # tools/build_gns.sh, in the build chroot
+endif()
+set(SIMTARY_GNS_DIR "${_gns_default}" CACHE PATH "GameNetworkingSockets install (tools/build_gns)")
+if (WIN32)
+    set(_gns_dll "${SIMTARY_GNS_DIR}/bin/GameNetworkingSockets.dll")
+    set(_gns_lib "${SIMTARY_GNS_DIR}/lib/GameNetworkingSockets.lib")
+else()
+    set(_gns_dll "${SIMTARY_GNS_DIR}/lib/libGameNetworkingSockets.so")
+    set(_gns_lib "${_gns_dll}")
+endif()
+if (EXISTS "${_gns_dll}" AND EXISTS "${SIMTARY_GNS_DIR}/include/GameNetworkingSockets/steam/steamnetworkingsockets.h")
+    add_library(SimtaryGNS SHARED IMPORTED GLOBAL)
+    set_target_properties(SimtaryGNS PROPERTIES
+        IMPORTED_LOCATION "${_gns_dll}"
+        IMPORTED_IMPLIB   "${_gns_lib}"
+        INTERFACE_INCLUDE_DIRECTORIES "${SIMTARY_GNS_DIR}/include/GameNetworkingSockets"
+        INTERFACE_COMPILE_DEFINITIONS "SIMTARY_HAS_GNS=1"
+    )
+    set(SIMTARY_GNS_RUNTIME "${_gns_dll}" CACHE INTERNAL "GameNetworkingSockets runtime library")
+    message(STATUS "Simtary: GameNetworkingSockets at ${SIMTARY_GNS_DIR}")
+else()
+    message(STATUS "Simtary: GameNetworkingSockets not built (tools/build_gns.ps1) - multiplayer disabled.")
 endif()
 
 # Model importers: tinygltf (glTF/GLB) + ufbx (FBX/OBJ/MTL)
@@ -950,6 +985,10 @@ else()
     )
     target_include_directories(stpack PRIVATE Framework Engine)
     target_link_libraries(stpack PRIVATE Simtary::AppFlags)
+    # zstd's thread pool: glibc before 2.34 keeps pthread in its own library (the portable
+    # Linux build is made against 2.31 - MULTIPLAYER.md).
+    find_package(Threads REQUIRED)
+    target_link_libraries(stpack PRIVATE Threads::Threads)
     set_target_properties(stpack PROPERTIES FOLDER "Simtary/Tools")
     # zstd is third-party C: it must not inherit the /W3 the app flags carry, or every
     # build of it buries the real warnings under a few hundred of its own.

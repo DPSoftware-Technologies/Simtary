@@ -79,7 +79,15 @@ option(SIMTARY_BUMP_BUILD_NUMBER "Advance <project>/build_number.txt on every bu
 # Windows SDK is DXIL only, so this needed a Vulkan SDK installed to build a complete
 # Windows game. stshaderc drives the dxcompiler.dll vendored in Engine/ through
 # wi::shadercompiler, which always has both.
+# SIMTARY_NO_SHADERS: a build that never renders - the portable Linux SERVER build made in the
+# Debian 11 chroot (MULTIPLAYER.md), whose old libstdc++ cannot load the vendored dxcompiler
+# anyway. Skips every shader compile and the cache warm-up; run it with --server only.
+option(SIMTARY_NO_SHADERS "Skip shader compilation (headless server builds; the result cannot render)" OFF)
+
 function(simtary_compile_shader)
+    if (SIMTARY_NO_SHADERS)
+        return()
+    endif()
     cmake_parse_arguments(SH "ENGINE_ENV" "TARGET;SOURCE;PROFILE;ENTRY;OUTPUT_NAME" "" ${ARGN})
     if (NOT SH_TARGET OR NOT SH_SOURCE OR NOT SH_PROFILE)
         message(FATAL_ERROR "simtary_compile_shader: TARGET, SOURCE and PROFILE are required")
@@ -536,6 +544,9 @@ function(simtary_add_app)
     if (TARGET SimtaryOpenXR)
         list(APPEND _app_link_libraries SimtaryOpenXR)   # Framework/xr (SIMTARY_HAS_OPENXR)
     endif()
+    if (TARGET SimtaryGNS)
+        list(APPEND _app_link_libraries SimtaryGNS)      # Framework/net (SIMTARY_HAS_GNS)
+    endif()
 
     foreach (_target IN LISTS _compile_targets)
         target_include_directories(${_target} PRIVATE
@@ -565,6 +576,13 @@ function(simtary_add_app)
         find_package(X11 REQUIRED)
         target_include_directories(${APP_NAME} PRIVATE ${X11_INCLUDE_DIR})
         target_link_libraries(${APP_NAME} PRIVATE ${X11_LIBRARIES})
+        # Shared libraries (SDL2, OpenAL, Steam Audio, GNS) ship beside the executable, so the
+        # loader looks there first: a copied output folder runs on a machine that has none of
+        # them installed (a dedicated server box, MULTIPLAYER.md).
+        set_target_properties(${APP_NAME} PROPERTIES BUILD_RPATH "\$ORIGIN" INSTALL_RPATH "\$ORIGIN")
+        if (APP_MODULE)
+            set_target_properties(${APP_NAME}_Module PROPERTIES BUILD_RPATH "\$ORIGIN" INSTALL_RPATH "\$ORIGIN")
+        endif()
     endif()
 
     if (MSVC)
@@ -781,7 +799,7 @@ function(simtary_add_app)
     # NO_SHADER_WARM for the fastest possible build, at the cost of a slow first run.
     # Not when cross-compiling for Android: offlineshadercompiler is then built for the
     # DEVICE and cannot run here. The APK takes the shared SPIR-V cache as it is.
-    if (NOT APP_NO_SHADER_WARM AND NOT ANDROID)
+    if (NOT APP_NO_SHADER_WARM AND NOT ANDROID AND NOT SIMTARY_NO_SHADERS)
         # BOTH backends on Windows, because the build can start on either one and the
         # backend is chosen at launch, not here. It is not twice the work in practice:
         # Simtary/shaders/ ships a warm cache for both and this pre-pass is incremental,
@@ -828,9 +846,18 @@ function(simtary_add_app)
     # the tool has already tried to start, so a clean tree dies with exit code
     # -1073741515 (0xC0000135, STATUS_DLL_NOT_FOUND) before any DLL is staged. It only
     # ever appeared to work because a previous build had left OpenAL32.dll behind.
+    # On Linux the loader asks for the SONAME (libopenal.so.1), not the versioned file the
+    # target builds (libopenal.so.1.24.2) - copy what will actually be looked up.
+    if (UNIX AND NOT APPLE)
+        set(_sdl2_runtime $<TARGET_SONAME_FILE:SDL2::SDL2>)
+        set(_openal_runtime $<TARGET_SONAME_FILE:OpenAL>)
+    else()
+        set(_sdl2_runtime $<TARGET_FILE:SDL2::SDL2>)
+        set(_openal_runtime $<TARGET_FILE:OpenAL>)
+    endif()
     add_custom_command(TARGET ${APP_NAME} PRE_LINK
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:${APP_NAME}>
+            ${_sdl2_runtime} $<TARGET_FILE_DIR:${APP_NAME}>
         COMMENT "Copying SDL2 runtime library to output directory"
         VERBATIM
     )
@@ -838,7 +865,7 @@ function(simtary_add_app)
     # the executable so the audio engine can open the default output device.
     add_custom_command(TARGET ${APP_NAME} PRE_LINK
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:OpenAL> $<TARGET_FILE_DIR:${APP_NAME}>
+            ${_openal_runtime} $<TARGET_FILE_DIR:${APP_NAME}>
         COMMENT "Copying OpenAL runtime library to output directory"
         VERBATIM
     )
@@ -858,6 +885,14 @@ function(simtary_add_app)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${SIMTARY_OPENXR_RUNTIME}" $<TARGET_FILE_DIR:${APP_NAME}>
             COMMENT "Copying OpenXR loader to output directory"
+            VERBATIM
+        )
+    endif()
+    if (TARGET SimtaryGNS)
+        add_custom_command(TARGET ${APP_NAME} PRE_LINK
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${SIMTARY_GNS_RUNTIME}" $<TARGET_FILE_DIR:${APP_NAME}>
+            COMMENT "Copying GameNetworkingSockets to output directory"
             VERBATIM
         )
     endif()

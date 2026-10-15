@@ -11,7 +11,10 @@
 #include "dev/DevBuild.h"
 #include "dev/EditorBridge.h"
 #include "xr/XRSystem.h"
+#include "net/NetSession.h"
+#include "stRun.h"
 #include "wiEventHandler.h"
+#include "wiGraphicsDevice_Null.h"
 #include "wiImage.h"
 #include "wiLua.h"
 #include "wiPhysics.h"
@@ -206,6 +209,12 @@ void st::App::CreateGraphicsDevice(st::GraphicsAPI api, wi::platform::window_typ
         return;   // a resize re-enters SetWindow; the device is created once
 
     graphicsDevice = st::CreateGraphicsDevice(api, window);
+}
+
+void st::App::CreateHeadlessDevice() {
+    if (graphicsDevice != nullptr) return;
+    graphicsDevice = std::make_unique<wi::graphics::GraphicsDevice_Null>();
+    wi::backlog::post("Graphics: none (headless, GraphicsDevice_Null)");
 }
 
 void st::App::SetDevUIVisible(bool visible) {
@@ -446,11 +455,16 @@ void st::App::Initialize() {
     // Never started in a normal build - a shipped game opens no port.
     if (st::dev::IsDevBuild() && !wi::arguments::HasArgument("--no-devbridge") &&
         !wi::arguments::HasArgument("no-devbridge")) {
-        st::dev::EditorBridge::Get().Start(*this);
+        std::string portArg;
+        const int bridgePort = wi::arguments::GetArgumentValue("--devbridge-port=", portArg) ? atoi(portArg.c_str()) : 0;
+        st::dev::EditorBridge::Get().Start(*this, bridgePort);
     }
 
     // VR (Simtary/VR.md): opt-in with --xr, inert otherwise. After the device exists.
     st::xr::XRSystem::Get().Initialize(Config().name);
+
+    // Multiplayer (Simtary/MULTIPLAYER.md): --server[=port] / --connect=<ip>[:port], off otherwise.
+    st::net::NetSession::Get().Initialize(Config().name);
 
     // Load the starting scene immediately so entities exist before the first
     // frame's scene->Update() runs.
@@ -482,9 +496,12 @@ void st::App::Update(float dt) {
     // leaves the path alone.
     xrDesktopOff_ = st::xr::XRSystem::Get().IsRunning() && !editor_.IsEnabled();
     st::xr::XRSystem::Get().SetEyesOwnScene(xrDesktopOff_);
+    // A headless server draws nothing either: the path's culling and render-data upkeep would
+    // be CPU spent for a device that executes none of it.
+    pathOff_ = xrDesktopOff_ || st::IsHeadless();
     {
         wi::RenderPath* path = activePath;
-        if (xrDesktopOff_) activePath = nullptr;   // the one call that would update it
+        if (pathOff_) activePath = nullptr;   // the one call that would update it
         wi::Application::Update(dt);
         activePath = path;
     }
@@ -511,6 +528,7 @@ void st::App::Update(float dt) {
     // OpenXR events + (while a session runs) the headset frame loop. xrWaitFrame paces
     // the main loop to the HMD from here.
     st::xr::XRSystem::Get().Update();
+    st::net::NetSession::Get().Update(dt);
     // Two blocking waits per frame (xrWaitFrame and the desktop present) land the frame on
     // every other headset interval, so the desktop v-sync is off while a session runs.
     if (wi::input::Press(wi::input::KEYBOARD_BUTTON_F9)) st::xr::XRSystem::Get().Recenter();
@@ -612,7 +630,7 @@ void st::App::FixedUpdate() {
 }
 
 void st::App::Render() {
-    if (xrDesktopOff_) {
+    if (pathOff_) {
         wi::lua::Render();             // what wi::Application::Render does besides the path
     } else {
         wi::Application::Render();
@@ -684,6 +702,7 @@ void st::App::Exit() {
 
     // The OpenXR session holds the engine's D3D12 device and queue: gone before they are.
     st::xr::XRSystem::Get().Shutdown();
+    st::net::NetSession::Get().Shutdown();
 
     // Frees the editor's render path (and waits for the GPU) before the device goes away.
     editor_.Shutdown();

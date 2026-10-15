@@ -90,7 +90,9 @@ void st::App::ImguiInit(SDL_Window *window) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
-    ImGui_ImplSDL2_InitForVulkan(window);
+    // Headless (a dedicated server): no window for the platform backend. ImGui still runs -
+    // the DevUI code is not special-cased - against a fixed display size, drawn nowhere.
+    if (window != nullptr) ImGui_ImplSDL2_InitForVulkan(window);
 
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = "imgui.ini";  // persist window layout next to the executable
@@ -309,12 +311,18 @@ void st::App::ImguiExit() {
     if (io.IniFilename)
         ImGui::SaveIniSettingsToDisk(io.IniFilename);
 
-    ImGui_ImplSDL2_Shutdown();
+    if (window != nullptr) ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
 }
 
 void st::App::ImguiUpdate() {
-    ImGui_ImplSDL2_NewFrame();
+    if (window != nullptr) {
+        ImGui_ImplSDL2_NewFrame();
+    } else {
+        ImGuiIO& io = ImGui::GetIO();
+        io.DisplaySize = ImVec2(canvas.GetLogicalWidth(), canvas.GetLogicalHeight());
+        io.DeltaTime = lastDt_ > 0.0f ? lastDt_ : 1.0f / 60.0f;
+    }
     ImGui::NewFrame();
 
     // Developer tooling first, so game UI and the loading screen draw over it.

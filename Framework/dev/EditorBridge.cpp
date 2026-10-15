@@ -229,6 +229,9 @@ bool EditorBridge::Start (App& app, int port) {
     if (running_.load()) return true;
     app_ = &app;
     port_ = port > 0 ? port : kDefaultPort;
+    // A second instance on the same folder (a network client next to its server) passes
+    // --devbridge-port and gets its own info file, so the two never overwrite each other.
+    infoFile_ = port_ == kDefaultPort ? "devbridge.json" : "devbridge_" + std::to_string(port_) + ".json";
     if (handlers_.empty()) RegisterAll();
 
 #ifdef _WIN32
@@ -263,7 +266,7 @@ bool EditorBridge::Start (App& app, int port) {
 #else
     info.Set("pid", uint64_t(getpid()));
 #endif
-    std::ofstream("devbridge.json", std::ios::trunc) << info.Dump() << "\n";
+    std::ofstream(infoFile_, std::ios::trunc) << info.Dump() << "\n";
 
     running_ = true;
     thread_ = std::thread([this] { ThreadMain(); });
@@ -277,7 +280,7 @@ void EditorBridge::Stop () {
     cv_.notify_all();
     if (thread_.joinable()) thread_.join();
     std::error_code ec;
-    std::filesystem::remove("devbridge.json", ec);
+    std::filesystem::remove(infoFile_, ec);
 #ifdef _WIN32
     WSACleanup();
 #endif

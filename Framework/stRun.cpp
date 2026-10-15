@@ -148,6 +148,9 @@ void EnterAndroidDataFolder() {
 
 } // namespace
 
+namespace { bool g_headless = false; }
+bool st::IsHeadless() { return g_headless; }
+
 void st::RequestRestart()   { g_restartRequested = true; }
 bool st::RestartRequested() { return g_restartRequested; }
 
@@ -160,6 +163,18 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     // graphics device is created - so "vulkan", "dx12", "debugdevice" and the GPU
     // preference flags were all read from an empty argument set and did nothing.
     wi::arguments::Parse(argc, argv);
+    {
+        std::string port;
+        const bool server = wi::arguments::HasArgument("--server") || wi::arguments::GetArgumentValue("--server=", port);
+        g_headless = server && !wi::arguments::HasArgument("--server-window");
+    }
+    // A server's stdout is usually a pipe (a panel, systemd, docker), and a pipe is block
+    // buffered: a crash would swallow the last few KB of log - exactly the lines that say
+    // where it died. Line buffering costs nothing at a server's log rate.
+    if (g_headless) {
+        setvbuf(stdout, nullptr, _IOLBF, 0);
+        setvbuf(stderr, nullptr, _IONBF, 0);
+    }
 
     // Then the project properties: the crash reporter, the user-data folder and
     // App::Config() all read from here during startup.
@@ -232,7 +247,10 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     }
 
     printf("Starting chassis\n");
-    sdl2::sdlsystem_ptr_t system = sdl2::make_sdlsystem(SDL_INIT_EVERYTHING | SDL_INIT_EVENTS);
+    // Headless: no video / audio / controller subsystems - a server box may have no display
+    // and no sound device at all. Events stay: Ctrl+C / SIGTERM arrive as SDL_QUIT.
+    sdl2::sdlsystem_ptr_t system = sdl2::make_sdlsystem(
+        g_headless ? (SDL_INIT_EVENTS | SDL_INIT_TIMER) : (SDL_INIT_EVERYTHING | SDL_INIT_EVENTS));
 
     // Which backend this run uses - command line, then the player's saved choice, then
     // the project default, then the platform default. Decided BEFORE the window exists
@@ -247,7 +265,7 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     if (graphicsAPI == st::GraphicsAPI::Vulkan)
         windowFlags |= SDL_WINDOW_VULKAN;
 
-    sdl2::window_ptr_t window = sdl2::make_window(
+    sdl2::window_ptr_t window = g_headless ? sdl2::window_ptr_t(nullptr, SDL_DestroyWindow) : sdl2::make_window(
             config.name.c_str(),
             SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
             config.windowWidth, config.windowHeight,
@@ -262,7 +280,7 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     // torn down before Vulkan can take the same ANativeWindow.
     const bool showSplash = false;
 #else
-    const bool showSplash = !config.splashImage.empty();
+    const bool showSplash = !config.splashImage.empty() && !g_headless;
 #endif
     if (showSplash) {
         // SOFTWARE renderer - Vulkan ain't active yet, use this!
@@ -313,8 +331,14 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     // builds one when none exists, so it takes ours and appends nothing to the shader
     // path - st::CreateGraphicsDevice already pointed it at shaders/hlsl6 or
     // shaders/spirv to match.
-    application.CreateGraphicsDevice(graphicsAPI, window.get());
-    application.SetWindow(window.get());
+    if (g_headless) {
+        application.CreateHeadlessDevice();
+        application.SetHeadless(1280, 720);
+        printf("Headless: no window, null graphics device\n");
+    } else {
+        application.CreateGraphicsDevice(graphicsAPI, window.get());
+        application.SetWindow(window.get());
+    }
     printf("Starting Engine..\n");
 
     // application.infoDisplay.active = true;
@@ -335,9 +359,20 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
 
         SDL_Event event;
 
-        SDL_SetWindowTitle(window.get(), ((config.name + " - ") + application.infowatermark_str).c_str());
+        if (g_headless) {
+            // Nothing is drawn, so nothing paces the loop - hold it to 60 Hz instead of
+            // spinning a core. The server's simulation and snapshots run on top of this.
+            static Uint64 next = SDL_GetPerformanceCounter();
+            const Uint64 freq = SDL_GetPerformanceFrequency();
+            next += freq / 60;
+            const Uint64 now = SDL_GetPerformanceCounter();
+            if (next > now) SDL_Delay(Uint32((next - now) * 1000 / freq));
+            else next = now;   // fell behind: do not try to catch up in a burst
+        } else {
+            SDL_SetWindowTitle(window.get(), ((config.name + " - ") + application.infowatermark_str).c_str());
+        }
         while (SDL_PollEvent(&event)) {
-            ImGui_ImplSDL2_ProcessEvent(&event);
+            if (!g_headless) ImGui_ImplSDL2_ProcessEvent(&event);
             const ImGuiIO& io = ImGui::GetIO();
 
             switch (event.type) {

@@ -3750,6 +3750,17 @@ namespace wi::physics
 		BodyInterface& body_interface = physics_scene.physics_system.GetBodyInterfaceNoLock();
 		return cast(body_interface.GetLinearVelocity(physicsobject.bodyID));
 	}
+	XMFLOAT3 GetAngularVelocity(wi::scene::RigidBodyPhysicsComponent& physicscomponent)
+	{
+		if (physicscomponent.physicsobject == nullptr)
+			return XMFLOAT3(0, 0, 0);
+		RigidBody& physicsobject = GetRigidBody(physicscomponent);
+		if (physicsobject.bodyID.IsInvalid() || physicsobject.character != nullptr)
+			return XMFLOAT3(0, 0, 0);
+		PhysicsScene& physics_scene = *(PhysicsScene*)physicsobject.physics_scene.get();
+		BodyInterface& body_interface = physics_scene.physics_system.GetBodyInterfaceNoLock();
+		return cast(body_interface.GetAngularVelocity(physicsobject.bodyID));
+	}
 	XMFLOAT3 GetPosition(wi::scene::RigidBodyPhysicsComponent& physicscomponent)
 	{
 		if (physicscomponent.physicsobject == nullptr)

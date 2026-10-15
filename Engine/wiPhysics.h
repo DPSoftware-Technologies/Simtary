@@ -143,6 +143,8 @@ namespace wi::physics
 	XMFLOAT3 DbgCWBPos();
 
 	XMFLOAT3 GetVelocity(wi::scene::RigidBodyPhysicsComponent& physicscomponent);
+	// SIMTARY: angular velocity, rad/s, world space (network state sync)
+	XMFLOAT3 GetAngularVelocity(wi::scene::RigidBodyPhysicsComponent& physicscomponent);
 	XMFLOAT3 GetPosition(wi::scene::RigidBodyPhysicsComponent& physicscomponent);
 	XMFLOAT4 GetRotation(wi::scene::RigidBodyPhysicsComponent& physicscomponent);
 

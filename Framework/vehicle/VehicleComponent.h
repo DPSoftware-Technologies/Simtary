@@ -52,6 +52,19 @@ struct VehicleComponent : wi::scene::NativeComponent {
     float steer     = 0.0f;   // -1..1, positive = right
     float handbrake = 0.0f;
 
+    // The driver's wishes before steering rate limits and brake-to-reverse: what a network
+    // client sends, and what a networked copy is driven by (Framework/net/VehicleSync).
+    struct DriverInput {
+        float throttle = 0.0f;   // 0..1
+        float brake = 0.0f;      // 0..1
+        float steer = 0.0f;      // -1..1
+        bool handbrake = false;
+    };
+    DriverInput wanted;          // this frame's, from whichever source drove it
+    bool remoteInput = false;    // true: `remote` drives it, the stInput is ignored
+    DriverInput remote;
+    uint8_t resetCount = 0;      // +1 on every ResetUpright; the network replays a change
+
     // read back after the last physics step
     wi::physics::VehicleTelemetry telemetry;
     bool hasTelemetry = false;

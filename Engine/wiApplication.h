@@ -101,6 +101,10 @@ namespace wi
 		// Set a fixed render resolution independent of window size (for borderless fullscreen)
 		// Pass 0,0 to clear the fixed resolution and use window size
 		void SetRenderResolution(uint32_t width, uint32_t height);
+		// SIMTARY: no window at all (dedicated server). Call instead of SetWindow, after the
+		//	graphics device (a GraphicsDevice_Null) is set: the canvas and the swap chain get a
+		//	fixed size so everything sized from them still has numbers to work with.
+		void SetHeadless(uint32_t width, uint32_t height);
 		void GetRenderResolution(uint32_t& width, uint32_t& height) const;
 
 		void SetFullScreen(bool fullscreen);

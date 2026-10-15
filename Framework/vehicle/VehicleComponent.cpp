@@ -191,13 +191,23 @@ void VehicleComponent::Update (float dt) {
     ResolveInput();
     float wantThrottle = 0.0f, wantBrake = 0.0f, wantSteer = 0.0f;
     bool  wantHandbrake = false;
-    if (input_ != nullptr) {
+    if (remoteInput) {
+        wantThrottle  = std::clamp(remote.throttle, 0.0f, 1.0f);
+        wantBrake     = std::clamp(remote.brake, 0.0f, 1.0f);
+        wantSteer     = std::clamp(remote.steer, -1.0f, 1.0f);
+        wantHandbrake = remote.handbrake;
+    } else if (input_ != nullptr) {
         wantThrottle  = std::clamp(input_->Value(idThrottle_), 0.0f, 1.0f);
         wantBrake     = std::clamp(input_->Value(idBrake_), 0.0f, 1.0f);
         wantSteer     = std::clamp(input_->Value(idSteer_), -1.0f, 1.0f);
         wantHandbrake = input_->Down(idHandbrake_);
         if (input_->Pressed(idReset_)) ResetUpright();
     }
+
+    wanted.throttle = wantThrottle;
+    wanted.brake = wantBrake;
+    wanted.steer = wantSteer;
+    wanted.handbrake = wantHandbrake;
 
     // A real wheel cannot go from straight to full lock in one frame, and a keyboard
     // otherwise asks it to. Rate-limit towards the input, faster back to centre.
@@ -265,6 +275,7 @@ void VehicleComponent::CatchFallThrough (RigidBodyPhysicsComponent& rb) {
 }
 
 void VehicleComponent::ResetUpright () {
+    ++resetCount;
     RigidBodyPhysicsComponent* rb = GetComponent<RigidBodyPhysicsComponent>();
     if (rb == nullptr) return;
     XMFLOAT3 pos = wi::physics::GetPosition(*rb);

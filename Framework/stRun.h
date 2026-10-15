@@ -30,6 +30,11 @@ int Run(int argc, char* argv[], AppConfig& config, App& app);
 //
 // The current run shuts down normally first: the loop ends, App::Exit() runs, and
 // options.stad is written, so the new process starts on whatever was just chosen.
+// Headless: no window, no GPU (wi::graphics::GraphicsDevice_Null), no splash, no loading
+// window, the main loop paced to 60 Hz. What a dedicated server runs as: --server, unless
+// --server-window asks to see it. Valid from the top of st::Run.
+bool IsHeadless();
+
 void RequestRestart();
 bool RestartRequested();
 
