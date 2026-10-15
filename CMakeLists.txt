@@ -371,6 +371,41 @@ else()
     message(STATUS "Simtary: Steam Audio disabled - 3D audio falls back to stereo panning.")
 endif()
 
+# OpenXR (VR)
+# Khronos' prebuilt loader (Apache-2.0): openxr.h plus openxr_loader.dll, which finds
+# whatever runtime the user has active (SteamVR, Meta Link, ...). Compiled in on Windows
+# x64 because it is inert until a run asks for it - Framework/xr/XRSystem only starts a
+# session with --xr. See VR.md. Android / Quest uses a different loader (later).
+set(SIMTARY_OPENXR_VERSION "1.1.63" CACHE STRING "OpenXR SDK loader version")
+option(SIMTARY_ENABLE_OPENXR "Fetch the OpenXR loader and build VR support (opt-in at runtime with --xr)" ON)
+
+if (SIMTARY_ENABLE_OPENXR AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+    FetchContent_Declare(
+        openxr
+        URL "https://github.com/KhronosGroup/OpenXR-SDK-Source/releases/download/release-${SIMTARY_OPENXR_VERSION}/openxr_loader_windows-${SIMTARY_OPENXR_VERSION}.zip"
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(openxr)
+
+    set(_xr_root "${openxr_SOURCE_DIR}")
+    if (EXISTS "${_xr_root}/include/openxr/openxr.h" AND EXISTS "${_xr_root}/x64/bin/openxr_loader.dll")
+        add_library(SimtaryOpenXR SHARED IMPORTED GLOBAL)
+        set_target_properties(SimtaryOpenXR PROPERTIES
+            IMPORTED_LOCATION "${_xr_root}/x64/bin/openxr_loader.dll"
+            IMPORTED_IMPLIB   "${_xr_root}/x64/lib/openxr_loader.lib"
+            INTERFACE_INCLUDE_DIRECTORIES "${_xr_root}/include"
+            INTERFACE_COMPILE_DEFINITIONS "SIMTARY_HAS_OPENXR=1"
+        )
+        # Staged next to the executable by SimtaryApp.cmake, like phonon.dll.
+        set(SIMTARY_OPENXR_RUNTIME "${_xr_root}/x64/bin/openxr_loader.dll" CACHE INTERNAL "OpenXR loader library")
+        message(STATUS "Simtary: OpenXR loader ${SIMTARY_OPENXR_VERSION}")
+    else()
+        message(WARNING "Simtary: OpenXR archive unpacked but the x64 loader is missing under ${_xr_root} - VR disabled.")
+    endif()
+else()
+    message(STATUS "Simtary: OpenXR disabled (Windows x64 only for now).")
+endif()
+
 # Model importers: tinygltf (glTF/GLB) + ufbx (FBX/OBJ/MTL)
 # Both are C, and that is why these two were picked over the obvious alternatives.
 # This workspace builds with /EHsc- /GR- and _HAS_EXCEPTIONS=0 (see the app flags

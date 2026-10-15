@@ -17,6 +17,8 @@
 #include "terrain/TerrainSystem.h"
 #include "input/InputComponent.h"
 
+#include "stAudioEngine.h"
+
 #include "wiScene.h"
 #include "imgui.h"
 
@@ -39,8 +41,8 @@ struct ChaseCameraComponent : NativeComponent {
     bool  active      = true;
     int   view        = 0;      // 0 chase, 1 internal
     float interiorX   = -0.45f; // driver's head, entity space (left-hand drive)
-    float interiorY   = 0.75f;
-    float interiorZ   = -0.05f;
+    float interiorY   = 0.55f;
+    float interiorZ   = -0.30f;
     float lookSpeed   = 2.5f;   // rad/s at full stick
     bool  invertLookY = false;
     float recenter    = 1.5f;   // s without look input before the chase view swings back
@@ -64,7 +66,10 @@ struct ChaseCameraComponent : NativeComponent {
         lastPitch_ = pitch;
     }
 
-    void Update (float /*sceneDt*/) override {
+    // LateUpdate, not Update: the vehicle's pose comes out of physics (interpolated between
+    // fixed steps), which runs after the components' Update. Following it from Update read
+    // the previous step's pose, so the camera trailed by a varying amount - visible judder.
+    void LateUpdate (float /*sceneDt*/) override {
         if (!active || scene == nullptr) return;
         const TransformComponent* t = scene->transforms.GetComponent(entity);
         if (t == nullptr) return;
@@ -206,12 +211,34 @@ private:
 
     // Depth of field focuses at the camera's focal_length (1 m by default, which blurred the
     // vehicle 10 m away). Focus on what the view is about: the vehicle, or the windshield.
-    void Apply (TransformComponent& cam) const {
+    // The camera is also the LISTENER: spatial sound (Steam Audio) is rendered for a
+    // collector, and without one nothing 3D is heard from anywhere.
+    void Apply (TransformComponent& cam) {
         wi::scene::CameraComponent& camera = wi::scene::GetCamera();
         camera.focal_length = view == 1 ? 3.0f : distance;
         camera.TransformCamera(cam);
         camera.UpdateCamera();
+
+        st::audio::AudioEngine& audio = st::audio::AudioEngine::Get();
+        if (!audio.IsInitialized()) return;
+        if (listener_ == nullptr) listener_ = audio.CreateCollector("camera listener");
+        if (listener_ != nullptr) {
+            st::audio::SpatialTransform ears;
+            ears.position = camera.Eye;
+            ears.forward = camera.At;
+            ears.up = camera.Up;
+            listener_->SetTransform(ears);
+        }
     }
+
+public:
+    void Destroy () override {
+        if (listener_ != nullptr) st::audio::AudioEngine::Get().Destroy(listener_);
+        listener_ = nullptr;
+    }
+
+private:
+    st::audio::CollectorRef listener_;
 
     st::InputComponent* input_ = nullptr;
     int idLook_ = -1, idView_ = -1;

@@ -3445,6 +3445,23 @@ std::mutex queue_locker;
 
 		return SUCCEEDED(hr);
 	}
+	bool GraphicsDevice_DX12::WrapNativeTexture(ID3D12Resource* resource, const TextureDesc& desc, Texture* texture) const
+	{
+		if (resource == nullptr || texture == nullptr)
+			return false;
+		auto internal_state = wi::allocator::make_shared<Resource_DX12>();
+		internal_state->allocationhandler = allocationhandler;
+		internal_state->resource = resource; // ComPtr: AddRef
+		texture->internal_state = internal_state;
+		texture->type = GPUResource::Type::TEXTURE;
+		texture->mapped_data = nullptr;
+		texture->mapped_size = 0;
+		texture->mapped_subresources = nullptr;
+		texture->mapped_subresource_count = 0;
+		texture->sparse_properties = nullptr;
+		texture->desc = desc;
+		return true;
+	}
 	bool GraphicsDevice_DX12::CreateTexture(const TextureDesc* desc, const SubresourceData* initial_data, Texture* texture, const GPUResource* alias, uint64_t alias_offset) const
 	{
 		auto internal_state = wi::allocator::make_shared<Resource_DX12>();

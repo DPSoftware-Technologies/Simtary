@@ -10,6 +10,10 @@
 #include "terrain/TerrainSystem.h"
 #include "dev/DevBuild.h"
 #include "dev/EditorBridge.h"
+#include "xr/XRSystem.h"
+#include "wiEventHandler.h"
+#include "wiImage.h"
+#include "wiLua.h"
 #include "wiPhysics.h"
 #include "wiScene.h"
 #include "wiHelper.h"
@@ -342,7 +346,10 @@ void st::App::Initialize() {
     // swaps MeshComponent's so_pos/so_pre streamout views twice, which cancels out: GPU
     // skinning then always writes the same half and the previous-position half is never
     // written, so skinned meshes get garbage velocity (broken motion blur, TAA, FSR2).
-    renderPath.setSceneUpdateEnabled(false);
+    // "External" rather than disabled: a disabled path renders the scene as frozen - frame
+    // delta time 0 (GPU particles never simulate), no probe / lightmap / decal refresh, no
+    // acceleration structure updates for ray tracing or DDGI.
+    renderPath.setSceneUpdateExternal(true);
 
     // Project hook: last chance to configure the path (or activate one of your own)
     // before it goes live.
@@ -442,6 +449,9 @@ void st::App::Initialize() {
         st::dev::EditorBridge::Get().Start(*this);
     }
 
+    // VR (Simtary/VR.md): opt-in with --xr, inert otherwise. After the device exists.
+    st::xr::XRSystem::Get().Initialize(Config().name);
+
     // Load the starting scene immediately so entities exist before the first
     // frame's scene->Update() runs.
     if (!Config().startupScene.empty()) {
@@ -466,7 +476,18 @@ void st::App::Update(float dt) {
         return;
     }
 
-    wi::Application::Update(dt);
+    // VR (Framework/xr): while a session runs the headset is the view, so the game path is
+    // not updated or rendered at all - the eyes take over its per-frame scene work and the
+    // window shows the left eye (Compose). The editor keeps its own viewport, so editor mode
+    // leaves the path alone.
+    xrDesktopOff_ = st::xr::XRSystem::Get().IsRunning() && !editor_.IsEnabled();
+    st::xr::XRSystem::Get().SetEyesOwnScene(xrDesktopOff_);
+    {
+        wi::RenderPath* path = activePath;
+        if (xrDesktopOff_) activePath = nullptr;   // the one call that would update it
+        wi::Application::Update(dt);
+        activePath = path;
+    }
 
     ImguiUpdate();
 
@@ -486,6 +507,18 @@ void st::App::Update(float dt) {
 
     // Tool requests run here: main thread, between frames, before the scene sees this frame.
     st::dev::EditorBridge::Get().Pump();
+
+    // OpenXR events + (while a session runs) the headset frame loop. xrWaitFrame paces
+    // the main loop to the HMD from here.
+    st::xr::XRSystem::Get().Update();
+    // Two blocking waits per frame (xrWaitFrame and the desktop present) land the frame on
+    // every other headset interval, so the desktop v-sync is off while a session runs.
+    if (wi::input::Press(wi::input::KEYBOARD_BUTTON_F9)) st::xr::XRSystem::Get().Recenter();
+    const bool xrRunning = st::xr::XRSystem::Get().IsRunning();
+    if (xrRunning != xrVsyncOff_) {
+        wi::eventhandler::SetVSync(xrRunning ? false : displaySettings_.vsync);
+        xrVsyncOff_ = xrRunning;
+    }
 
     // Scene::Load() blocks this thread, so no ImGui frame can be drawn while a
     // transition runs. The native loading window lives on its own thread and keeps
@@ -579,13 +612,25 @@ void st::App::FixedUpdate() {
 }
 
 void st::App::Render() {
-    wi::Application::Render();
+    if (xrDesktopOff_) {
+        wi::lua::Render();             // what wi::Application::Render does besides the path
+    } else {
+        wi::Application::Render();
+    }
 
     // The editor's second viewport has its own RenderPath3D and its own camera. The
     // engine only ever renders wi::Application::activePath, so it is stepped by hand
     // here - after the game path, against the scene both of them share.
     editor_.RenderEditorView(lastDt_);
     editor_.RenderCameraViews(lastDt_);
+
+    // The headset's two eyes: their own paths, configured like the game's.
+    st::xr::XRSystem::Get().RenderEyes(lastDt_, [this](wi::RenderPath3D& path) {
+        path.colorspace = renderPath.colorspace;
+        graphicsSettings.MirrorTo(path, false);
+        path.setlayerMask(renderPath.getLayerMask());
+        path.custom_post_processes = renderPath.custom_post_processes;
+    });
 
     OnRender();
 }
@@ -596,6 +641,22 @@ void st::App::Compose(wi::graphics::CommandList cmd) {
     // covers the whole window anyway, and blitting under it would only cost a pass and
     // make the game's aspect ratio visible behind the panels for a frame after a resize.
     if (editor_.IsEnabled()) {
+        ImguiCompose(cmd);
+        return;
+    }
+
+    // VR: the window mirrors the left eye, letterboxed (the eye is taller than the window).
+    if (xrDesktopOff_) {
+        if (const wi::graphics::Texture* eye = st::xr::XRSystem::Get().MirrorTexture()) {
+            const float cw = canvas.GetLogicalWidth(), ch = canvas.GetLogicalHeight();
+            const float aspect = float(eye->desc.width) / float(std::max(1u, eye->desc.height));
+            float h = ch, w = ch * aspect;
+            if (w > cw) { w = cw; h = cw / aspect; }
+            wi::image::Params fx((cw - w) * 0.5f, (ch - h) * 0.5f, w, h);
+            fx.blendFlag = wi::enums::BLENDMODE_OPAQUE;
+            wi::image::Draw(eye, fx, cmd);
+        }
+        OnCompose(cmd);
         ImguiCompose(cmd);
         return;
     }
@@ -620,6 +681,9 @@ void st::App::Exit() {
     OnExit();
 
     st::dev::EditorBridge::Get().Stop();
+
+    // The OpenXR session holds the engine's D3D12 device and queue: gone before they are.
+    st::xr::XRSystem::Get().Shutdown();
 
     // Frees the editor's render path (and waits for the GPU) before the device goes away.
     editor_.Shutdown();

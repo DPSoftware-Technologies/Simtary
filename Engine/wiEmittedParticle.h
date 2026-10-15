@@ -141,7 +141,10 @@ namespace wi
 		uint32_t GetMaxParticleCount() const { return MAX_PARTICLES; }
 		uint64_t GetMemorySizeInBytes() const;
 
-		bool IsInactive() const { return active_frames == 0; }
+		// SIMTARY: also "inactive" until its GPU buffers exist - an emitter created after the
+		//	scene update (gameplay spawning one mid-frame) reached the shadow / main draws that
+		//	same frame with a null indirect buffer and crashed in DrawInstancedIndirect.
+		bool IsInactive() const { return active_frames == 0 || !indirectBuffers.IsValid(); }
 
 		// Non-serialized attributes:
 		XMFLOAT3 center;

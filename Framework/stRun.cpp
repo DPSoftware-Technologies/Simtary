@@ -1,6 +1,7 @@
 #ifndef SDL_MAIN_HANDLED   // normally set by Simtary::AppFlags
 #define SDL_MAIN_HANDLED
 #endif
+#include "xr/XRSystem.h"
 #include "Simtary.h"
 #include "sdl2.h"
 #include "stRun.h"
@@ -329,6 +330,8 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     while (!quit && !g_restartRequested) {
         SDL_PumpEvents();
         application.Run();
+        // After the frame was submitted: hand the headset its eye images (Framework/xr).
+        st::xr::XRSystem::Get().EndFrame();
 
         SDL_Event event;
 

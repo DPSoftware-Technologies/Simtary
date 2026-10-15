@@ -391,6 +391,8 @@ private:
     BacklogViewer backlogViewer;
     GraphicsSettings graphicsSettings;
     DisplaySettings  displaySettings_;
+    bool             xrVsyncOff_ = false;   // XR session forced the desktop v-sync off
+    bool             xrDesktopOff_ = false; // XR session: the game path is not updated/rendered
     SubWinStatus m_loadingScreen;
 
     // Loads/unloads AOT Faust processors, played through the engine OpenAL stream.

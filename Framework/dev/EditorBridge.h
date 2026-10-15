@@ -51,9 +51,12 @@ public:
     // name -> one-line description with the argument shape, for "help" and the MCP server.
     const std::map<std::string, std::string>& CommandList () const { return help_; }
 
-private:
+    // Add a command. Public so a GAME can expose its own (Milistry: explosion.detonate);
+    // the handler runs on the main thread inside Pump(), like the built-in ones.
     using Handler = std::function<json::Value(const json::Value& args, std::string& error)>;
     void Register (const std::string& name, const std::string& help, Handler fn);
+
+private:
     void RegisterAll ();
     void ThreadMain ();
     std::string Execute (const std::string& line);

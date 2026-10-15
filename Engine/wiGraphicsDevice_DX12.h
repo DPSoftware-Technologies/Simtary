@@ -465,6 +465,12 @@ namespace wi::graphics
 
 		ID3D12Resource* GetTextureInternalResource(const Texture* texture);
 		ID3D12CommandQueue* GetGraphicsCommandQueue();
+		// SIMTARY: native handles for runtimes that share the device (OpenXR's D3D12 session binding)
+		ID3D12Device* GetD3D12Device() const { return device.Get(); }
+		// SIMTARY: wrap a resource created outside the engine (an OpenXR swapchain image) as a Texture.
+		//	No views are made - it is a copy destination / barrier target only. The Texture holds one
+		//	reference, released through the normal deferred destroyer.
+		bool WrapNativeTexture(ID3D12Resource* resource, const TextureDesc& desc, Texture* texture) const;
 
 		struct DescriptorHeapGPU
 		{

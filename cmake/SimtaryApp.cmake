@@ -533,6 +533,9 @@ function(simtary_add_app)
         libgfx          # software 2D rasterizer (GFX.h); propagates its include dir + GFXSDL
         ${APP_EXTRA_LIBS}
     )
+    if (TARGET SimtaryOpenXR)
+        list(APPEND _app_link_libraries SimtaryOpenXR)   # Framework/xr (SIMTARY_HAS_OPENXR)
+    endif()
 
     foreach (_target IN LISTS _compile_targets)
         target_include_directories(${_target} PRIVATE
@@ -847,6 +850,14 @@ function(simtary_add_app)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${SIMTARY_STEAMAUDIO_RUNTIME}" $<TARGET_FILE_DIR:${APP_NAME}>
             COMMENT "Copying Steam Audio runtime library to output directory"
+            VERBATIM
+        )
+    endif()
+    if (TARGET SimtaryOpenXR)
+        add_custom_command(TARGET ${APP_NAME} PRE_LINK
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${SIMTARY_OPENXR_RUNTIME}" $<TARGET_FILE_DIR:${APP_NAME}>
+            COMMENT "Copying OpenXR loader to output directory"
             VERBATIM
         )
     endif()

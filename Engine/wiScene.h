@@ -539,6 +539,7 @@ namespace wi::scene
 		void RunCharacterUpdateSystem(wi::jobsystem::context& ctx);
 		void RunSplineUpdateSystem(wi::jobsystem::context& ctx);
 		void RunNativeComponentUpdateSystem(wi::jobsystem::context& ctx);
+		void RunNativeComponentLateUpdateSystem(); // SIMTARY: NativeComponent::LateUpdate
 
 
 		struct RayIntersectionResult

@@ -73,6 +73,7 @@ library) because each app needs its own generated `version.h` and `AppConfig`.
 | `scene/GuiHooks.*` | `st::GuiHooks::Get().Add(fn)` / `Remove(id)`: GAME UI a native component draws, called from `SceneManager::OnGUI` after the scene's own. Add in `Start`, remove in `Destroy`. |
 | `dev/EditorBridge.*`, `dev/Json.*` | **Editor bridge** (dev build only, `--no-devbridge` to skip): newline-JSON over TCP 127.0.0.1:57230, token in `<cwd>/devbridge.json`, every request run on the main thread in `Pump()` (from `st::App::Update` after input). Commands: scene, entity, metadata, native, rigidbody, model import, terrain create/generate/brush/sample, play transport, input injection (`st::input::InjectAction`, works unfocused), camera, screenshot, editor mode, Taipan, vehicle fit/reset/telemetry - `help` lists them. `Json` is exception-free (array access via `At(i)`). |
 | `terrain/` | **Authored terrain** - what `wi::terrain` lacked: data you can edit. `TerrainData` is a sparse tiled grid (128² samples per tile, height + normalised paint weights per layer, `SoilParams` per layer for tyres/soil). `TerrainGenerate` writes biomes or a heightmap INTO it once. `TerrainSystem` installs a `wi::terrain::Source` on the engine terrain so every chunk (mesh, Jolt heightfield, blend layers, grass) is built from the data, runs edits only while the generator is idle, writes the data into `Terrain::authored_data` on `Flush()` (the editor calls it before every save), and is the ground query physics reads (`Sample`, `Soil`, `Raycast`). Panel: `devui/imterrain.*`, the docked **Terrain** window (Create / Edit / Layers, Roblox-style brushes in the Editor Viewport). Test: `tests/terrain_data_test.cpp`. |
+| `xr/XRSystem.*` | **VR (OpenXR)** - `st::xr::XRSystem`: instance, headset, D3D12 session on the engine's device, session state machine, frame loop. Opt-in per run with `--xr` (which also picks DX12); inert otherwise. Loader fetched by CMake (`SIMTARY_ENABLE_OPENXR`). Step 1 of `VR.md` - nothing rendered to the headset yet. Bridge `xr.status`. |
 | `scene/DayNightComponent.cpp` | The `"sticDayNight"` NATIVE COMPONENT - the same system attached from the editor, so place, date, clock speed, look and weather are scene data that saves with the map and needs no game code. `NCA_*_weatherPreset` names the sky, so a map opens in the weather it was designed for. |
 | `scene/RayComponent.*` | The `"sticRay"` native component: a raycast bolted to an entity, re-cast every frame. The shared seam for a laser sight, a rangefinder, an interaction prompt and an “am I aiming at it” HUD. |
 | `render/Framebuffer.*` | `st::gfx::Framebuffer` — an off-screen surface you draw into and hand to a material, a light mask or a projector. CPU mode wraps libgfx (`GFXcanvas`) and owns the staging texture, row pitch and flip; GPU mode is a render target you draw into with `wi::image`/`wi::font` between `Begin()`/`End()`. |
@@ -449,10 +450,18 @@ writes it only when its own answer changes and a game that turns physics off for
 reasons keeps that until the transport actually moves.
 
 **Scene update runs exactly once per frame.** `st::App::Initialize` calls
-`renderPath.setSceneUpdateEnabled(false)`; scenes call `scene.Update(dt)` themselves
+`renderPath.setSceneUpdateExternal(true)`; scenes call `scene.Update(dt)` themselves
 from `SceneManager::Update`. A second update per frame swaps `MeshComponent`'s
 `so_pos`/`so_pre` streamout views twice, which cancels out — skinned meshes then get
 garbage velocity (broken motion blur, TAA, FSR2).
+
+`setSceneUpdateExternal` is a SIMTARY flag on `RenderPath3D`: the path skips only
+`scene->Update`. It used to be `setSceneUpdateEnabled(false)`, which also renders the scene
+as FROZEN — frame `delta_time` 0 (GPU emitted particles burst and then hang in place
+forever), no env probe / lightmap / decal refresh, no acceleration-structure update
+requests (ray tracing, DDGI), no video or camera render-target swaps. The editor's
+viewport and camera-view paths still use `setSceneUpdateEnabled(false)` (so particles
+freeze in editor mode, and a second path would otherwise simulate them twice).
 
 **A vehicle is a wheel ARRAY, and `rigidbodies` is serialization version 7.**
 `RigidBodyPhysicsComponent::Vehicle` used to be four wheels hardcoded inside
@@ -1181,6 +1190,13 @@ ST_REGISTER_NATIVE_COMPONENT(Spinner)                     // self-registers at s
 Runtime state lives in `Scene::nativeComponents` (not serialized — rebuilt from
 metadata each `Update`); the system runs single-threaded via
 `Scene::RunNativeComponentUpdateSystem`, right after the script system.
+
+**`LateUpdate(dt)` runs after physics and the hierarchy** (`Scene::Update` calls
+`RunNativeComponentLateUpdateSystem` after `RunHierarchyUpdateSystem`), main thread, every
+frame including paused ones. Anything that FOLLOWS a physics body belongs there - a camera
+that read a vehicle's pose in `Update` saw the previous step's, and trailed the interpolated
+vehicle by a varying amount (visible judder at 110 fps render / 60 Hz physics).
+`stChaseCamera` uses it.
 
 **Dependencies are declared, not hand-rolled.** `ST_REQUIRE_COMPONENTS(TransformComponent,
 Health)` in a component body is Unity's `[RequireComponent]`: the manager creates whatever

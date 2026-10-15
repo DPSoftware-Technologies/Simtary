@@ -675,6 +675,22 @@ void EditorBridge::RegisterAll () {
         return Value(true);
     });
 
+    Register("mesh.set_material", "{id|name (object or mesh), material (id or name)} -> every subset of that mesh uses the material",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        const Entity mat = ResolveEntity(scene, a, err, "material");
+        if (mat == INVALID_ENTITY) return Value();
+        if (!scene.materials.Contains(mat)) { err = "'material' is not a material entity"; return Value(); }
+        Entity meshEntity = e;
+        if (const wi::scene::ObjectComponent* o = scene.objects.GetComponent(e)) meshEntity = o->meshID;
+        wi::scene::MeshComponent* mesh = scene.meshes.GetComponent(meshEntity);
+        if (mesh == nullptr) { err = "no mesh on that entity"; return Value(); }
+        for (auto& subset : mesh->subsets) subset.materialID = mat;
+        return Value(double(mesh->subsets.size()));
+    });
+
     Register("model.import", "{path, name?, parent?, position?, rotation_deg?, scale?} -> root id", [S](const Value& a, std::string& err) {
         WScene& scene = S();
         const st::model::ImportResult r = st::model::Import(scene, a["path"].AsString());

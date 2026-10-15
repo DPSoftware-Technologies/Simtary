@@ -285,6 +285,11 @@ namespace wi::scene
 
 		RunHierarchyUpdateSystem(ctx);
 
+		// SIMTARY: native LateUpdate - after physics and the hierarchy, so followers (the
+		//	chase camera) read this frame's final, interpolated world transforms.
+		wi::jobsystem::Wait(ctx);
+		RunNativeComponentLateUpdateSystem();
+
 		// Lightmap requests are determined at this point, so we know if we need TLAS or not:
 		if (lightmap_request_allocator.load() > 0)
 		{

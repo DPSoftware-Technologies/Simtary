@@ -89,6 +89,7 @@ namespace wi::scene
 		Compute,     // heavy math / lookups, results read by Update
 		FixedUpdate, // fixed 60 Hz step, runs 0..MAX_FIXED_STEPS times per frame
 		Update,      // the frame's work
+		LateUpdate,  // SIMTARY: after physics + hierarchy - final world transforms (cameras)
 	};
 
 	// One thing a component cannot work without - Unity's [RequireComponent], resolved by the
@@ -179,6 +180,12 @@ namespace wi::scene
 		virtual void Compute(float dt) {}
 		virtual void FixedUpdate(float fixedDt) {}
 		virtual void Update(float dt) {}
+		// SIMTARY: after the scene's physics and hierarchy update, so every world transform
+		//	is this frame's final one (Unity's LateUpdate). Where a camera follows something:
+		//	reading a physics body in Update sees the previous step's pose, and the follower
+		//	jitters against the interpolated object it follows. Main thread, runs every frame
+		//	including paused ones (dt = 0) so a paused world can still be looked around.
+		virtual void LateUpdate(float dt) {}
 		virtual void OnDisable() {}
 		virtual void Destroy() {}
 
@@ -655,6 +662,7 @@ namespace wi::scene
 		// Reconcile attachments against metadata, fire Start() on new ones and Update(dt) on all.
 		//	Called by Scene::RunNativeComponentUpdateSystem once per frame.
 		void RunUpdate(Scene& scene, float dt);
+		void RunLateUpdate(Scene& scene, float dt); // SIMTARY: see NativeComponent::LateUpdate
 		// Destroy + drop every instance on one entity (called from Scene::Entity_Remove).
 		//	Called while an update is in flight (a component removed an entity from its own
 		//	Update) it queues instead: destroying now would free an Instance the running pass

@@ -87,6 +87,7 @@ namespace wi
 		bool ditherEnabled = true;
 		bool occlusionCullingEnabled = true;
 		bool sceneUpdateEnabled = true;
+		bool sceneUpdateExternal = false; // SIMTARY
 		bool fsrEnabled = false;
 		bool fsr2Enabled = false;
 		bool mesh_blend = true;
@@ -287,6 +288,7 @@ namespace wi
 		constexpr bool getDitherEnabled() const { return ditherEnabled; }
 		constexpr bool getOcclusionCullingEnabled() const { return occlusionCullingEnabled; }
 		constexpr bool getSceneUpdateEnabled() const { return sceneUpdateEnabled; }
+		constexpr bool getSceneUpdateExternal() const { return sceneUpdateExternal; }
 		constexpr bool getFSREnabled() const { return fsrEnabled; }
 		constexpr bool getFSR2Enabled() const { return fsr2Enabled; }
 		constexpr bool getVisibilityComputeShadingEnabled() const { return visibility_shading_in_compute; }
@@ -350,6 +352,11 @@ namespace wi
 		constexpr void setDitherEnabled(bool value) { ditherEnabled = value; }
 		constexpr void setOcclusionCullingEnabled(bool value) { occlusionCullingEnabled = value; }
 		constexpr void setSceneUpdateEnabled(bool value) { sceneUpdateEnabled = value; }
+		// SIMTARY: the caller runs Scene::Update itself, once per frame. The path does not
+		//	update the scene but still renders it as live: frame delta time (GPU particle
+		//	simulation, shader time), GI / probe / lightmap / decal refresh, video, camera
+		//	render targets. Only meaningful with sceneUpdateEnabled = true.
+		constexpr void setSceneUpdateExternal(bool value) { sceneUpdateExternal = value; }
 		constexpr void setMeshBlendEnabled(bool value) { mesh_blend = value; }
 		void setFSREnabled(bool value);
 		void setFSR2Enabled(bool value);

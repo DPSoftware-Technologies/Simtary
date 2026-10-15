@@ -354,15 +354,18 @@ namespace wi
 			{
 				scene->SetAccelerationStructureUpdateRequested(true);
 			}
-			// SIMTARY: rebase the float world around the camera before the transform system
-			// runs. Opt-in - see wi::scene::SetRenderOriginFollowsCamera for what else has to
-			// be rebased before it is safe to switch on.
-			if (wi::scene::GetRenderOriginFollowsCamera())
+			if (!getSceneUpdateExternal()) // SIMTARY: the caller already ran Scene::Update this frame
 			{
-				wi::scene::SetRenderOrigin(camera->GetWorldPosition());
+				// SIMTARY: rebase the float world around the camera before the transform system
+				// runs. Opt-in - see wi::scene::SetRenderOriginFollowsCamera for what else has to
+				// be rebased before it is safe to switch on.
+				if (wi::scene::GetRenderOriginFollowsCamera())
+				{
+					wi::scene::SetRenderOrigin(camera->GetWorldPosition());
+				}
+				scene->camera = *camera;
+				scene->Update(dt * wi::renderer::GetGameSpeed());
 			}
-			scene->camera = *camera;
-			scene->Update(dt * wi::renderer::GetGameSpeed());
 		}
 	}
 

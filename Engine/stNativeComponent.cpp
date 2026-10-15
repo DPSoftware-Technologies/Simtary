@@ -632,6 +632,23 @@ namespace wi::scene
 		return attachedAny;
 	}
 
+	void NativeComponentManager::RunLateUpdate(Scene& scene, float dt)
+	{
+		// Serial and main-thread only: LateUpdate is for followers (cameras, attached UI) that
+		// read the final transforms, a handful per scene. Same removal rules as RunUpdate.
+		phaseRunning = true;
+		for (auto& pair : instances)
+		{
+			for (NativeComponentManager::Instance& inst : pair.second)
+			{
+				if (inst.component && inst.enabled && inst.started)
+					inst.component->LateUpdate(dt);
+			}
+		}
+		phaseRunning = false;
+		FlushMainThreadQueue();
+	}
+
 	void NativeComponentManager::RunUpdate(Scene& scene, float dt)
 	{
 		auto range = wi::profiler::BeginRangeCPU("Native Components");
@@ -832,6 +849,7 @@ namespace wi::scene
 			case NativeStage::Compute:     c->Compute(stageDt); break;
 			case NativeStage::FixedUpdate: c->FixedUpdate(stageDt); break;
 			case NativeStage::Update:      c->Update(stageDt); break;
+			case NativeStage::LateUpdate:  c->LateUpdate(stageDt); break;
 			}
 		};
 
@@ -996,6 +1014,11 @@ namespace wi::scene
 	// ------------------------------------------------------------------
 	// Scene hook
 	// ------------------------------------------------------------------
+	void Scene::RunNativeComponentLateUpdateSystem()
+	{
+		nativeComponents.RunLateUpdate(*this, dt);
+	}
+
 	void Scene::RunNativeComponentUpdateSystem(wi::jobsystem::context& ctx)
 	{
 		nativeComponents.RunUpdate(*this, dt);
