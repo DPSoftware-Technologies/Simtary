@@ -25,6 +25,53 @@ Milistry.exe --scene=vehicletest --connect=<host>[:port] --name=<name> [--transp
   same folder takes `--devbridge-port=57231` (info file `devbridge_57231.json`).
 - B / Shift+B on a client asks the SERVER for the explosion; it detonates and broadcasts it.
 
+## Using it in a project
+
+Nothing to switch on: every game built on Simtary has it. The command line decides the role
+(`--server` / `--connect`), and the game asks `st::net::NetSession::Get()`:
+
+| call | |
+|---|---|
+| `IsServer()` / `IsClient()` / `IsOnline()` | the role; offline both are false |
+| `IsReady()` | client: welcomed by the server |
+| `LocalClientId()` / `Peers()` | who I am, who is connected (`Peer::clientId`, `name`) |
+| `SetHandler(type, fn(fromClientId, Reader&))` | receive a game message (`type >= kFirstGameMessage`, 64..255) |
+| `SendToServer(Writer, Delivery)` | client -> server |
+| `Broadcast(Writer, Delivery)` | server -> every client |
+| `Kick(clientId, reason)` | server |
+| `st::IsHeadless()` (`stRun.h`) | dedicated server: skip anything visual / audible |
+
+**Vehicles are automatic**: a scene with an `stVehicle` entity is synced - one copy per player.
+
+**Anything else** is a game message. Pattern (Milistry's explosion, `src/main.cpp`): the client
+ASKS, the server DECIDES, then tells everyone.
+
+```cpp
+#include "net/NetSession.h"
+
+constexpr uint8_t kMsgDoorOpen = st::net::kFirstGameMessage + 1;   // each game picks its own numbers
+
+void RequestDoor (uint32_t doorId) {              // called by gameplay, on any machine
+    auto& net = st::net::NetSession::Get();
+    st::net::Writer w(kMsgDoorOpen);
+    w.U32(doorId);
+    if (net.IsClient()) { net.SendToServer(w, st::net::Delivery::Reliable); return; }
+    OpenDoor(doorId);                             // offline or server: do it
+    if (net.IsServer()) net.Broadcast(w, st::net::Delivery::Reliable);
+}
+
+// once, e.g. in App::OnInitialize
+st::net::NetSession::Get().SetHandler(kMsgDoorOpen, [](uint32_t from, st::net::Reader& r) {
+    const uint32_t doorId = r.U32();
+    if (!r.ok()) return;                          // malformed: ignore
+    if (st::net::NetSession::Get().IsServer()) RequestDoor(doorId);   // a client asked: validate here
+    else OpenDoor(doorId);                        // the server says it happened
+});
+```
+
+Reliable for things that must arrive (doors, spawns, hits); Unreliable for frequent state where
+only the newest matters. Keep messages small - every byte goes to every player.
+
 ## Design as built
 
 **Topology: dedicated, authoritative, not peer-to-peer.** The server runs the real scene and

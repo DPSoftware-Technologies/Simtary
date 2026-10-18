@@ -1,6 +1,6 @@
 <mxfile host="Electron">
   <diagram name="Page-1" id="ep05gKC2Wc3iRYgmiyIH">
-    <mxGraphModel dx="975" dy="580" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="1414" dy="841" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -12,14 +12,6 @@
             <Array as="points">
               <mxPoint x="520.03" y="270" />
               <mxPoint x="380.03" y="270" />
-            </Array>
-          </mxGeometry>
-        </mxCell>
-        <mxCell id="k3GgC9j7EsYl6oxO2miY-2" edge="1" parent="1" source="WDuG_2rc_qCI_SFRrD5D-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;fillColor=#6a00ff;strokeColor=#3700CC;" target="k3GgC9j7EsYl6oxO2miY-1">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="560.03" y="270" />
-              <mxPoint x="700.03" y="270" />
             </Array>
           </mxGeometry>
         </mxCell>
@@ -77,6 +69,9 @@
               <mxPoint x="80" y="380.03" />
             </Array>
           </mxGeometry>
+        </mxCell>
+        <mxCell id="YSny6vAJb_Qe5N3In0tg-1" edge="1" parent="1" source="WDuG_2rc_qCI_SFRrD5D-3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="k3GgC9j7EsYl6oxO2miY-1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="WDuG_2rc_qCI_SFRrD5D-3" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="HMMWV4 Core" vertex="1">
           <mxGeometry height="60" width="120" x="478" y="290" as="geometry" />
@@ -215,14 +210,6 @@
         <mxCell id="SC80WF_kExiq0ctvcJhb-14" parent="1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="Joint Light Toolchain&amp;nbsp;Visualizator" vertex="1">
           <mxGeometry height="30" width="190" x="130" y="305" as="geometry" />
         </mxCell>
-        <mxCell id="k3GgC9j7EsYl6oxO2miY-6" edge="1" parent="1" source="k3GgC9j7EsYl6oxO2miY-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" target="WDuG_2rc_qCI_SFRrD5D-19">
-          <mxGeometry relative="1" as="geometry">
-            <Array as="points">
-              <mxPoint x="740" y="350.03" />
-              <mxPoint x="740" y="437.51" />
-            </Array>
-          </mxGeometry>
-        </mxCell>
         <mxCell id="k3GgC9j7EsYl6oxO2miY-8" edge="1" parent="1" source="k3GgC9j7EsYl6oxO2miY-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.333;entryY=0;entryDx=0;entryDy=0;entryPerimeter=0;" target="k3GgC9j7EsYl6oxO2miY-7">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
@@ -231,7 +218,7 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="k3GgC9j7EsYl6oxO2miY-1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Blackhawk4 Core" vertex="1">
+        <mxCell id="k3GgC9j7EsYl6oxO2miY-1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Blackhawk4 Session manager" vertex="1">
           <mxGeometry height="60" width="120" x="640" y="290" as="geometry" />
         </mxCell>
         <mxCell id="k3GgC9j7EsYl6oxO2miY-7" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;font style=&quot;font-size: 7px;&quot;&gt;Video Encoder,&lt;/font&gt;&lt;div&gt;&lt;font style=&quot;font-size: 7px;&quot;&gt;WebRTC,&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;span style=&quot;font-size: 7px;&quot;&gt;Moonlight server&lt;/span&gt;&lt;/div&gt;" vertex="1">
