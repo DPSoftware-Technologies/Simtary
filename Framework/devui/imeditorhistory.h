@@ -113,6 +113,10 @@ public:
 
     void Clear();
 
+    // Bumped by every push, undo and redo. Compare against a value taken at save time to
+    // tell whether there are unsaved edits (the template preview's "*").
+    uint64_t Revision() const { return revision_; }
+
 private:
     struct Step {
         enum class Kind { None, Transform, Entity, Custom } kind = Kind::None;
@@ -141,6 +145,7 @@ private:
     Step pending_;
     wi::vector<Step> undo_;
     wi::vector<Step> redo_;
+    uint64_t revision_ = 0;
 };
 
 } // namespace st

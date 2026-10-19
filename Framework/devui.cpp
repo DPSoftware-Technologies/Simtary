@@ -14,8 +14,13 @@ void st::App::DevUIMenuBar() {
     // scene out from under it.
     if (!ImGui::GetIO().WantCaptureKeyboard) {
         st::PlayControl& play = st::PlayControl::Get();
-        if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) play.TogglePause();
-        if (ImGui::IsKeyPressed(ImGuiKey_F6, false)) play.Pause();
+        // F5 is Unity's Ctrl+P - Play / Stop - while the editor is open. Without it there is
+        //	no Edit mode to stop into, so F5 keeps its old pause toggle.
+        if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
+            if (editor_.IsEnabled()) play.TogglePlayMode();
+            else                     play.TogglePause();
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_F6, false)) play.TogglePause();
         if (ImGui::IsKeyPressed(ImGuiKey_F7, false)) play.Step();
         if (ImGui::IsKeyPressed(ImGuiKey_F8, false)) play.Reset();
     }
@@ -59,16 +64,20 @@ void st::App::DevUIMenuBar() {
                 ImGui::EndMenu();
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Play", "F5 toggles", st::PlayControl::Get().State() == st::PlayState::Playing))
+            if (ImGui::MenuItem("Play", "F5", !st::PlayControl::Get().IsEditing() &&
+                                st::PlayControl::Get().State() == st::PlayState::Playing))
                 st::PlayControl::Get().Play();
+            if (ImGui::MenuItem("Stop (back to Edit mode)", "F5", false, !st::PlayControl::Get().IsEditing()))
+                st::PlayControl::Get().Stop();
             if (ImGui::MenuItem("Play without physics", NULL,
                                 st::PlayControl::Get().State() == st::PlayState::PlayingNoPhysics))
                 st::PlayControl::Get().PlayWithoutPhysics();
             if (ImGui::MenuItem("Pause", "F6", st::PlayControl::Get().IsPaused()))
                 st::PlayControl::Get().Pause();
-            if (ImGui::MenuItem("Step one frame", "F7", false, st::PlayControl::Get().IsPaused()))
+            if (ImGui::MenuItem("Step one frame", "F7", false,
+                                st::PlayControl::Get().IsPaused() || st::PlayControl::Get().IsEditing()))
                 st::PlayControl::Get().Step();
-            if (ImGui::MenuItem("Reset scene", "F8"))
+            if (ImGui::MenuItem("Restart", "F8"))
                 st::PlayControl::Get().Reset();
             ImGui::Separator();
             DevUISceneSelector();

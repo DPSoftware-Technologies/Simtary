@@ -22,6 +22,9 @@
 #include "stApp.h"
 #include "scene/PlayControl.h"
 #include "scene/SceneFile.h"
+#include "scene/ObjectTemplate.h"
+#include "scene/TemplatePool.h"
+#include "render/MeshLOD.h"
 #include "script/ScriptSystem.h"
 #include "input/InputActions.h"
 #include "io/model/ModelImporter.h"
@@ -391,6 +394,7 @@ void EditorBridge::RegisterAll () {
         o.Set("scene", app.sceneManager.CurrentName());
         o.Set("loading", app.sceneManager.HasPendingLoad());
         o.Set("play", st::ToString(st::PlayControl::Get().State()));
+        o.Set("mode", st::PlayControl::Get().IsEditing() ? "edit" : "play");
         o.Set("editor", app.IsEditorMode());
         o.Set("dev_build", IsDevBuild());
         o.Set("entities", uint64_t(S().names.GetCount()));
@@ -429,6 +433,110 @@ void EditorBridge::RegisterAll () {
         if (path.empty()) { err = "path required, e.g. assets/scenes/mymap.stsd"; return Value(); }
         if (!app.Editor().SaveSceneForTool(app, S(), path)) { err = "save failed - see log"; return Value(); }
         return Value(path);
+    });
+    Register("template.save", "{id|name, name?} -> saves the object and everything under it to assets/templates/<name>.sttd",
+        [&app, S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        std::string name = a["name"].AsString();
+        if (name.empty()) {
+            const wi::scene::NameComponent* n = scene.names.GetComponent(e);
+            name = (n && !n->name.empty()) ? n->name : std::string("Template");
+        }
+        const std::string path = std::string(st::kTemplateFolder) + "/" + name + "." + st::kTemplateExtension;
+        if (!app.Editor().SaveTemplateForTool(scene, e, path)) { err = "template save failed - see log"; return Value(); }
+        return Value(path);
+    });
+    Register("template.place", "{path, position=[0,0,0]} -> root id of the placed copy (one undo step)",
+        [&app, S](const Value& a, std::string& err) {
+        const std::string path = a["path"].AsString();
+        if (path.empty()) { err = "path required, e.g. assets/templates/Player.sttd"; return Value(); }
+        XMFLOAT3 p(0, 0, 0);
+        ReadVec3(a["position"], p);
+        const Entity e = app.Editor().PlaceTemplateForTool(S(), path, p);
+        if (e == INVALID_ENTITY) { err = "place failed - see log"; return Value(); }
+        return Value(uint64_t(e));
+    });
+    Register("template.open", "{path} -> opens the template's preview window (editor mode)",
+        [&app](const Value& a, std::string& err) {
+        const std::string path = a["path"].AsString();
+        if (path.empty()) { err = "path required"; return Value(); }
+        app.Editor().OpenTemplate(path);
+        return Value(true);
+    });
+    Register("template.preview_shot", "{path} -> PNG of the newest template preview's view",
+        [&app](const Value& a, std::string& err) {
+        const wi::graphics::Texture* tex = app.Editor().TemplatePreviewFrame();
+        if (tex == nullptr || !tex->IsValid()) { err = "no template preview has rendered"; return Value(); }
+        std::string path = a["path"].AsString();
+        if (path.empty()) path = "devbridge_shots/template_preview.png";
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+        if (!wi::helper::saveTextureToFile(*tex, path)) { err = "could not write " + path; return Value(); }
+        return Value(std::filesystem::absolute(path, ec).generic_u8string());
+    });
+    Register("pool.prewarm", "{path, count} -> parked copies the pool now holds",
+        [S](const Value& a, std::string& err) {
+        if (st::PlayControl::Get().IsEditing()) { err = "Edit mode: pools hold Play-mode objects - play first"; return Value(); }
+        std::string error;
+        st::TemplatePool* pool = st::TemplatePools::Get().Acquire(a["path"].AsString(), &error);
+        if (pool == nullptr) { err = error; return Value(); }
+        return Value(uint64_t(pool->Prewarm(S(), (uint32_t)std::max(0.0, a["count"].AsNumber()))));
+    });
+    Register("pool.spawn", "{path, position=[0,0,0]} -> root id (reuses a parked copy when there is one)",
+        [S](const Value& a, std::string& err) {
+        if (st::PlayControl::Get().IsEditing()) { err = "Edit mode: pools hold Play-mode objects - play first"; return Value(); }
+        std::string error;
+        st::TemplatePool* pool = st::TemplatePools::Get().Acquire(a["path"].AsString(), &error);
+        if (pool == nullptr) { err = error; return Value(); }
+        XMFLOAT3 p(0, 0, 0);
+        ReadVec3(a["position"], p);
+        const Entity e = pool->Spawn(S(), p);
+        if (e == INVALID_ENTITY) { err = "spawn failed (pool at maxActive?)"; return Value(); }
+        return Value(uint64_t(e));
+    });
+    Register("pool.release", "{id} -> parks a copy a pool spawned", [S](const Value& a, std::string& err) {
+        const Entity e = (Entity)a["id"].AsNumber();
+        st::TemplatePool* pool = st::TemplatePools::Get().Owner(e);
+        if (pool == nullptr || !pool->Release(S(), e)) { err = "not an active pooled copy"; return Value(); }
+        return Value(true);
+    });
+    Register("pool.stats", "{} -> per pool: active, parked, created, reused, recycled", [](const Value&, std::string&) {
+        Value out = Value::Object();
+        st::TemplatePools::Get().ForEach([&out](const std::string& key, st::TemplatePool& pool) {
+            const st::TemplatePoolStats s = pool.Stats();
+            Value v = Value::Object();
+            v.Set("active", uint64_t(s.active));
+            v.Set("parked", uint64_t(s.parked));
+            v.Set("created", uint64_t(s.created));
+            v.Set("reused", uint64_t(s.reused));
+            v.Set("recycled", uint64_t(s.recycled));
+            out.Set(key, std::move(v));
+        });
+        return out;
+    });
+    Register("mesh.generate_lods", "{id|name (an entity with a mesh, or an object), levels=4, keep=0.5, error=0.02} or {all:true} -> levels / meshes",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        st::render::MeshLODSettings settings;
+        if (a.Has("levels")) settings.lodCount = (uint32_t)a["levels"].AsNumber();
+        if (a.Has("keep")) settings.reduction = (float)a["keep"].AsNumber();
+        if (a.Has("error")) settings.targetError = (float)a["error"].AsNumber();
+        if (a["all"].AsBool())
+            return Value(uint64_t(st::render::GenerateSceneLODs(scene, settings)));
+        Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        if (const wi::scene::ObjectComponent* o = scene.objects.GetComponent(e)) e = o->meshID;
+        wi::scene::MeshComponent* mesh = scene.meshes.GetComponent(e);
+        if (mesh == nullptr) { err = "no mesh on that entity"; return Value(); }
+        st::render::MeshLODReport report;
+        if (!st::render::GenerateMeshLODs(*mesh, settings, &report)) { err = report.reason; return Value(); }
+        Value out = Value::Object();
+        out.Set("levels", uint64_t(report.lods));
+        out.Set("lod0_triangles", uint64_t(report.lod0Triangles));
+        out.Set("last_triangles", uint64_t(report.lastTriangles));
+        return out;
     });
     Register("scene.rescan", "{} -> register maps found in the scene folder", [&app](const Value&, std::string&) {
         return Value(app.sceneManager.DiscoverScenes(App::Config().sceneFolder));
@@ -542,7 +650,10 @@ void EditorBridge::RegisterAll () {
         XMFLOAT3 v;
         if (ReadVec3(a["position"], v)) {
             if (!scene.hierarchy.Contains(e)) t->SetWorldPosition(v.x, v.y, v.z);
-            else t->translation_local = v;
+            // As a Translate by the difference: a plain write to translation_local is
+            //	overwritten from the large-world absolute position on the next update.
+            else t->Translate(XMFLOAT3(v.x - t->translation_local.x, v.y - t->translation_local.y,
+                                       v.z - t->translation_local.z));
         }
         if (ReadVec3(a["rotation_deg"], v)) t->rotation_local = QuatFromEulerDeg(v);
         if (ReadVec3(a["scale"], v)) t->scale_local = v;
@@ -648,6 +759,15 @@ void EditorBridge::RegisterAll () {
         if (a.Has("kinematic")) rb->SetKinematic(a["kinematic"].AsBool());
         rb->physicsobject = {}; // rebuild with the new settings
         return Value(true);
+    });
+    Register("rigidbody.remove", "{id|name} -> removes the rigid body (the editor's Properties 'x')",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        const bool had = scene.rigidbodies.Contains(e);
+        if (had) scene.rigidbodies.Remove(e);
+        return Value(had);
     });
 
     Register("material.set", "{id|name, color:[r,g,b,a]?, opacity?, roughness?, metalness?, transmission?, blend=opaque|alpha|premultiplied|additive?}",
@@ -796,15 +916,17 @@ void EditorBridge::RegisterAll () {
     });
 
     // play, input, camera, capture
-    Register("play", "{state=play|nophysics|pause|step|reset, frames=1}", [](const Value& a, std::string& err) {
+    Register("play", "{state=play|nophysics|pause|step|reset|stop, frames=1} - play/step from Edit mode snapshot the scene, stop puts it back",
+        [](const Value& a, std::string& err) {
         st::PlayControl& pc = st::PlayControl::Get();
         const std::string s = a["state"].AsString();
-        if (s == "play") pc.Play();
+        if (s == "stop") pc.Stop();
+        else if (s == "play") pc.Play();
         else if (s == "nophysics") pc.PlayWithoutPhysics();
         else if (s == "pause") pc.Pause();
         else if (s == "step") pc.Step(int(a["frames"].AsInt(1)));
         else if (s == "reset") pc.Reset();
-        else if (!s.empty()) { err = "state must be play, nophysics, pause, step or reset"; return Value(); }
+        else if (!s.empty() && s != "stop") { err = "state must be play, nophysics, pause, step, reset or stop"; return Value(); }
         return Value(st::ToString(pc.State()));
     });
     Register("input.inject", "{action, value (number or [x,y]), seconds=1 (<=0 holds until input.clear)} - works while the window is unfocused",

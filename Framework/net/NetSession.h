@@ -5,6 +5,9 @@
 //   --server[=port]              host (headless unless --server-window, see st::IsHeadless)
 //   --server-config=<file>       key = value lines: port, max_players, name, transport
 //   --connect=<host>[:port]      join a server (TCP resolves names; GNS wants an IP)
+//   --host[=port]                INTEGRATED server: this process runs the world AND has a local
+//                                player (client id 1); with a port it also opens to the network
+//                                (same as OpenToLan at runtime). Single-player is this, closed.
 //   --transport=gns|tcp          UDP (GameNetworkingSockets, default) or TCP - both ends alike
 //   --name=<player name>         what the server calls you (default "Player")
 //
@@ -32,7 +35,7 @@
 
 namespace st::net {
 
-enum class Mode { Off, Server, Client };
+enum class Mode { Off, Server, Client, Host };
 
 constexpr uint16_t kDefaultPort = 27015;
 constexpr uint16_t kProtocolVersion = 1;
@@ -63,11 +66,26 @@ public:
     static NetSession& Get ();
 
     void Initialize (const std::string& appName);
+    // Runtime entry to the integrated host (what --host does); only from Mode::Off.
+    bool StartHost ();
+    // Runtime entry to a game on another machine (what --connect does); only from Mode::Off. The client
+    // reconnects by itself until Leave(). `transport` is "gns" (UDP) or "tcp" and must match the server's.
+    bool StartClient (const std::string& address, const std::string& playerName, const std::string& transport = "gns");
+    // Back to offline from any mode: drops the connection / the host, forgets every network vehicle. The
+    // scene lost the vehicle template when the session first took it, so the caller reloads the scene.
+    void Leave ();
+    const std::string& PlayerName () const { return playerName_; }
+    void SetPlayerName (const std::string& name) { if (!name.empty()) playerName_ = name; }
     void Update (float dt);
     void Shutdown ();
 
     Mode GetMode () const { return mode_; }
-    bool IsServer () const { return mode_ == Mode::Server; }
+    // The world's authority: a dedicated server OR an integrated host.
+    bool IsServer () const { return mode_ == Mode::Server || mode_ == Mode::Host; }
+    bool IsHost () const { return mode_ == Mode::Host; }
+    // The authority also has a player of its own on this machine (client id LocalClientId()).
+    bool HasLocalPlayer () const { return mode_ == Mode::Host; }
+    bool IsListening () const { return transport_ != nullptr && IsServer(); }
     bool IsClient () const { return mode_ == Mode::Client; }
     bool IsOnline () const { return mode_ != Mode::Off; }
     // Client: handshake done. Server: always true once listening.
@@ -79,6 +97,7 @@ public:
     const std::string& LastError () const { return error_; }
     VehicleSync* Vehicles () const { return vehicles_.get(); }
     const ServerConfig& Config () const { return config_; }
+    const std::string& ConnectAddress () const { return connectTo_; }
 
     // Game messages (type >= kFirstGameMessage). fromClientId is 0 on a client (= the server).
     using Handler = std::function<void(uint32_t fromClientId, Reader& r)>;
@@ -86,6 +105,11 @@ public:
     void SendToServer (const Writer& w, Delivery d);
     void Broadcast (const Writer& w, Delivery d);
     void Kick (uint32_t clientId, const char* reason);
+
+    // Integrated host only. Open the world to other machines / close it again (remote players
+    // are dropped). OpenToLan returns false with LastError() set when the port cannot be taken.
+    bool OpenToLan (uint16_t port, const std::string& transport = "");
+    void CloseLan ();
 
 private:
     void OnServerEvent (const Event& e);
@@ -97,6 +121,7 @@ private:
     void RunConsole ();
     void ProcessConsole ();
     void RegisterBridge ();
+    void DropRemotePeers (const char* reason);
 
     Mode mode_ = Mode::Off;
     ServerConfig config_;

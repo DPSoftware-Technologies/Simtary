@@ -95,6 +95,7 @@ struct Binding {
 	Part  part   = Part::Value;
 	float scale  = 1.0f;   // processor: multiply
 	bool  invert = false;  // processor: negate (applied after scale)
+	bool  invertY = false; // processor: negate only Y of a Vector2 source (a stick)
 
 	// Control scheme this binding belongs to ("Gamepad", "Keyboard&Mouse", ...).
 	//	Free-form and purely descriptive - it labels the binding in the DevUI tree and
@@ -174,6 +175,10 @@ public:
 
 	// Negate the binding added last. `.Axis(GamepadAxis::RightY).Inverted()`.
 	ActionBuilder& Inverted();
+	// Negate only the Y of the binding added last. The right stick reads DOWN-positive
+	//	(see the engine notes), so a right stick used as a direction - a drone's cyclic -
+	//	is `.StickBinding(Stick::Right).InvertedY()`.
+	ActionBuilder& InvertedY();
 
 	Action* Get() const { return action_; }
 

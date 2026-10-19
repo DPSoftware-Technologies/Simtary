@@ -33,6 +33,17 @@ using namespace st::devui;
 // Script drops (defined further down, with the Properties panel they mostly serve).
 static bool AcceptScriptDrop(Scene& scene, Entity entity, st::EditorHistory* history);
 
+// The subtree the HierarchyGUI call being drawn is limited to (see its header comment).
+//	Set for the length of one call; the row menu reads it to keep the scope root alive.
+static Entity g_scopeRoot = INVALID_ENTITY;
+
+static std::function<void(Scene&, Entity)> g_saveTemplate;
+
+void SetSaveTemplateHandler(std::function<void(Scene&, Entity)> handler)
+{
+	g_saveTemplate = std::move(handler);
+}
+
 // ------------------------------------------------------------------ helpers ---
 
 // Strip the "wi::scene::Scene::" namespace prefix off a ComponentLibrary key so the
@@ -283,7 +294,7 @@ static void EntityContextMenu(Scene& scene, Entity e, Entity& selected, st::Edit
 		}
 	}
 
-	if (ImGui::MenuItem("Delete"))
+	if (ImGui::MenuItem("Delete", nullptr, false, e != g_scopeRoot))
 	{
 		wi::vector<Entity> subtree;
 		GatherSubtree(scene, e, subtree);
@@ -292,6 +303,16 @@ static void EntityContextMenu(Scene& scene, Entity e, Entity& selected, st::Edit
 		history.Commit(scene);
 		if (selected == e)
 			selected = INVALID_ENTITY;
+	}
+
+	if (g_saveTemplate && scene.transforms.Contains(e))
+	{
+		ImGui::Separator();
+		if (ImGui::MenuItem("Save as Template..."))
+			g_saveTemplate(scene, e);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Save this object - children, components, and the meshes and "
+				"materials it uses - as a .sttd any scene can place.");
 	}
 
 	ImGui::EndPopup();
@@ -373,8 +394,10 @@ static void DrawNode(Scene& scene, Entity e,
 	}
 }
 
-void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
+void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history, Entity scopeRoot)
 {
+	g_scopeRoot = scopeRoot;
+
 	// Editor mode gets the create/delete toolbar; the plain DevUI window stays a viewer.
 	if (history != nullptr)
 	{
@@ -382,13 +405,13 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 			ImGui::OpenPopup("##hierarchy_create");
 		if (ImGui::BeginPopup("##hierarchy_create"))
 		{
-			const Entity created = CreateObjectMenuItems(scene, XMFLOAT3(0, 0, 0), INVALID_ENTITY, history);
+			const Entity created = CreateObjectMenuItems(scene, XMFLOAT3(0, 0, 0), scopeRoot, history);
 			if (created != INVALID_ENTITY)
 				selected = created;
 			ImGui::EndPopup();
 		}
 		ImGui::SameLine();
-		ImGui::BeginDisabled(selected == INVALID_ENTITY);
+		ImGui::BeginDisabled(selected == INVALID_ENTITY || selected == scopeRoot);
 		if (ImGui::Button("Delete"))
 		{
 			wi::vector<Entity> subtree;
@@ -406,6 +429,14 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 
 	std::unordered_set<Entity> all;
 	GatherEntities(scene, all);
+	if (scopeRoot != INVALID_ENTITY)
+	{
+		std::unordered_set<Entity> scoped;
+		for (Entity e : all)
+			if (e == scopeRoot || scene.Entity_IsDescendant(e, scopeRoot))
+				scoped.insert(e);
+		all.swap(scoped);
+	}
 	const size_t totalEntities = all.size();
 
 	// Window-local state, for the same reason Follow uses it: HierarchyGUI is drawn by the
@@ -580,7 +611,8 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 	if (CurrentDragEntity() != INVALID_ENTITY)
 	{
 		ImGui::Separator();
-		ImGui::Selectable("drop here to un-parent (make it a root)", false,
+		ImGui::Selectable(scopeRoot != INVALID_ENTITY ? "drop here to move it to the top of the object"
+			: "drop here to un-parent (make it a root)", false,
 			ImGuiSelectableFlags_Disabled);
 		if (ImGui::BeginDragDropTarget())
 		{
@@ -589,12 +621,15 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 				if (p->DataSize == (int)sizeof(Entity))
 				{
 					const Entity child = *(const Entity*)p->Data;
-					if (child != INVALID_ENTITY && scene.hierarchy.Contains(child))
+					if (child != INVALID_ENTITY && scene.hierarchy.Contains(child) && child != scopeRoot)
 					{
 						// Component_Detach keeps the world transform, same as Attach does, so
-						//	the object stays where it is and only its parent changes.
+						//	the object stays where it is and only its parent changes. Scoped,
+						//	"the top" is the scope root: outside it the row would not be saved.
 						if (history) history->BeginEntity(scene, child, "Un-parent");
 						scene.Component_Detach(child);
+						if (scopeRoot != INVALID_ENTITY)
+							scene.Component_Attach(child, scopeRoot);
 						if (history) history->Commit(scene);
 						selected = child;
 					}
@@ -605,6 +640,8 @@ void HierarchyGUI(Scene& scene, Entity& selected, st::EditorHistory* history)
 	}
 
 	ImGui::EndChild();
+
+	g_scopeRoot = INVALID_ENTITY;
 }
 
 void HierarchyWindow(Scene& scene, Entity& selected, bool* p_open)

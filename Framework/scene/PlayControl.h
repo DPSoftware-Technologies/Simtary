@@ -32,6 +32,16 @@
 // A scene that drives a camera from its own Update() should move it on
 // PlayControl::Get().RealDelta() rather than on the dt it is handed, or the view freezes
 // with the world and a paused scene cannot be looked at.
+//
+// EDIT MODE (Unity's) sits outside those three states. While editing, the scene is drawn
+// but does not run: Apply() returns 0, SceneManager skips the scene class's Update() and
+// steps the world frozen (st::StepSceneFrozen), and native components are built for the
+// inspector but never started. Play() / Step() from Edit mode enter Play mode, and st::App
+// takes a st::SceneSnapshot first; Stop() goes back to Edit mode and the snapshot is put
+// back - whatever happened while playing is gone, exactly as in Unity. A game that was
+// LAUNCHED playing has no snapshot; its Stop() reloads the scene from its file instead.
+// Mode changes are requests: st::App applies them through ConsumeTransition() at the top
+// of a frame, never in the middle of an ImGui frame or a scene update.
 
 #include <cstdint>
 #include <functional>
@@ -58,6 +68,20 @@ public:
     void Play ()               { SetState(PlayState::Playing); }
     void PlayWithoutPhysics () { SetState(PlayState::PlayingNoPhysics); }
     void Pause ()              { SetState(PlayState::Paused); }
+
+    // edit / play mode
+
+    bool IsEditing () const { return editing_; }
+    // Back to Edit mode; no-op while editing.
+    void Stop ();
+    // Play <-> Edit, the F5 key.
+    void TogglePlayMode () { if (editing_) Play(); else Stop(); }
+    // Before the first frame: start in Edit mode (--edit).
+    void StartInEditMode () { editing_ = true; }
+
+    enum class Transition { None, EnterPlay, EnterEdit, Restart };
+    // st::App only: the pending mode change, applied now. The mode flips as it is taken.
+    Transition ConsumeTransition ();
     // Pause <-> whichever running mode was last used, so toggling out of a pause does
     // not silently turn physics back on for a scene that was deliberately running
     // without it.
@@ -127,6 +151,9 @@ private:
 
     // What this class last told the physics system, so an unrelated call to
     // wi::physics::SetSimulationEnabled is not fought over every frame.
+    bool editing_ = false;
+    Transition pending_ = Transition::None;
+
     bool physicsWanted_ = true;
     bool physicsWritten_ = false;
 

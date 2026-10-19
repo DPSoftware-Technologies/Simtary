@@ -119,6 +119,20 @@ void NetSession::Initialize (const std::string& appName) {
     const bool server = wi::arguments::HasArgument("--server") ||
                         wi::arguments::GetArgumentValue("--server=", value);
     const bool client = wi::arguments::GetArgumentValue("--connect=", connectTo_);
+    std::string hostPort;
+    const bool host = wi::arguments::HasArgument("--host") || wi::arguments::GetArgumentValue("--host=", hostPort);
+    if (host) {
+        if (server || client) {
+            error_ = "--host cannot be combined with --server or --connect";
+            Log(error_, wi::backlog::LogLevel::Error);
+            return;
+        }
+        LoadConfig();
+        StartHost();
+        const int hp = atoi(hostPort.c_str());
+        if (hp > 0 && hp < 65536) OpenToLan(uint16_t(hp));
+        return;
+    }
     if (!server && !client) return;
     if (server && client) {
         error_ = "--server and --connect both given; pick one";
@@ -157,6 +171,79 @@ void NetSession::Initialize (const std::string& appName) {
         vehicles_ = std::make_unique<VehicleSync>(*this);
         reconnectTimer_ = 0.0f;   // connect on the first Update
     }
+}
+
+// Integrated server: the world and one local player in this process, nobody else unless the
+// host opens it. The local player is an ordinary client id (1) with no connection, so the
+// vehicle code treats it like any other owner - it just reads the keyboard.
+bool NetSession::StartHost () {
+    if (mode_ != Mode::Off) return false;
+    if (config_.name.empty()) config_.name = appName_;
+    mode_ = Mode::Host;
+    ready_ = true;
+    localClientId_ = nextClientId_++;
+    vehicles_ = std::make_unique<VehicleSync>(*this);
+    Log("integrated server \"" + config_.name + "\" started (local player #" + std::to_string(localClientId_) +
+        ", not open to the network)");
+    return true;
+}
+
+bool NetSession::StartClient (const std::string& address, const std::string& playerName, const std::string& transport) {
+    if (mode_ != Mode::Off || address.empty()) return false;
+    error_.clear();
+    connectTo_ = address;
+    if (!playerName.empty()) playerName_ = playerName;
+    config_.transport = transport;
+    if (!StartTransport()) return false;
+    mode_ = Mode::Client;
+    ready_ = false;
+    vehicles_ = std::make_unique<VehicleSync>(*this);
+    reconnectTimer_ = 0.0f;   // connect on the next Update
+    Log("joining " + address + " as \"" + playerName_ + "\"");
+    return true;
+}
+
+void NetSession::Leave () {
+    if (mode_ == Mode::Off) return;
+    Log("leaving the network game");
+    if (vehicles_) vehicles_->DespawnAll();
+    Shutdown();
+    connecting_ = false;
+    reconnectTimer_ = -1.0f;
+    nextClientId_ = 1;
+}
+
+bool NetSession::OpenToLan (uint16_t port, const std::string& transport) {
+    if (mode_ != Mode::Host) return false;
+    if (transport_) return true;
+    if (!transport.empty()) config_.transport = transport;
+    config_.port = port;
+    if (!StartTransport()) return false;
+    if (!transport_->Listen(config_.port, error_)) {
+        Log(error_, wi::backlog::LogLevel::Error);
+        transport_.reset();
+        return false;
+    }
+    Log(std::string("open to the network on ") + (config_.transport == "tcp" ? "TCP " : "UDP ") +
+        std::to_string(config_.port) + " (" + transport_->Name() + "), up to " +
+        std::to_string(config_.maxPlayers) + " players");
+    return true;
+}
+
+void NetSession::DropRemotePeers (const char* reason) {
+    for (const Peer& p : peers_) {
+        if (p.clientId != 0 && vehicles_) vehicles_->OnPlayerLeft(p.clientId);
+        if (transport_) transport_->Close(p.connection, reason);
+    }
+    peers_.clear();
+}
+
+void NetSession::CloseLan () {
+    if (mode_ != Mode::Host || !transport_) return;
+    DropRemotePeers("host closed the game to the network");
+    transport_->Shutdown();
+    transport_.reset();
+    Log("closed to the network");
 }
 
 void NetSession::RunConsole () {
@@ -234,7 +321,11 @@ void NetSession::ProcessConsole () {
 
 void NetSession::Update (float dt) {
     ProcessConsole();
-    if (mode_ == Mode::Off || !transport_) return;
+    if (mode_ == Mode::Off) return;
+    if (!transport_) {
+        if (vehicles_) vehicles_->Update(dt);   // integrated host, not open to the network
+        return;
+    }
 
     // client: (re)connect
     if (mode_ == Mode::Client && reconnectTimer_ >= 0.0f) {
@@ -254,13 +345,13 @@ void NetSession::Update (float dt) {
     events_.clear();
     transport_->Poll(events_);
     for (const Event& e : events_) {
-        if (mode_ == Mode::Server) OnServerEvent(e);
+        if (IsServer()) OnServerEvent(e);
         else OnClientEvent(e);
     }
 
     // handshake timeouts
     for (Peer& p : peers_) p.age += dt;
-    if (mode_ == Mode::Server) {
+    if (IsServer()) {
         for (const Peer& p : peers_) {
             if (p.clientId == 0 && p.age > kHelloTimeout) transport_->Close(p.connection, "no Hello");
         }
@@ -294,6 +385,10 @@ Peer* NetSession::FindPeer (ConnectionId c) {
 }
 
 void NetSession::Kick (uint32_t clientId, const char* reason) {
+    if (!transport_) {
+        Log("no client #" + std::to_string(clientId));
+        return;
+    }
     for (const Peer& p : peers_) {
         if (p.clientId == clientId && clientId != 0) {
             Log("kicking " + p.name + " (#" + std::to_string(clientId) + "): " + reason);
@@ -310,12 +405,20 @@ void NetSession::Kick (uint32_t clientId, const char* reason) {
 void NetSession::SetHandler (uint8_t type, Handler fn) { handlers_[type] = std::move(fn); }
 
 void NetSession::SendToServer (const Writer& w, Delivery d) {
+    if (mode_ == Mode::Host) {   // the local player is next to the authority: deliver in place
+        const std::vector<uint8_t>& b = w.Bytes();
+        if (b.empty() || b[0] < kFirstGameMessage || !handlers_[b[0]]) return;
+        Reader r(b);
+        r.U8();
+        handlers_[b[0]](localClientId_, r);
+        return;
+    }
     if (mode_ != Mode::Client || !ready_ || peers_.empty()) return;
     transport_->Send(peers_[0].connection, w.Bytes().data(), w.Bytes().size(), d);
 }
 
 void NetSession::Broadcast (const Writer& w, Delivery d) {
-    if (mode_ != Mode::Server) return;
+    if (!IsServer() || !transport_) return;
     for (const Peer& p : peers_) {
         if (p.clientId != 0) transport_->Send(p.connection, w.Bytes().data(), w.Bytes().size(), d);
     }
@@ -444,12 +547,13 @@ void NetSession::OnClientEvent (const Event& e) {
 
 void NetSession::Shutdown () {
     if (transport_) {
-        for (const Peer& p : peers_) transport_->Close(p.connection, mode_ == Mode::Server ? "server shutting down" : "client left");
+        for (const Peer& p : peers_) transport_->Close(p.connection, IsServer() ? "server shutting down" : "client left");
         transport_->Shutdown();
         transport_.reset();
     }
     vehicles_.reset();
     peers_.clear();
+    localClientId_ = 0;
     mode_ = Mode::Off;
     ready_ = false;
 }
@@ -459,7 +563,8 @@ void NetSession::RegisterBridge () {
     st::dev::EditorBridge::Get().Register("net.status", "{} -> network mode, peers, ping, vehicles",
         [this](const st::json::Value&, std::string&) {
             st::json::Value o = st::json::Value::Object();
-            o.Set("mode", mode_ == Mode::Server ? "server" : mode_ == Mode::Client ? "client" : "off");
+            o.Set("mode", mode_ == Mode::Server ? "server" : mode_ == Mode::Host ? "host" : mode_ == Mode::Client ? "client" : "off");
+            o.Set("listening", transport_ != nullptr && IsServer());
             o.Set("transport", transport_ ? transport_->Name() : "");
             o.Set("ready", ready_);
             o.Set("port", unsigned(config_.port));
@@ -497,6 +602,32 @@ void NetSession::RegisterBridge () {
                 }
             }
             o.Set("vehicles", vl);
+            return o;
+        });
+    st::dev::EditorBridge::Get().Register("net.host", "{open?: port, close?: true} -> start the integrated host, open / close it to the network",
+        [this](const st::json::Value& a, std::string&) {
+            if (mode_ == Mode::Off) StartHost();
+            if (a["close"].AsBool()) CloseLan();
+            const int port = int(a["open"].AsNumber());
+            bool opened = false;
+            if (port > 0 && port < 65536) opened = OpenToLan(uint16_t(port));
+            st::json::Value o = st::json::Value::Object();
+            o.Set("host", mode_ == Mode::Host);
+            o.Set("listening", transport_ != nullptr);
+            o.Set("opened", opened);
+            o.Set("error", error_);
+            return o;
+        });
+    st::dev::EditorBridge::Get().Register("net.join", "{address, name?, transport?} | {leave: true} -> join a server at runtime / go back offline",
+        [this](const st::json::Value& a, std::string&) {
+            if (a["leave"].AsBool()) Leave();
+            else if (!a["address"].AsString().empty()) {
+                const std::string t = a["transport"].AsString();
+                StartClient(a["address"].AsString(), a["name"].AsString(), t.empty() ? "gns" : t);
+            }
+            st::json::Value o = st::json::Value::Object();
+            o.Set("mode", mode_ == Mode::Server ? "server" : mode_ == Mode::Host ? "host" : mode_ == Mode::Client ? "client" : "off");
+            o.Set("error", error_);
             return o;
         });
     st::dev::EditorBridge::Get().Register("net.console", "{line} -> run a server console command",

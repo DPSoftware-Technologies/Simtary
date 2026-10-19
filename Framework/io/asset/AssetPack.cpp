@@ -592,6 +592,7 @@ AssetType ClassifyByExtension (const std::string& path) {
         e == "bmp" || e == "hdr" || e == "exr" || e == "gif" || e == "psd") return AssetType::Image;
     if (e == "wiscene")                                                     return AssetType::Model;
     if (e == "stsd")                                                        return AssetType::Scene;
+    if (e == "sttd")                                                        return AssetType::Template;
     if (e == "wav" || e == "flac" || e == "aiff" || e == "qoa")             return AssetType::Sound;
     if (e == "ogg" || e == "mp3" || e == "m4a" || e == "opus")              return AssetType::Music;
     if (e == "mp4" || e == "h264" || e == "mkv" || e == "webm")             return AssetType::Video;
@@ -660,6 +661,7 @@ Codec DefaultCodecFor (AssetType type, uint64_t size) {
     case AssetType::Model:
     case AssetType::Mesh:
     case AssetType::Scene:
+    case AssetType::Template:
     case AssetType::Material:
     case AssetType::Binary:
     default:
@@ -685,6 +687,7 @@ const char* ToString (AssetType t) {
     case AssetType::Text:      return "Text";
     case AssetType::Json:      return "Json";
     case AssetType::Binary:    return "Binary";
+    case AssetType::Template:  return "Template";
     case AssetType::Custom:    return "Custom";
     default:                   return "Unknown";
     }

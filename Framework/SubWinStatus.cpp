@@ -1,5 +1,6 @@
 #include "SubWinStatus.h"
 #include "stRun.h"
+#include "stream/StreamHost.h"
 
 SubWinStatus::SubWinStatus(const std::string& title, int width, int height)
     : m_title(title), m_width(width), m_height(height),
@@ -18,6 +19,7 @@ SubWinStatus::~SubWinStatus() {
 
 void SubWinStatus::Show() {
     if (st::IsHeadless()) return;           // a server has no desktop to put it on
+    if (st::stream::StreamHost::Get().Requested() && !st::stream::StreamHost::Get().GetOptions().showWindow) return;
     if (m_running.exchange(true)) return;   // already running
     m_thread = std::thread(&SubWinStatus::ThreadMain, this);
 }

@@ -10,8 +10,10 @@
 #include "terrain/TerrainSystem.h"
 #include "dev/DevBuild.h"
 #include "dev/EditorBridge.h"
+#include "scene/TemplatePool.h"
 #include "xr/XRSystem.h"
 #include "net/NetSession.h"
+#include "stream/StreamHost.h"
 #include "stRun.h"
 #include "wiEventHandler.h"
 #include "wiGraphicsDevice_Null.h"
@@ -311,6 +313,8 @@ void st::App::Initialize() {
             // The scene updates in this same frame, before TerrainSystem::Update runs again:
             // bind now, or its first chunks are generated from the engine's noise.
             st::terrain::TerrainSystem::Get().BindAll(wi::scene::GetScene());
+            // A different scene: the Play-mode snapshot belongs to the one that left.
+            playSnapshot_.Clear();
             switch (Config().dayNight) {
                 case st::DayNightMode::Adopt:  st::DayNight::Get().Adopt(wi::scene::GetScene()); break;
                 case st::DayNightMode::Create: st::DayNight::Get().Create(wi::scene::GetScene()); break;
@@ -392,9 +396,14 @@ void st::App::Initialize() {
     lasers_.LoadFrom(st::SettingsManager::Get().SubCompound("lasers"));
     st::DayNight::Get().LoadFrom(st::SettingsManager::Get().SubCompound("daynight"));
 
-    // Reset is a scene reload, and PlayControl has no business knowing what a
-    // SceneManager is. Installed here, where both are in scope.
-    st::PlayControl::Get().SetResetHook([this]() { sceneManager.Reload(); });
+    // Edit / Play mode transitions (snapshot, restore, reload) are applied by
+    // ApplyPlayModeTransition at the top of each frame. --edit opens straight into the
+    // editor in Edit mode, the way the Unity editor opens.
+    if (st::dev::IsDevBuild() && (wi::arguments::HasArgument("--edit") || wi::arguments::HasArgument("edit")) &&
+        Config().devUI != st::DevUIMode::Disabled) {
+        st::PlayControl::Get().StartInEditMode();
+        startInEdit_ = true;
+    }
 
     // Gamepad backend policy: the project's default, overridden by whatever the player
     // (or a developer in the Gamepad Analog panel) last chose. Applied before the first
@@ -466,6 +475,9 @@ void st::App::Initialize() {
     // Multiplayer (Simtary/MULTIPLAYER.md): --server[=port] / --connect=<ip>[:port], off otherwise.
     st::net::NetSession::Get().Initialize(Config().name);
 
+    // Streaming (Simtary/CLOUD.md): --stream, off otherwise. After the device and the window.
+    st::stream::StreamHost::Get().Initialize(*this);
+
     // Load the starting scene immediately so entities exist before the first
     // frame's scene->Update() runs.
     if (!Config().startupScene.empty()) {
@@ -480,8 +492,44 @@ void st::App::Initialize() {
     loading_ = LoadingState{};   // nothing is loading any more
 }
 
+void st::App::ApplyPlayModeTransition() {
+    // Applied here, between frames: no ImGui window is mid-draw over the entity list and
+    // no scene update is running, so whole entities can come and go.
+    st::PlayControl& play = st::PlayControl::Get();
+    wi::scene::Scene& scene = wi::scene::GetScene();
+    switch (play.ConsumeTransition()) {
+        case st::PlayControl::Transition::None:
+            return;
+        case st::PlayControl::Transition::EnterPlay:
+            playDayTime_ = st::DayNight::Get().Time();
+            playSnapshot_.Capture(scene);
+            break;
+        case st::PlayControl::Transition::EnterEdit:
+        case st::PlayControl::Transition::Restart: {
+            const bool restart = !play.IsEditing(); // a Restart leaves the mode at Play
+            if (playSnapshot_.Valid()) {
+                playSnapshot_.Restore(scene);
+                st::DayNight::Get().SetTime(playDayTime_);
+                if (restart) playSnapshot_.Capture(scene);   // and play on from it
+            } else {
+                // Launched playing: there is no edit state to go back to but the file.
+                sceneManager.Reload();
+            }
+            // Pooled copies were Play-mode objects; the restore or reload took them away.
+            st::TemplatePools::Get().ForgetInstances();
+            // Unity's domain reload: script module state (globals, counters) does not
+            //	carry from one Play into the next. Every stScript instance is gone by now;
+            //	the VM is recreated on first use.
+            st::ScriptSystem::Get().Shutdown();
+            break;
+        }
+    }
+}
+
 void st::App::Update(float dt) {
     lastDt_ = dt;
+    // Before ImGui builds this frame's draw data: last frame's may name these textures.
+    editor_.ReleaseRetired();
     if (isStop) {
         isStop = false;
         SDL_Event quitEvent;
@@ -529,6 +577,7 @@ void st::App::Update(float dt) {
     // the main loop to the HMD from here.
     st::xr::XRSystem::Get().Update();
     st::net::NetSession::Get().Update(dt);
+    st::stream::StreamHost::Get().Update();   // the viewer's keys / mouse, before the scene reads input
     // Two blocking waits per frame (xrWaitFrame and the desktop present) land the frame on
     // every other headset interval, so the desktop v-sync is off while a session runs.
     if (wi::input::Press(wi::input::KEYBOARD_BUTTON_F9)) st::xr::XRSystem::Get().Recenter();
@@ -555,6 +604,16 @@ void st::App::Update(float dt) {
     // input, the loading screen, the standby cap - ran on the real frame delta, and
     // everything the DevUI does still will: a paused world is one you can still look
     // around, click on and drive the editor camera through.
+    if (startInEdit_) {
+        startInEdit_ = false;
+        SetDevUIVisible(true);
+        SetEditorMode(true);
+    }
+    ApplyPlayModeTransition();
+    const bool editing = st::PlayControl::Get().IsEditing();
+    // Edit mode builds native components for the inspector but never starts them.
+    wi::scene::GetScene().nativeComponents.lifecycleEnabled = !editing;
+
     const float sceneDt = st::PlayControl::Get().Apply(dt);
 
     // Before the scene update, not after: the scene's light system is what copies the
@@ -568,7 +627,7 @@ void st::App::Update(float dt) {
     st::terrain::TerrainSystem::Get().Update(wi::scene::GetScene(), sceneDt);
 
     st::ScriptSystem::Get().BeginFrame(sceneDt, dt); // Time.deltaTime, Input.* for this frame
-    sceneManager.Update(sceneDt);
+    sceneManager.Update(sceneDt, editing);
 
     // Taipan coroutines, on scene time so a paused world pauses its scripts too. After
     // the scene update: stScript's onUpdate ran inside it, and a coroutine it started
@@ -641,6 +700,7 @@ void st::App::Render() {
     // here - after the game path, against the scene both of them share.
     editor_.RenderEditorView(lastDt_);
     editor_.RenderCameraViews(lastDt_);
+    editor_.RenderTemplatePreviews(lastDt_);
 
     // The headset's two eyes: their own paths, configured like the game's.
     st::xr::XRSystem::Get().RenderEyes(lastDt_, [this](wi::RenderPath3D& path) {
@@ -703,6 +763,7 @@ void st::App::Exit() {
     // The OpenXR session holds the engine's D3D12 device and queue: gone before they are.
     st::xr::XRSystem::Get().Shutdown();
     st::net::NetSession::Get().Shutdown();
+    st::stream::StreamHost::Get().Shutdown();
 
     // Frees the editor's render path (and waits for the GPU) before the device goes away.
     editor_.Shutdown();

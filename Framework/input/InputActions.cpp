@@ -170,6 +170,8 @@ std::string Binding::Describe() const {
 	}
 	if (invert)
 		body += " (inverted)";
+	if (invertY)
+		body += " (Y inverted)";
 
 	body += " [";
 	body += ToString(Device());
@@ -316,6 +318,11 @@ ActionBuilder& ActionBuilder::Inverted() {
 		action_->bindings.back().invert = true;
 	return *this;
 }
+ActionBuilder& ActionBuilder::InvertedY() {
+	if (!action_->bindings.empty())
+		action_->bindings.back().invertY = true;
+	return *this;
+}
 
 // ---------------------------------------------------------------------------
 // Evaluation
@@ -376,7 +383,7 @@ ActionState EvaluateAction(const Action& action, int playerIndex, float dt,
 		XMFLOAT2 raw = ReadRaw(b, playerIndex);
 		const float sign = b.invert ? -b.scale : b.scale;
 		raw.x *= sign;
-		raw.y *= sign;
+		raw.y *= b.invertY ? -sign : sign;
 
 		switch (b.part) {
 		case Part::Value: {

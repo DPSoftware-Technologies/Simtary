@@ -44,6 +44,7 @@ void TypeBadge (asset::AssetType type, ImU32& colour, const char*& fallback) {
     case T::Font:      colour = Col(0.66f, 0.52f, 0.36f); fallback = "FONT";   break;
     case T::Json:
     case T::Text:      colour = Col(0.50f, 0.62f, 0.78f); fallback = "TEXT";   break;
+    case T::Template:  colour = Col(0.30f, 0.62f, 0.95f); fallback = "TMPL";   break;
     default:           colour = Col(0.55f, 0.55f, 0.58f); fallback = "FILE";   break;
     }
 }
@@ -252,7 +253,8 @@ void AssetExplorer::RowDragSource (const Row& row) {
     std::snprintf(payload.path, sizeof(payload.path), "%s", row.path.c_str());
     ImGui::SetDragDropPayload(SIMTARY_ASSET_PAYLOAD, &payload, sizeof(payload));
     ImGui::TextUnformatted(row.path.c_str());
-    if (payload.IsModel()) ImGui::TextDisabled("drop on the viewport to place it in the scene");
+    if (payload.IsTemplate())   ImGui::TextDisabled("drop on the viewport to place it under the cursor");
+    else if (payload.IsModel()) ImGui::TextDisabled("drop on the viewport to place it in the scene");
     else                   ImGui::TextDisabled("drop on an asset field in Properties");
     ImGui::EndDragDropSource();
 }
@@ -264,6 +266,10 @@ void AssetExplorer::OpenRow (const Row& row) {
         st::devui::OpenScriptEditor(asset::NormalizePath(row.mount + row.path));
         return;
     }
+    if (row.type == asset::AssetType::Template && onOpenTemplate) {
+        onOpenTemplate(asset::NormalizePath(row.mount + row.path));
+        return;
+    }
     SetStatus(row.path + ": drag it onto the viewport or an asset field to use it.", false);
 }
 
@@ -273,6 +279,7 @@ void AssetExplorer::RowContextMenu (const Row& row) {
     ImGui::TextDisabled("%s", row.path.c_str());
     ImGui::Separator();
     if (row.type == asset::AssetType::Script && ImGui::MenuItem("Edit script")) OpenRow(row);
+    if (row.type == asset::AssetType::Template && onOpenTemplate && ImGui::MenuItem("Open template")) OpenRow(row);
     if (ImGui::MenuItem("Copy path")) ImGui::SetClipboardText(row.path.c_str());
     if (ImGui::MenuItem("Copy logical path"))
         ImGui::SetClipboardText(asset::NormalizePath(row.mount + row.path).c_str());

@@ -1,6 +1,7 @@
 #include "display/DisplaySettings.h"
 
 #include "stRun.h"
+#include "stream/StreamHost.h"
 
 #include "Simtary.h"
 #include "imgui.h"
@@ -144,7 +145,12 @@ void DisplaySettings::UpdateStandby(wi::Application& app, float dt) {
 
     idleTimer_ += dt;
 
-    const bool focused = (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) != 0;
+    // A connected stream viewer (Framework/stream) is the player: the hidden window never has
+    // focus, and without this the 30 fps unfocused cap throttled every stream.
+    const bool streamed = st::stream::StreamHost::Get().HasViewer();
+    const bool focused = streamed || (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) != 0;
+    if (streamed)
+        idleTimer_ = 0.0f;
 
     // Unfocused wins over idle: alt-tabbed is the stronger signal, and a player who
     // alt-tabs is idle by definition.
@@ -170,8 +176,14 @@ void DisplaySettings::UpdateStandby(wi::Application& app, float dt) {
         // Restore what was last APPLIED, not the pending edits: the player may be
         // mid-edit in the options panel, and coming back from standby must not
         // silently commit that.
-        app.setFrameRateLock(appliedLock_);
-        app.setTargetFrameRate(appliedTargetFps_);
+        if (st::stream::StreamHost::Get().IsRunning()) {
+            // a streaming process is paced to the stream, not to the saved options
+            app.setFrameRateLock(true);
+            app.setTargetFrameRate(float(st::stream::StreamHost::Get().GetOptions().fps));
+        } else {
+            app.setFrameRateLock(appliedLock_);
+            app.setTargetFrameRate(appliedTargetFps_);
+        }
     }
 }
 

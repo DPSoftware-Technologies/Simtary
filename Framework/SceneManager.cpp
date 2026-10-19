@@ -3,6 +3,7 @@
 #include "scene/RuntimeScene.h"
 #include "scene/SceneFile.h"
 #include "scene/GuiHooks.h"
+#include "scene/SceneSnapshot.h"
 #include "io/asset/AssetSystem.h"
 #include "io/asset/AssetPack.h"
 #include "wiHelper.h"
@@ -197,7 +198,7 @@ void SceneManager::SetCallbacks(Callback onLoaded, Callback onUnloaded) {
     onUnloaded_ = std::move(onUnloaded);
 }
 
-void SceneManager::Update(float dt) {
+void SceneManager::Update(float dt, bool editing) {
     if (!pendingLoad_.empty()) {
         // Published for the whole transition so the loading screen can name the scene
         // it is waiting on; Load() below may block for a long time.
@@ -238,7 +239,11 @@ void SceneManager::Update(float dt) {
         loadingName_.clear();
     }
 
-    if (current_)
+    if (!current_)
+        return;
+    if (editing)
+        st::StepSceneFrozen(wi::scene::GetScene(), wi::scene::GetCamera());
+    else
         current_->Update(dt);
 }
 

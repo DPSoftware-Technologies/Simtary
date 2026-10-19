@@ -487,7 +487,7 @@ namespace wi::scene
 		{
 			const MaterialComponent::TextureMap& texturemap = textures[i];
 			material.textures[i].uvset_aniso_lodclamp = (texturemap.uvset & 1) | ((texturemap.virtual_anisotropy & 0x7F) << 1u) | (XMConvertFloatToHalf(texturemap.lod_clamp) << 16u);
-			if (texturemap.resource.IsValid())
+			if (texturemap.GetGPUResource() != nullptr)
 			{
 				int subresource = -1;
 				switch (i)
@@ -508,6 +508,15 @@ namespace wi::scene
 					break;
 				}
 				material.textures[i].texture_descriptor = device->GetDescriptorIndex(texturemap.GetGPUResource(), SubresourceType::SRV, subresource);
+			}
+			else if (i == BASECOLORMAP && !texturemap.name.empty() && shaderType != SHADERTYPE_INTERIORMAPPING)
+			{
+				// SIMTARY: a base colour texture that is named but did not load shows the checkerboard,
+				// so a missing file is visible instead of passing for the material's flat colour.
+				// Only base colour: a checkerboard in the normal or surface slot would bend the
+				// lighting, and an empty slot there is already neutral. Interior mapping is left
+				// out because it samples the slot as a cube map.
+				material.textures[i].texture_descriptor = device->GetDescriptorIndex(wi::texturehelper::getCheckerBoard(), SubresourceType::SRV);
 			}
 			else
 			{

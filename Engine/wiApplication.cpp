@@ -384,6 +384,13 @@ namespace wi
 			graphicsDevice->RenderPassEnd(cmd);
 		}
 
+		if (onFrameComposed)
+		{
+			// SIMTARY: hand the finished backbuffer to the streaming host
+			const Texture finished = graphicsDevice->GetBackBuffer(&swapChain);
+			onFrameComposed(cmd, finished);
+		}
+
 		wi::input::ClearForNextFrame();
 		wi::profiler::EndFrame(cmd);
 		graphicsDevice->SubmitCommandLists();

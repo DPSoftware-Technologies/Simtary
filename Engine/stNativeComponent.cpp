@@ -636,6 +636,8 @@ namespace wi::scene
 	{
 		// Serial and main-thread only: LateUpdate is for followers (cameras, attached UI) that
 		// read the final transforms, a handful per scene. Same removal rules as RunUpdate.
+		if (!lifecycleEnabled)
+			return;
 		phaseRunning = true;
 		for (auto& pair : instances)
 		{
@@ -682,7 +684,8 @@ namespace wi::scene
 					{
 						if (inst.enabled)
 							inst.component->OnDisable();
-						inst.component->Destroy();
+						if (inst.awoken) // never awoken = built by a lifecycle-disabled scene; nothing to tear down
+							inst.component->Destroy();
 					}
 					list.erase(list.begin() + i);
 				}
@@ -700,6 +703,13 @@ namespace wi::scene
 		//	nothing new appears. This all happens BEFORE Pass C, which is the point: by the time
 		//	Awake() fires, every declared dependency exists and GetComponent<T>() finds it.
 		CreateMissingInstances(scene);
+		if (!lifecycleEnabled)
+		{
+			// Looked at, not run: the instances exist for the inspector, and requirements are
+			//	not resolved either - attaching them would edit a scene nobody asked to change.
+			wi::profiler::EndRange(range);
+			return;
+		}
 		for (int round = 0; ; ++round)
 		{
 			if (!ResolveRequirements(scene))
@@ -943,7 +953,8 @@ namespace wi::scene
 			{
 				if (inst.enabled)
 					inst.component->OnDisable();
-				inst.component->Destroy();
+				if (inst.awoken) // never awoken = built by a lifecycle-disabled scene; nothing to tear down
+					inst.component->Destroy();
 			}
 		}
 		instances.erase(it);
@@ -966,7 +977,8 @@ namespace wi::scene
 				{
 					if (inst.enabled)
 						inst.component->OnDisable();
-					inst.component->Destroy();
+					if (inst.awoken) // never awoken = built by a lifecycle-disabled scene; nothing to tear down
+						inst.component->Destroy();
 				}
 			}
 		}

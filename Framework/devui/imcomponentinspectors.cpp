@@ -4,6 +4,8 @@
 #include "imassets.h"
 #include "imeditorhistory.h"
 #include "imhierarchy.h"
+#include "render/MeshLOD.h"
+#include "wiBacklog.h"
 
 #include "wiScene.h"
 #include "wiMath.h"
@@ -668,6 +670,57 @@ void DrawMesh(Scene& scene, Entity e, st::EditorHistory* history)
 		op("to top",         [&] { m->RecenterToTop(); });
 		ImGui::SameLine();
 		op("to bottom",      [&] { m->RecenterToBottom(); });
+		ImGui::TreePop();
+	}
+
+	// Levels of detail (render/MeshLOD.h). The engine picks a level per view from screen
+	//	size; this only makes the levels exist.
+	if (ImGui::TreeNode("Levels of detail"))
+	{
+		static st::render::MeshLODSettings lod;
+		uint32_t first = 0, end = 0;
+		m->GetLODSubsetRange(0, first, end);
+		uint64_t lod0 = 0;
+		for (uint32_t i = first; i < end; ++i) lod0 += m->subsets[i].indexCount / 3;
+		ImGui::Text("%u level(s), %llu triangles at LOD0", m->GetLODCount(), (unsigned long long)lod0);
+		for (uint32_t l = 1; l < m->GetLODCount(); ++l)
+		{
+			m->GetLODSubsetRange(l, first, end);
+			uint64_t tris = 0;
+			for (uint32_t i = first; i < end; ++i) tris += m->subsets[i].indexCount / 3;
+			ImGui::TextDisabled("  LOD%u: %llu triangles", l, (unsigned long long)tris);
+		}
+		int count = (int)lod.lodCount;
+		if (ImGui::SliderInt("Levels", &count, 2, 8)) lod.lodCount = (uint32_t)count;
+		ImGui::SliderFloat("Keep per level", &lod.reduction, 0.1f, 0.9f, "%.2f");
+		HelpMarker("Share of the previous level's triangles each level keeps. 0.5 matches the "
+			"engine's selection rule: one level down per halving of on-screen size.");
+		ImGui::SliderFloat("Max error", &lod.targetError, 0.001f, 0.2f, "%.3f");
+		HelpMarker("How far a simplified surface may move, relative to the mesh size. Doubles "
+			"at each level.");
+		ImGui::Checkbox("Lock open borders", &lod.lockBorder);
+		HelpMarker("Keep open edges where they are - for meshes that meet other meshes along a "
+			"seam (terrain tiles, modular walls).");
+		auto op = [&](const char* label, auto fn) {
+			if (ImGui::Button(label))
+			{
+				if (history) history->BeginEntity(scene, e, label);
+				fn();
+				if (history) history->Commit(scene);
+			}
+		};
+		op("Generate LODs", [&] {
+			st::render::MeshLODReport report;
+			st::render::GenerateMeshLODs(*m, lod, &report);
+			wi::backlog::post("MeshLOD: " + EntityLabel(scene, e) + ": " + std::to_string(report.lods) +
+				" level(s), " + std::to_string(report.lod0Triangles) + " -> " +
+				std::to_string(report.lastTriangles) + " triangles" +
+				(report.reason.empty() ? std::string() : " (" + report.reason + ")"));
+		});
+		ImGui::SameLine();
+		ImGui::BeginDisabled(m->GetLODCount() <= 1);
+		op("Remove LODs", [&] { st::render::RemoveMeshLODs(*m); m->CreateRenderData(); });
+		ImGui::EndDisabled();
 		ImGui::TreePop();
 	}
 }

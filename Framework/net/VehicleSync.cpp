@@ -119,10 +119,10 @@ Entity VehicleSync::Spawn (uint32_t netId, uint32_t owner, const XMFLOAT3& posit
     if (root == INVALID_ENTITY) return root;
     ::PlaceEntityAt(scene, root, position);
 
-    const bool server = session_.IsServer();
-    const bool mine = !server && owner == session_.LocalClientId();
+    const bool dedicated = session_.IsServer() && !session_.HasLocalPlayer();
+    const bool mine = owner != 0 && owner == session_.LocalClientId();
     if (MetadataComponent* md = scene.metadatas.GetComponent(root)) {
-        if (server) {
+        if (dedicated) {
             StripNative(*md, { "stChaseCamera", "stVehicleHud", "stInput", "VehicleSound" });
         } else if (!mine) {
             StripNative(*md, { "stChaseCamera", "stVehicleHud", "stInput" });
@@ -176,10 +176,12 @@ void VehicleSync::OnPlayerJoined (uint32_t clientId, ConnectionId connection) {
         Log("no vehicle in the scene to spawn from");
         return;
     }
-    // The new player hears about everyone already here first ...
+    // The new player hears about everyone already here first (the host's own player has no
+    // connection: it sees the scene directly) ...
     Transport* t = session_.GetTransport();
     Scene& scene = GetScene();
     for (const Vehicle& v : vehicles_) {
+        if (connection == kNoConnection || t == nullptr) break;
         const TransformComponent* tr = scene.transforms.GetComponent(v.entity);
         const XMFLOAT3 p = tr != nullptr ? tr->GetPosition() : templatePos_;
         Writer w(MsgSpawn);
@@ -275,15 +277,25 @@ void VehicleSync::Update (float dt) {
     if (!haveTemplate_) CaptureTemplate();
 
     if (session_.IsServer()) {
+        // Integrated host: its own player gets a vehicle as soon as the scene has a template.
+        if (session_.HasLocalPlayer() && haveTemplate_ && FindByOwner(session_.LocalClientId()) == nullptr) {
+            OnPlayerJoined(session_.LocalClientId(), kNoConnection);
+        }
         for (Vehicle& v : vehicles_) {
             v.lastInputAge += dt;
             st::VehicleComponent* vc = VehicleOf(scene, v.entity);
             if (vc == nullptr) continue;
+            if (session_.HasLocalPlayer() && v.owner == session_.LocalClientId()) {
+                vc->remoteInput = false;   // driven by this machine's own input
+                continue;
+            }
             vc->remoteInput = true;
             if (v.lastInputAge > kInputTimeout) vc->remote = {};
         }
+        bool anyRemote = false;
+        for (const Peer& p : session_.Peers()) anyRemote = anyRemote || p.clientId != 0;
         snapshotTimer_ += dt;
-        if (snapshotTimer_ >= kSnapshotInterval) {
+        if (snapshotTimer_ >= kSnapshotInterval && anyRemote) {
             snapshotTimer_ = std::fmod(snapshotTimer_, kSnapshotInterval);
             SendSnapshot();
         }

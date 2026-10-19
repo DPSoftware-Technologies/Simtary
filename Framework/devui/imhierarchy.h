@@ -15,6 +15,7 @@
 
 #include "wiECS.h"
 
+#include <functional>
 #include <string>
 
 namespace wi::scene { struct Scene; struct NativeComponent; }
@@ -53,8 +54,15 @@ bool EntityField(wi::scene::Scene& scene, const char* label,
 //	button and a right-click menu - create child / duplicate / delete - each recorded as a
 //	single undo step. Without it the panel is read-only apart from selection, which is what
 //	the plain DevUI Hierarchy window wants.
+//
+//	`scopeRoot` limits the panel to one subtree - the template preview's object. Rows outside
+//	it are not listed, Create and un-parent go UNDER it instead of to the top level (a row
+//	outside the subtree would not be saved), and the scope root itself cannot be deleted.
 void HierarchyGUI(wi::scene::Scene& scene, wi::ecs::Entity& selected,
-	st::EditorHistory* history = nullptr);
+	st::EditorHistory* history = nullptr, wi::ecs::Entity scopeRoot = wi::ecs::INVALID_ENTITY);
+
+// "Save as Template..." in the row menu. The editor installs it; unset, the item is not shown.
+void SetSaveTemplateHandler(std::function<void(wi::scene::Scene&, wi::ecs::Entity)> handler);
 
 // Standalone "Hierarchy" window wrapper. p_open is optional (pass a bool* for a close box).
 void HierarchyWindow(wi::scene::Scene& scene, wi::ecs::Entity& selected, bool* p_open = nullptr);

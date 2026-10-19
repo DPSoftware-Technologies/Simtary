@@ -441,6 +441,25 @@ else()
     message(STATUS "Simtary: GameNetworkingSockets not built (tools/build_gns.ps1) - multiplayer disabled.")
 endif()
 
+# Blackhawk Streaming (BHS): the node library, prebuilt ONCE into deps/bhs-install by
+# bhs/tools/build_bhs.ps1 (Windows only for now). Like GNS it is a shared library with its own
+# exception-enabled C++ behind a plain C interface (bhs/include/bhs.h). Absent: Framework/stream
+# compiles to a stub and --stream says so. Simtary/CLOUD.md.
+set(SIMTARY_BHS_DIR "${SIMTARY_DEPS_DIR}/bhs-install" CACHE PATH "BHS install (bhs/tools/build_bhs.ps1)")
+if (WIN32 AND EXISTS "${SIMTARY_BHS_DIR}/bin/bhs.dll" AND EXISTS "${SIMTARY_BHS_DIR}/lib/bhs.lib")
+    add_library(SimtaryBHS SHARED IMPORTED GLOBAL)
+    set_target_properties(SimtaryBHS PROPERTIES
+        IMPORTED_LOCATION "${SIMTARY_BHS_DIR}/bin/bhs.dll"
+        IMPORTED_IMPLIB   "${SIMTARY_BHS_DIR}/lib/bhs.lib"
+        INTERFACE_INCLUDE_DIRECTORIES "${SIMTARY_BHS_DIR}/include"
+        INTERFACE_COMPILE_DEFINITIONS "SIMTARY_HAS_BHS=1"
+    )
+    set(SIMTARY_BHS_BIN "${SIMTARY_BHS_DIR}/bin" CACHE INTERNAL "BHS runtime libraries")
+    message(STATUS "Simtary: BHS at ${SIMTARY_BHS_DIR}")
+else()
+    message(STATUS "Simtary: BHS not built (bhs/tools/build_bhs.ps1) - --stream disabled.")
+endif()
+
 # Model importers: tinygltf (glTF/GLB) + ufbx (FBX/OBJ/MTL)
 # Both are C, and that is why these two were picked over the obvious alternatives.
 # This workspace builds with /EHsc- /GR- and _HAS_EXCEPTIONS=0 (see the app flags

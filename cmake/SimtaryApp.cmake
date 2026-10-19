@@ -547,6 +547,9 @@ function(simtary_add_app)
     if (TARGET SimtaryGNS)
         list(APPEND _app_link_libraries SimtaryGNS)      # Framework/net (SIMTARY_HAS_GNS)
     endif()
+    if (TARGET SimtaryBHS)
+        list(APPEND _app_link_libraries SimtaryBHS)      # Framework/stream (SIMTARY_HAS_BHS)
+    endif()
 
     foreach (_target IN LISTS _compile_targets)
         target_include_directories(${_target} PRIVATE
@@ -893,6 +896,16 @@ function(simtary_add_app)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${SIMTARY_GNS_RUNTIME}" $<TARGET_FILE_DIR:${APP_NAME}>
             COMMENT "Copying GameNetworkingSockets to output directory"
+            VERBATIM
+        )
+    endif()
+    if (TARGET SimtaryBHS)
+        # bhs.dll and the OpenSSL DLLs it loads (libssl / libcrypto) sit side by side in its bin/
+        add_custom_command(TARGET ${APP_NAME} PRE_LINK
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${SIMTARY_BHS_BIN}/bhs.dll" "${SIMTARY_BHS_BIN}/libssl-3-x64.dll" "${SIMTARY_BHS_BIN}/libcrypto-3-x64.dll"
+                $<TARGET_FILE_DIR:${APP_NAME}>
+            COMMENT "Copying BHS to output directory"
             VERBATIM
         )
     endif()

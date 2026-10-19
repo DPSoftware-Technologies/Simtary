@@ -5845,7 +5845,12 @@ namespace wi::scene
 							velocity *= ground_friction;
 							position += XMVectorSet(0, result.depth, 0, 0);
 
-							if (std::abs(result.velocity.x) > 0.001f || std::abs(result.velocity.y) > 0.001f || std::abs(result.velocity.z) > 0.001f)
+							// SIMTARY: terrain never moves. A chunk that was just placed reads its whole height as one
+							//	frame of "platform velocity", and the character then drifted upwards for ever with it.
+							const ObjectComponent* ground_object = objects.GetComponent(result.entity);
+							const bool ground_is_terrain = ground_object != nullptr && (ground_object->filterMask & FILTER_TERRAIN);
+
+							if (!ground_is_terrain && (std::abs(result.velocity.x) > 0.001f || std::abs(result.velocity.y) > 0.001f || std::abs(result.velocity.z) > 0.001f))
 							{
 								inertia = XMLoadFloat3(&result.velocity);
 							}

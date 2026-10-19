@@ -2,6 +2,7 @@
 #define SDL_MAIN_HANDLED
 #endif
 #include "xr/XRSystem.h"
+#include "stream/StreamHost.h"
 #include "Simtary.h"
 #include "sdl2.h"
 #include "stRun.h"
@@ -163,6 +164,7 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     // graphics device is created - so "vulkan", "dx12", "debugdevice" and the GPU
     // preference flags were all read from an empty argument set and did nothing.
     wi::arguments::Parse(argc, argv);
+    st::stream::StreamHost::Get().ParseCommandLine();   // --stream: decides the window below
     {
         std::string port;
         const bool server = wi::arguments::HasArgument("--server") || wi::arguments::GetArgumentValue("--server=", port);
@@ -258,7 +260,16 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     // loader and fail window creation when there is none, so a DirectX 12 run must not
     // ask for it. See Framework/render/GraphicsAPI.h.
     const st::GraphicsAPI graphicsAPI = st::ResolveGraphicsAPI(config.graphicsAPI);
-    Uint32 windowFlags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+    // Streaming (Framework/stream): the window is only the swapchain's host, so it is hidden and
+    // exactly the stream's size - the render path then renders at the size that is encoded.
+    const bool streamHidden = st::stream::StreamHost::Get().Requested() &&
+                              !st::stream::StreamHost::Get().GetOptions().showWindow;
+    Uint32 windowFlags = (streamHidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN) | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+    if (st::stream::StreamHost::Get().Requested()) {
+        windowFlags &= ~Uint32(SDL_WINDOW_ALLOW_HIGHDPI);   // 1 window pixel = 1 video pixel
+        config.windowWidth = int(st::stream::StreamHost::Get().GetOptions().width);
+        config.windowHeight = int(st::stream::StreamHost::Get().GetOptions().height);
+    }
 #ifdef __ANDROID__
     windowFlags |= SDL_WINDOW_FULLSCREEN; // the activity's surface is the whole screen
 #endif
@@ -280,7 +291,7 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     // torn down before Vulkan can take the same ANativeWindow.
     const bool showSplash = false;
 #else
-    const bool showSplash = !config.splashImage.empty() && !g_headless;
+    const bool showSplash = !config.splashImage.empty() && !g_headless && !streamHidden;
 #endif
     if (showSplash) {
         // SOFTWARE renderer - Vulkan ain't active yet, use this!

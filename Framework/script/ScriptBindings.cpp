@@ -5,7 +5,8 @@
 //	Transform    position / localPosition, rotation / localRotation, eulerAngles,
 //	             localScale, forward / right / up, parent, Translate, Rotate, RotateAround,
 //	             LookAt, SetParent, GetChild, TransformPoint, InverseTransformPoint, ...
-//	Rigidbody    velocity, mass, isKinematic, drag, AddForce(f, ForceMode.Impulse), ...
+//	Rigidbody    velocity, angularVelocity, position, rotation, mass, isKinematic, drag,
+//	             AddForce(f, ForceMode.Impulse), AddForceAtPosition, AddRelativeForce/Torque, ...
 //	Light        color, intensity, range, spotAngle, shadows
 //	Component    any native component by its NCI name: enabled + its NCA_ parameters
 //	Time         deltaTime, time, fixedDeltaTime, unscaledDeltaTime, frameCount
@@ -26,6 +27,8 @@
 // catchable script error, never a dangling pointer. Components of C++ native classes
 // are their instance pointer, checked against the scene's instance table on each use.
 #include "script/ScriptSystem.h"
+#include "scene/TemplatePool.h"
+#include "scene/PlayControl.h"
 
 #include "input/InputComponent.h"
 #include "input/InputSystem.h"
@@ -37,6 +40,7 @@
 #include "wiRenderer.h"
 #include "wiScene.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
@@ -323,6 +327,56 @@ void Destroy (tb::Call* call, void*) {
 }
 
 // ---------------------------------------------------------------------------
+// Pool - st::TemplatePool by template path ("templates/bullet.sttd")
+// ---------------------------------------------------------------------------
+st::TemplatePool* PoolArg (tb::Call* call) {
+    const std::string path = tb::ArgString(call, 0);
+    if (tb::Failed(call)) return nullptr;
+    std::string error;
+    st::TemplatePool* pool = st::TemplatePools::Get().Acquire(path, &error);
+    if (pool == nullptr) tb::Fail(call, ("Pool: " + error).c_str());
+    return pool;
+}
+
+void PoolPrewarm (tb::Call* call, void*) {
+    st::TemplatePool* pool = PoolArg(call);
+    if (pool == nullptr) return;
+    const int64_t count = tb::ArgInt(call, 1);
+    if (tb::Failed(call)) return;
+    tb::ReturnInt(call, pool->Prewarm(SceneRef(), (uint32_t)std::max<int64_t>(0, count)));
+}
+
+void PoolSpawn (tb::Call* call, void*) {
+    st::TemplatePool* pool = PoolArg(call);
+    if (pool == nullptr) return;
+    XMFLOAT3 position(0, 0, 0);
+    XMFLOAT4 rotation(0, 0, 0, 1);
+    if (tb::ArgCount(call) > 1 && tb::ArgType(call, 1) == tb::Type::Vector3) position = X(tb::ArgVector3(call, 1));
+    if (tb::ArgCount(call) > 2 && tb::ArgType(call, 2) == tb::Type::Quaternion) rotation = X(tb::ArgQuaternion(call, 2));
+    tb::Return(call, ObjectValue(Kind::GameObject, pool->Spawn(SceneRef(), position, rotation)));
+}
+
+void PoolRelease (tb::Call* call, void*) {
+    void* h = tb::ArgObject(call, 0, kGameObject);
+    if (tb::Failed(call) || !h) { tb::ReturnBool(call, false); return; }
+    const Entity e = EntityOf(h);
+    st::TemplatePool* pool = st::TemplatePools::Get().Owner(e);
+    tb::ReturnBool(call, pool != nullptr && pool->Release(SceneRef(), e));
+}
+
+void PoolActive (tb::Call* call, void*) {
+    st::TemplatePool* pool = PoolArg(call);
+    if (pool == nullptr) return;
+    tb::ReturnInt(call, pool->Stats().active);
+}
+
+void PoolParked (tb::Call* call, void*) {
+    st::TemplatePool* pool = PoolArg(call);
+    if (pool == nullptr) return;
+    tb::ReturnInt(call, pool->Stats().parked);
+}
+
+// ---------------------------------------------------------------------------
 // Transform
 // ---------------------------------------------------------------------------
 #define ST_TRANSFORM_GET(NAME, EXPR)                                                   \
@@ -573,17 +627,13 @@ void RbSetAngularDrag (tb::Call* call, void* self, void*) {
     if (auto* r = RigidbodyOf(call, self)) r->damping_angular = (float)d;
 }
 
+void ApplyForceMode (wi::scene::RigidBodyPhysicsComponent& r, const tb::Vec3& f, int64_t mode);
+
 void RbAddForce (tb::Call* call, void* self, void*) {
     const tb::Vec3 f = tb::ArgVector3(call, 0);
     const int64_t mode = tb::ArgCount(call) > 1 ? tb::ArgInt(call, 1) : 0;
     if (tb::Failed(call)) return;
-    auto* r = RigidbodyOf(call, self);
-    if (!r) return;
-    // ForceMode: Force, Acceleration (mass-independent), Impulse, VelocityChange
-    const float k = (mode == 1 || mode == 3) ? r->mass : 1.0f;
-    const XMFLOAT3 v(f.x * k, f.y * k, f.z * k);
-    if (mode == 2 || mode == 3) wi::physics::ApplyImpulse(*r, v);
-    else                        wi::physics::ApplyForce(*r, v);
+    if (auto* r = RigidbodyOf(call, self)) ApplyForceMode(*r, f, mode);
 }
 
 void RbAddTorque (tb::Call* call, void* self, void*) {
@@ -596,6 +646,72 @@ void RbMovePosition (tb::Call* call, void* self, void*) {
     const tb::Vec3 p = tb::ArgVector3(call, 0);
     if (tb::Failed(call)) return;
     if (auto* r = RigidbodyOf(call, self)) wi::physics::SetPosition(*r, X(p));
+}
+
+// The SIMULATED pose, not the transform: inside FixedUpdate the transform still holds the
+//	interpolated render pose, while these are what the next physics step starts from.
+void RbGetPosition (tb::Call* call, void* self, void*) {
+    if (auto* r = RigidbodyOf(call, self)) tb::ReturnVector3(call, V(wi::physics::GetPosition(*r)));
+}
+
+void RbGetRotation (tb::Call* call, void* self, void*) {
+    if (auto* r = RigidbodyOf(call, self)) tb::ReturnQuaternion(call, Q(wi::physics::GetRotation(*r)));
+}
+
+void RbSetRotation (tb::Call* call, void* self, void*) {
+    const tb::Quat q = tb::ArgQuaternion(call, 0);
+    if (tb::Failed(call)) return;
+    auto* r = RigidbodyOf(call, self);
+    if (!r) return;
+    XMFLOAT4 n = X(q);
+    XMStoreFloat4(&n, XMQuaternionNormalize(XMLoadFloat4(&n)));
+    wi::physics::SetPositionAndRotation(*r, wi::physics::GetPosition(*r), n);
+}
+
+void RbGetAngularVelocity (tb::Call* call, void* self, void*) {
+    if (auto* r = RigidbodyOf(call, self)) tb::ReturnVector3(call, V(wi::physics::GetAngularVelocity(*r)));
+}
+
+void RbSetAngularVelocity (tb::Call* call, void* self, void*) {
+    const tb::Vec3 v = tb::ArgVector3(call, 0);
+    if (tb::Failed(call)) return;
+    if (auto* r = RigidbodyOf(call, self)) wi::physics::SetAngularVelocity(*r, X(v));
+}
+
+// ForceMode as AddForce: Force, Acceleration (mass-independent), Impulse, VelocityChange.
+void ApplyForceMode (wi::scene::RigidBodyPhysicsComponent& r, const tb::Vec3& f, int64_t mode) {
+    const float k = (mode == 1 || mode == 3) ? r.mass : 1.0f;
+    const XMFLOAT3 v(f.x * k, f.y * k, f.z * k);
+    if (mode == 2 || mode == 3) wi::physics::ApplyImpulse(r, v);
+    else                        wi::physics::ApplyForce(r, v);
+}
+
+void RbAddRelativeForce (tb::Call* call, void* self, void*) {
+    const tb::Vec3 f = tb::ArgVector3(call, 0);
+    const int64_t mode = tb::ArgCount(call) > 1 ? tb::ArgInt(call, 1) : 0;
+    if (tb::Failed(call)) return;
+    if (auto* r = RigidbodyOf(call, self))
+        ApplyForceMode(*r, tb::RotateVector(Q(wi::physics::GetRotation(*r)), f), mode);
+}
+
+void RbAddForceAtPosition (tb::Call* call, void* self, void*) {
+    const tb::Vec3 f = tb::ArgVector3(call, 0);
+    const tb::Vec3 at = tb::ArgVector3(call, 1);
+    const int64_t mode = tb::ArgCount(call) > 2 ? tb::ArgInt(call, 2) : 0;
+    if (tb::Failed(call)) return;
+    auto* r = RigidbodyOf(call, self);
+    if (!r) return;
+    const float k = (mode == 1 || mode == 3) ? r->mass : 1.0f;
+    const XMFLOAT3 v(f.x * k, f.y * k, f.z * k);
+    if (mode == 2 || mode == 3) wi::physics::ApplyImpulseAt(*r, v, X(at), false);
+    else                        wi::physics::ApplyForceAt(*r, v, X(at), false);
+}
+
+void RbAddRelativeTorque (tb::Call* call, void* self, void*) {
+    const tb::Vec3 t = tb::ArgVector3(call, 0);
+    if (tb::Failed(call)) return;
+    if (auto* r = RigidbodyOf(call, self))
+        wi::physics::ApplyTorque(*r, X(tb::RotateVector(Q(wi::physics::GetRotation(*r)), t)));
 }
 
 void CompGetGameObject (tb::Call* call, void* self, void*) { tb::Return(call, ObjectValue(Kind::GameObject, EntityOf(self))); }
@@ -967,7 +1083,8 @@ void SetFloat (tb::VM* vm, const char* cls, const char* name, double v) { tb::Se
 } // namespace
 
 void UpdateEngineStatics (tb::VM* vm, float sceneDt, float realDt) {
-    sceneTime += sceneDt;
+    // Time.time is the transport's scene clock, which starts again at 0 on every Play.
+    sceneTime = st::PlayControl::Get().SceneTime();
     unscaledTime += realDt;
     ++frameCount;
     SetFloat(vm, "Time", "deltaTime", sceneDt);
@@ -1016,6 +1133,11 @@ void RegisterEngineBindings (tb::VM* vm) {
     tb::RegisterFunction(vm, "GameObject.CreatePrimitive", &GoCreatePrimitive, nullptr, "(str) -> GameObject");
     tb::RegisterFunction(vm, "Instantiate", &Instantiate, nullptr, "(GameObject, Vector3=, Quaternion=) -> GameObject");
     tb::RegisterFunction(vm, "Destroy", &Destroy, nullptr, "(GameObject?)");
+    tb::RegisterFunction(vm, "Pool.Prewarm", &PoolPrewarm, nullptr, "(str, int) -> int");
+    tb::RegisterFunction(vm, "Pool.Spawn", &PoolSpawn, nullptr, "(str, Vector3=, Quaternion=) -> GameObject?");
+    tb::RegisterFunction(vm, "Pool.Release", &PoolRelease, nullptr, "(GameObject?) -> bool");
+    tb::RegisterFunction(vm, "Pool.Active", &PoolActive, nullptr, "(str) -> int");
+    tb::RegisterFunction(vm, "Pool.Parked", &PoolParked, nullptr, "(str) -> int");
 
     // ----------------------------------------------------------------- Transform
     const char* T = kTransform;
@@ -1059,6 +1181,13 @@ void RegisterEngineBindings (tb::VM* vm) {
     tb::RegisterMethod(vm, R, "AddForce", &RbAddForce, nullptr, "(Vector3, int=)");
     tb::RegisterMethod(vm, R, "AddTorque", &RbAddTorque, nullptr, "(Vector3)");
     tb::RegisterMethod(vm, R, "MovePosition", &RbMovePosition, nullptr, "(Vector3)");
+    tb::RegisterProperty(vm, R, "position", "Vector3", &RbGetPosition, &RbMovePosition, nullptr);
+    tb::RegisterProperty(vm, R, "rotation", "Quaternion", &RbGetRotation, &RbSetRotation, nullptr);
+    tb::RegisterProperty(vm, R, "angularVelocity", "Vector3", &RbGetAngularVelocity, &RbSetAngularVelocity, nullptr);
+    tb::RegisterMethod(vm, R, "MoveRotation", &RbSetRotation, nullptr, "(Quaternion)");
+    tb::RegisterMethod(vm, R, "AddRelativeForce", &RbAddRelativeForce, nullptr, "(Vector3, int=)");
+    tb::RegisterMethod(vm, R, "AddForceAtPosition", &RbAddForceAtPosition, nullptr, "(Vector3, Vector3, int=)");
+    tb::RegisterMethod(vm, R, "AddRelativeTorque", &RbAddRelativeTorque, nullptr, "(Vector3)");
 
     // --------------------------------------------------------------------- Light
     const char* L = kLight;

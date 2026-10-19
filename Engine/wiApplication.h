@@ -8,6 +8,7 @@
 #include "wiEventHandler.h"
 #include "wiCanvas.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -92,6 +93,12 @@ namespace wi
 		virtual void Render();
 		// This is where the application will render to the screen (backbuffer). It must render to the provided command list.
 		virtual void Compose(wi::graphics::CommandList cmd);
+
+		// SIMTARY: called once a frame on the main thread, in the frame's last command list, after
+		//	the compose pass has ended and the backbuffer holds the finished picture. The backbuffer
+		//	is in its resting layout (backbuffer.desc.layout): a callback that reads it must
+		//	transition it and put it back. Used by the streaming host (BHS) to copy the frame out.
+		std::function<void(wi::graphics::CommandList cmd, const wi::graphics::Texture& backbuffer)> onFrameComposed;
 		// This is where the application about to exit.
 		virtual void Exit();
 

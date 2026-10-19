@@ -94,7 +94,8 @@ void TypeCombo (const char* label, int* value, bool allowAll) {
         asset::AssetType::Sound,   asset::AssetType::Music,   asset::AssetType::Video,
         asset::AssetType::Script,  asset::AssetType::Font,    asset::AssetType::Shader,
         asset::AssetType::Scene,   asset::AssetType::Animation, asset::AssetType::Text,
-        asset::AssetType::Json,    asset::AssetType::Binary,  asset::AssetType::Custom,
+        asset::AssetType::Json,    asset::AssetType::Binary,  asset::AssetType::Template,
+        asset::AssetType::Custom,
     };
 
     const char* preview = (*value < 0) ? "All types"
@@ -949,6 +950,49 @@ void AssetExplorer::CollectRows (std::vector<Row>& rows, bool applyFilters) cons
             row.flags       = a->flags;
             rows.push_back(std::move(row));
         }
+    }
+
+    // Templates saved this session exist only as loose files until the next launch packs
+    // them; list them too, or a fresh "Save as Template" could not be dragged anywhere.
+    if (mountFilter_ < 0 && (typeFilter < 0 || typeFilter == static_cast<int>(asset::AssetType::Template))) {
+        RefreshLooseTemplates();
+        for (const LooseTemplate& t : looseTemplates_) {
+            if (!filter.empty() && asset::CanonicalPath(t.path).find(filter) == std::string::npos) continue;
+            Row row;
+            row.id     = asset::AssetIdFromPath(t.path);
+            row.path   = t.path;
+            row.mount  = "assets/";
+            row.type   = asset::AssetType::Template;
+            row.size   = t.size;
+            row.storedSize = t.size;
+            row.origin = "file";
+            rows.push_back(std::move(row));
+        }
+    }
+}
+
+void AssetExplorer::RefreshLooseTemplates () const {
+    const double now = ImGui::GetTime();
+    if (looseTemplatesStamp_ > 0.0 && now - looseTemplatesStamp_ < 3.0) return;
+    looseTemplatesStamp_ = now > 0.0 ? now : 0.001;
+    looseTemplates_.clear();
+
+    std::error_code ec;
+    const fs::path root = U8Path("assets");
+    if (!fs::is_directory(root, ec)) return;
+    AssetSystem& assets = AssetSystem::Get();
+    for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
+         it != end; it.increment(ec)) {
+        if (ec) break;
+        if (!it->is_regular_file(ec)) continue;
+        std::string ext = it->path().extension().u8string();
+        for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (ext != ".sttd") continue;
+        const std::string rel = asset::NormalizePath(it->path().lexically_relative(root).generic_u8string());
+        // Already in a package: that row is listed above, and loading prefers this loose
+        // file anyway (st::ReadTemplateFile), so one row is enough.
+        if (assets.Exists(rel) || assets.Exists("assets/" + rel)) continue;
+        looseTemplates_.push_back(LooseTemplate{ rel, static_cast<uint64_t>(it->file_size(ec)) });
     }
 }
 

@@ -106,6 +106,7 @@ enum class AssetType : uint16_t {
     Text      = 14,
     Json      = 15,
     Binary    = 16,  // known blob, no further meaning
+    Template  = 17,  // .sttd - one object, placeable in any scene (scene/ObjectTemplate.h)
     Custom    = 1000 // project-defined; userFlags carries the discriminator
 };
 

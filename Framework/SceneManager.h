@@ -56,7 +56,9 @@ public:
     // clean entity-level reset, not an object reconstruction. No-op if none active.
     void Reload();
 
-    void Update(float dt);
+    // `editing` (PlayControl Edit mode): the transition still runs, but the scene class's
+    //	Update() - its gameplay - does not; the world is stepped frozen so it still draws.
+    void Update(float dt, bool editing = false);
     void OnGUI();
     // The active scene's developer UI. st::App only calls this while DevUI is visible.
     void OnDevGUI();

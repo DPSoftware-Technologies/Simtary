@@ -176,12 +176,21 @@ namespace wi::texturehelper
 
 		// Checkerboard:
 		{
-			wi::Color checker[] = {
-				wi::Color(255,255,255,255), wi::Color(127,127,127,255),
-				wi::Color(127,127,127,255), wi::Color(255,255,255,255),
-			};
+			// SIMTARY: 8x8 cells of 8 pixels instead of a 2x2 texture. It is the fallback for a
+			// missing base colour texture, and a 2x2 under linear filtering is one soft blur per
+			// UV tile rather than a checkerboard.
+			const uint32_t size = 64;
+			const uint32_t cell = 8;
+			wi::Color checker[size * size];
+			for (uint32_t y = 0; y < size; ++y)
+			{
+				for (uint32_t x = 0; x < size; ++x)
+				{
+					checker[y * size + x] = ((x / cell + y / cell) & 1) == 0 ? wi::Color(255, 255, 255, 255) : wi::Color(127, 127, 127, 255);
+				}
+			}
 
-			CreateTexture(helperTextures[HELPERTEXTURE_CHECKERBOARD], checker, 2, 2, Format::R8G8B8A8_UNORM);
+			CreateTexture(helperTextures[HELPERTEXTURE_CHECKERBOARD], checker, size, size, Format::R8G8B8A8_UNORM);
 			device->SetName(&helperTextures[HELPERTEXTURE_CHECKERBOARD], "HELPERTEXTURE_CHECKERBOARD");
 		}
 

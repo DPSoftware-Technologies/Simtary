@@ -115,6 +115,10 @@ GraphicsAPI ResolveGraphicsAPI(GraphicsAPI configured) {
     // saved Vulkan choice; an explicit "vulkan" above still wins (and VR then stays off).
     else if (wi::arguments::HasArgument("--xr") || wi::arguments::HasArgument("xr"))
         wanted = GraphicsAPI::DirectX12;
+    // --stream (Framework/stream) copies the DirectX 12 backbuffer into a shared texture.
+    else if (wi::arguments::HasArgument("--stream") || wi::arguments::HasArgument("stream") ||
+             [] { std::string v; return wi::arguments::GetArgumentValue("--stream=", v); }())
+        wanted = GraphicsAPI::DirectX12;
 
     // 2. the player's saved choice. Read straight out of options.stad rather than off
     //    DisplaySettings: the device has to exist before st::App does, so nothing has

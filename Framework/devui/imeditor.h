@@ -55,6 +55,8 @@
 #include "imeditorhistory.h"
 #include "imterrain.h"
 #include "io/model/ModelImporter.h"
+#include "io/Nbt.h"
+#include "imtemplatepreview.h"
 
 #include <memory>
 #include <vector>
@@ -99,6 +101,25 @@ public:
     void RenderEditorView(float dt);
     // Same, for every spawned Camera View. Called right after RenderEditorView.
     void RenderCameraViews(float dt);
+
+    // Open a .sttd in its own preview window (Resource Explorer double-click). Queued; the
+    // window appears on the next Draw.
+    void OpenTemplate(const std::string& path);
+    // Step and render every open template preview. Called after RenderCameraViews.
+    void RenderTemplatePreviews(float dt);
+    // Free render paths SetEnabled(false) retired. st::App calls it at the top of a frame.
+    void ReleaseRetired();
+    // Tool entry points (editor bridge): the same save and placement the UI does.
+    bool SaveTemplateForTool(wi::scene::Scene& scene, wi::ecs::Entity root, const std::string& path) {
+        return SaveTemplate(scene, root, path);
+    }
+    // The newest open template preview's last frame, or nullptr.
+    const wi::graphics::Texture* TemplatePreviewFrame() const {
+        return templatePreviews_.empty() ? nullptr : templatePreviews_.back()->LastFrame();
+    }
+    wi::ecs::Entity PlaceTemplateForTool(wi::scene::Scene& scene, const std::string& path, const XMFLOAT3& position) {
+        return PlaceTemplate(scene, path, position);
+    }
 
     // Menu entries for the DevUI menu bar ("Simtary > Editor").
     void MenuItems();
@@ -197,7 +218,9 @@ private:
     // else (including no extension) writes the native .stsd.
     void SaveScene(wi::scene::Scene& scene, const std::string& path);
     bool SaveSceneArchive(wi::scene::Scene& scene, const std::string& path);
-    bool SaveSceneDescriptor(wi::scene::Scene& scene, const std::string& path);
+    // `project` (optional) becomes the descriptor's project tag - how a .sttd says it is a template.
+    bool SaveSceneDescriptor(wi::scene::Scene& scene, const std::string& path,
+        const st::nbt::Tag* project = nullptr);
     // Where a .stsd save writes the map's raw resources: AppConfig::editorResourceDir if
     // the project set one, otherwise the assets/resources the build baked in. Empty means
     // the export is off - no folder was configured and nothing is guessed.
@@ -237,6 +260,24 @@ private:
     // INVALID_ENTITY on failure (the reason lands in the backlog and in lastImportMessage_).
     wi::ecs::Entity ImportModelAtSpawn(wi::scene::Scene& scene, const std::string& path);
 
+    // templates (scene/ObjectTemplate.h)
+    // "Save as Template..." from a Hierarchy row - the main scene's or a preview's. Opens
+    // the name popup; the save happens when it is confirmed.
+    void RequestSaveTemplate(wi::scene::Scene& scene, wi::ecs::Entity entity);
+    void DrawSaveTemplatePopup();
+    // Build the template out of `scene` and write it. True on success.
+    bool SaveTemplate(wi::scene::Scene& scene, wi::ecs::Entity root, const std::string& path);
+    // Load a .sttd and place a copy at `position` (render space), as one undo step.
+    wi::ecs::Entity PlaceTemplate(wi::scene::Scene& scene, const std::string& path, const XMFLOAT3& position);
+    void FlushPendingTemplates(wi::scene::Scene& scene);
+    void DrawTemplatePreviews();
+    // View > Template Pools: every st::TemplatePool, its counts, prewarm / release / clear.
+    void DrawPoolsWindow(wi::scene::Scene& scene);
+    // The world point under a viewport pixel: what the scene shows there, else the ground
+    // plane (absolute y = 0), else a point ten metres out along the ray.
+    XMFLOAT3 ViewportPoint(wi::RenderPath3D& path, const wi::scene::CameraComponent& cam,
+        wi::scene::Scene& scene, float u, float v) const;
+
     bool enabled_ = false;
 
     // Panels. Hierarchy/Properties are separate from the DevUI's own floating copies so
@@ -247,6 +288,7 @@ private:
     bool showProperties_     = true;
     bool showResources_      = true;
     bool showTerrain_        = true;
+    bool showPools_          = false;
 
     // Create / sculpt / paint terrain (Framework/devui/imterrain.h). Also hooked into the
     // Editor Viewport, which is where its brushes are used.
@@ -344,6 +386,8 @@ private:
 
     // editor viewport
     std::unique_ptr<wi::RenderPath3D> editorPath_;
+    std::vector<std::unique_ptr<wi::RenderPath3D>> retiredPaths_;
+    std::vector<std::unique_ptr<TemplatePreview>>  retiredPreviews_;
     wi::scene::CameraComponent        editorCamera_;
     XMUINT2 editorViewSize_    = XMUINT2(0, 0); // panel size requested this frame, physical px
     float   editorViewDPI_     = 96.0f;
@@ -424,6 +468,22 @@ private:
     // Entity handles are only meaningful within one loaded scene, so the history is dropped
     // whenever the scene manager switches. Tracked by name because that is what changes.
     std::string historySceneName_;
+    EditorHistory editHistory_;          // the Edit-mode history, parked while playing
+    bool          historyEditing_ = false; // which of the two history_ currently is
+    bool RefuseSaveInPlayMode();
+
+    // templates
+    bool                       templateHooksInstalled_ = false;
+    wi::scene::Scene*          saveTemplateScene_  = nullptr;  // the scene the popup saves from
+    wi::ecs::Entity            saveTemplateEntity_ = wi::ecs::INVALID_ENTITY;
+    bool                       saveTemplateRequested_ = false; // open the popup on the next frame
+    char                       saveTemplateName_[128] = {};
+    std::vector<std::unique_ptr<TemplatePreview>> templatePreviews_;
+    int                        nextTemplatePreviewID_ = 1;
+    bool                       templatePreviewFocused_ = false; // last frame
+    std::vector<std::string>   pendingTemplateOpens_;
+    struct PendingPlacement { std::string path; XMFLOAT3 position; };
+    std::vector<PendingPlacement> pendingTemplatePlacements_;
 };
 
 } // namespace st

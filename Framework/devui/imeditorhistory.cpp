@@ -245,6 +245,7 @@ void st::EditorHistory::Push(Step&& step)
 	// A new edit invalidates the redo branch, exactly like every other editor.
 	redo_.clear();
 	undo_.push_back(std::move(step));
+	++revision_;
 	if (undo_.size() > MAX_STEPS)
 		undo_.erase(undo_.begin());
 }
@@ -297,6 +298,7 @@ Entity st::EditorHistory::Undo(wi::scene::Scene& scene)
 	Step step = std::move(undo_.back());
 	undo_.pop_back();
 	ApplyState(scene, step, false);
+	++revision_;
 	wi::backlog::post("Editor: undo " + step.label);
 
 	const Entity selected = step.entities.empty() ? INVALID_ENTITY : step.entities[0];
@@ -312,6 +314,7 @@ Entity st::EditorHistory::Redo(wi::scene::Scene& scene)
 	Step step = std::move(redo_.back());
 	redo_.pop_back();
 	ApplyState(scene, step, true);
+	++revision_;
 	wi::backlog::post("Editor: redo " + step.label);
 
 	const Entity selected = step.entities.empty() ? INVALID_ENTITY : step.entities[0];

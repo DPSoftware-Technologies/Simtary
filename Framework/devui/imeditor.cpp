@@ -7,11 +7,15 @@
 #include "io/model/ModelImporter.h"
 #include "io/asset/SceneDescriptor.h"
 #include "io/asset/AssetPackWriter.h"
+#include "scene/ObjectTemplate.h"
+#include "scene/TemplatePool.h"
+#include "render/MeshLOD.h"
 
 #include "stApp.h"
 #include "imhierarchy.h"
 #include "imcomponents.h"
 #include "imassets.h"
+#include "imcomponentinspectors.h" // st::devui::EntityLabel
 #include "imgraphicsettings.h"
 #include "input/InputSystem.h"
 #include "terrain/TerrainSystem.h"
@@ -30,6 +34,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -371,17 +377,24 @@ void st::EditorUI::SetEnabled(bool on)
 		//	4K window.
 		ApplyGameViewResolution(false);
 
-		// The render targets may still be referenced by frames in flight.
-		DestroyCameraViews();
+		// Retired, not destroyed: this can run after this frame's ImGui draw data was built
+		//	(the editor bridge turns the editor off between ImGui and Compose), and that
+		//	data still names the viewport textures. ReleaseRetired() frees them at the top
+		//	of the next frame, before new draw data exists.
+		for (auto& view : cameraViews_)
+			if (view->path) retiredPaths_.push_back(std::move(view->path));
+		cameraViews_.clear();
 		if (editorPath_)
-		{
-			wi::graphics::GetDevice()->WaitForGPU();
-			editorPath_.reset();
-		}
+			retiredPaths_.push_back(std::move(editorPath_));
 		editorViewLive_ = false;
 		st::terrain::TerrainSystem::Get().SetFocus(false); // terrain follows the game camera again
 		ReleaseFreeCamLook();
 		ReleaseInputCapture();
+
+		// Without the editor there is nothing to show a frozen scene in: closing it in Edit
+		//	mode is pressing Play.
+		if (st::PlayControl::Get().IsEditing())
+			st::PlayControl::Get().Play();
 	}
 }
 
@@ -395,12 +408,34 @@ void st::EditorUI::ReleaseInput()
 	ApplyGameViewResolution(false);
 }
 
+void st::EditorUI::ReleaseRetired()
+{
+	if (retiredPaths_.empty() && retiredPreviews_.empty())
+		return;
+	wi::graphics::GetDevice()->WaitForGPU(); // the last frame that drew them may be in flight
+	retiredPaths_.clear();
+	retiredPreviews_.clear();
+}
+
 void st::EditorUI::Shutdown()
 {
+	ReleaseRetired();
 	ReleaseFreeCamLook();
 	ReleaseInputCapture();
 	ApplyGameViewResolution(false);
 	DestroyCameraViews();
+	if (!templatePreviews_.empty())
+	{
+		wi::graphics::GetDevice()->WaitForGPU();
+		templatePreviews_.clear();
+	}
+	if (templateHooksInstalled_)
+	{
+		SetSaveTemplateHandler(nullptr);
+		if (app_ != nullptr)
+			app_->Resources().onOpenTemplate = nullptr;
+		templateHooksInstalled_ = false;
+	}
 	if (editorPath_)
 	{
 		wi::graphics::GetDevice()->WaitForGPU();
@@ -586,6 +621,21 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 					"camera. Dropping one on the window does the same.",
 					ImportFilterDescription().c_str());
 			ImGui::MenuItem("Ask for import options", nullptr, &importAskEveryTime_);
+			ImGui::Separator();
+			if (ImGui::MenuItem("Generate LODs (all meshes)"))
+			{
+				wi::vector<Entity> meshes;
+				for (size_t i = 0; i < scene.meshes.GetCount(); ++i)
+					meshes.push_back(scene.meshes.GetEntity(i));
+				history_.BeginEntities(scene, meshes, "Generate LODs");
+				const uint32_t n = st::render::GenerateSceneLODs(scene);
+				history_.Commit(scene);
+				lastImportMessage_ = std::to_string(n) + " mesh(es) now have LODs - save to keep them";
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Every mesh over 300 triangles gets simplified levels the engine picks\n"
+					"by on-screen size (main view, shadows, reflections). One undo step;\n"
+					"saved with the map.");
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("The panel that offers grouping, placement, animations, "
 					"skins and scale before an import runs.");
@@ -655,6 +705,7 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 			ImGui::Separator();
 			ImGui::MenuItem("Hierarchy", nullptr, &showHierarchy_);
 			ImGui::MenuItem("Properties", nullptr, &showProperties_);
+			ImGui::MenuItem("Template Pools", nullptr, &showPools_);
 			ImGui::Separator();
 			if (ImGui::MenuItem("Reset Layout"))
 				resetLayout_ = true;
@@ -970,6 +1021,13 @@ void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3
 		ImGui::Image((ImTextureID)(uintptr_t)tex, imageSize);
 		imageDrawn = true;
 
+		// Play mode is impossible to miss, as Unity tints its editor: anything changed
+		//	inside an orange frame is gone at Stop.
+		if (!st::PlayControl::Get().IsEditing())
+			ImGui::GetWindowDrawList()->AddRect(imagePos,
+				ImVec2(imagePos.x + imageSize.x, imagePos.y + imageSize.y),
+				IM_COL32(255, 150, 40, 220), 0.0f, 0, 3.0f);
+
 		// Drop a MODEL out of the Resource Explorer onto the viewport and it is merged into
 		//	the scene at the spawn point, the same place the Create menu puts a new object.
 		//	Anything that is not a model declines here, so dragging a texture over the image
@@ -981,7 +1039,19 @@ void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3
 				if (p->DataSize == (int)sizeof(st::AssetPayload))
 				{
 					const st::AssetPayload* a = (const st::AssetPayload*)p->Data;
-					if (a->IsModel())
+					if (a->IsTemplate())
+					{
+						// A template lands where it was dropped, not at the spawn point: on
+						//	whatever is under the cursor, else on the ground plane. Placed next
+						//	frame, like a model, so the panels drawn after this one are not
+						//	handed a scene that changed under them.
+						const ImVec2 m = ImGui::GetIO().MousePos;
+						const XMFLOAT3 point = ViewportPoint(path, cam, scene,
+							(m.x - imagePos.x) / std::max(1.0f, imageSize.x),
+							(m.y - imagePos.y) / std::max(1.0f, imageSize.y));
+						pendingTemplatePlacements_.push_back(PendingPlacement{ a->path, point });
+					}
+					else if (a->IsModel())
 						QueueImportModel(a->path);   // loaded next frame, on the main thread
 					else
 						wi::backlog::post(std::string("Editor: ") + a->path +
@@ -1669,7 +1739,8 @@ std::string st::EditorUI::ResourceExportDir()
 #endif
 }
 
-bool st::EditorUI::SaveSceneDescriptor(wi::scene::Scene& scene, const std::string& path)
+bool st::EditorUI::SaveSceneDescriptor(wi::scene::Scene& scene, const std::string& path,
+	const st::nbt::Tag* project)
 {
 	// Embedding is turned ON for exactly this serialize, then put back.
 	//
@@ -1700,6 +1771,8 @@ bool st::EditorUI::SaveSceneDescriptor(wi::scene::Scene& scene, const std::strin
 		lastSaveMessage_ = "SAVE FAILED: " + error;
 		return false;
 	}
+	if (project != nullptr)
+		descriptor.project = *project;
 
 	// The map's raw resources, as loose files in the project's assets/resources.
 	//
@@ -1988,6 +2061,22 @@ wi::ecs::Entity st::EditorUI::ImportModelAtSpawn(wi::scene::Scene& scene, const 
 			scene.Component_Attach(e, root, true);
 		}
 	}
+	if (importOptions_.generateLODs && ext != "stsd" && ext != "wiscene")
+	{
+		uint32_t withLods = 0;
+		for (Entity e : created)
+		{
+			wi::scene::MeshComponent* mesh = scene.meshes.GetComponent(e);
+			if (mesh == nullptr || mesh->indices.size() < 300 * 3)
+				continue;
+			st::render::MeshLODReport report;
+			if (st::render::GenerateMeshLODs(*mesh, st::render::MeshLODSettings{}, &report) && report.lods > 1)
+				++withLods;
+		}
+		if (withLods > 0)
+			detail += "  " + std::to_string(withLods) + " mesh(es) with LODs";
+	}
+
 	// The root first, so an undo that walks the list tears the hierarchy down from the top.
 	for (size_t i = 1; i < created.size(); ++i)
 	{
@@ -2088,6 +2177,12 @@ void st::EditorUI::DrawImportOptions(wi::scene::Scene& scene)
 	if (ImGui::IsItemHovered())
 		ImGui::SetTooltip("A mesh with no normals renders black. OBJ ships without them often.");
 
+	ImGui::Checkbox("Generate LODs", &importOptions_.generateLODs);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Simplified copies of every mesh over 300 triangles, picked by the engine\n"
+			"by on-screen size - far objects and shadow cascades draw a fraction of the\n"
+			"triangles. Saved with the map.");
+
 	ImGui::SetNextItemWidth(120);
 	ImGui::DragFloat("Scale", &importOptions_.scale, 0.01f, 0.0001f, 1000.0f, "%.4f");
 	ImGui::SameLine();
@@ -2165,8 +2260,22 @@ std::string st::EditorUI::CurrentSceneMap(bool* composite, std::string* sceneNam
 	return stem + ".stsd";
 }
 
+bool st::EditorUI::RefuseSaveInPlayMode()
+{
+	// What is on screen in Play mode is the simulation, not the scene: saving it would
+	//	write wherever the vehicles drove to. Unity refuses too.
+	if (st::PlayControl::Get().IsEditing())
+		return false;
+	lastSaveMessage_ = "not saved: in Play mode - Stop (F5) first";
+	wi::backlog::post("Editor: not saved - the scene is in Play mode. Stop first (F5); changes made "
+		"while playing are not kept.", wi::backlog::LogLevel::Warning);
+	return true;
+}
+
 void st::EditorUI::QuickSave(wi::scene::Scene& scene)
 {
+	if (RefuseSaveInPlayMode())
+		return;
 	if (!scenePath_.empty())
 	{
 		SaveScene(scene, scenePath_);
@@ -2248,7 +2357,7 @@ void st::EditorUI::DrawMapSaveConfirm(wi::scene::Scene& scene)
 
 void st::EditorUI::RequestSaveAs(const char* defaultExt)
 {
-	if (saveDialogOpen_)
+	if (saveDialogOpen_ || RefuseSaveInPlayMode())
 		return;
 	saveDialogOpen_ = true;
 	saveDefaultExt_ = defaultExt;
@@ -2373,6 +2482,15 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	gameRenderPath_ = (&app.renderPath == &gamePath) ? &app.renderPath : nullptr;
 	ApplyGameViewResolution(true);
 
+	// The Hierarchy's "Save as Template..." and the Resource Explorer's template double-click
+	//	are drawn by panels that know nothing about the editor; they reach it through these.
+	if (!templateHooksInstalled_)
+	{
+		templateHooksInstalled_ = true;
+		SetSaveTemplateHandler([this](wi::scene::Scene& s, Entity e) { RequestSaveTemplate(s, e); });
+		app.Resources().onOpenTemplate = [this](const std::string& p) { OpenTemplate(p); };
+	}
+
 	// Main-thread tail of a Save As dialog that finished on its own thread.
 	FlushPendingSave(scene);
 
@@ -2382,6 +2500,7 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	{
 		historySceneName_ = app.sceneManager.CurrentName();
 		history_.Clear();
+		editHistory_.Clear();
 		gizmoDragging_ = false;
 		// The save path belongs to the scene it was chosen for. Keeping it across a switch
 		//	made Ctrl+S in scene B silently overwrite scene A's file.
@@ -2391,16 +2510,41 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 
 	pendingSelection_ = INVALID_ENTITY;
 
+	// Play mode gets an undo history of its own: its steps name entities the Stop is about
+	//	to take away, and Ctrl+Z after Stop must undo the last EDIT, not a play-time move.
+	const bool editing = st::PlayControl::Get().IsEditing();
+	if (editing != historyEditing_)
+	{
+		if (!editing)
+		{
+			editHistory_ = std::move(history_);
+			history_.Clear();
+		}
+		else
+		{
+			history_ = std::move(editHistory_);
+			editHistory_.Clear();
+			// The selection may have been made in play, of something Stop removed.
+			if (selected != INVALID_ENTITY && !scene.transforms.Contains(selected) &&
+				!scene.metadatas.Contains(selected) && !scene.names.Contains(selected))
+				selected = INVALID_ENTITY;
+		}
+		gizmoDragging_ = false;
+		historyEditing_ = editing;
+	}
+
 	// Main-thread tail of an import: a file dialog, or a model dropped on the window. The
 	//	options panel is drawn at the very end of the frame, after the dock host, so it sits
 	//	over the editor rather than under it.
 	FlushPendingImport(scene);
+	FlushPendingTemplates(scene);
 
 	// Ctrl+S / Ctrl+Shift+S / Ctrl+Z / Ctrl+Y anywhere in the editor.
 	const ImGuiIO& io = ImGui::GetIO();
 	// gameViewFocused_ still holds last frame's value here (it is cleared further down), which
 	// is what we want: while the game has focus its keys are the game's, editor chords included.
-	if (io.KeyCtrl && !io.WantTextInput && !gameViewFocused_)
+	// A focused template preview has its own Save and its own undo history.
+	if (io.KeyCtrl && !io.WantTextInput && !gameViewFocused_ && !templatePreviewFocused_)
 	{
 		if (ImGui::IsKeyPressed(ImGuiKey_S, false))
 		{
@@ -2472,11 +2616,16 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 		ImGui::End();
 	}
 
+	DrawTemplatePreviews();
+	if (showPools_)
+		DrawPoolsWindow(scene);
+
 	// The import options panel, drawn last so the modal sits over the whole editor. It also
 	//	has to come after the panels: pressing Import inside it builds entities, and doing that
 	//	while the Hierarchy was mid-iteration would be editing the list it is walking.
 	DrawImportOptions(scene);
 	DrawMapSaveConfirm(scene);
+	DrawSaveTemplatePopup();
 
 	// A gizmo drag is one undo step, closed when ImGuizmo lets the mouse go.
 	if (gizmoDragging_ && !ImGuizmo::IsUsingAny())
@@ -2878,7 +3027,9 @@ void st::EditorUI::DrawCameraViews(wi::scene::Scene& scene, Entity selected)
 		anyClosed |= !v->open;
 	if (anyClosed)
 	{
-		wi::graphics::GetDevice()->WaitForGPU();
+		// Drawn this frame, so the texture is in this frame's ImGui draw data: retire.
+		for (auto& v : cameraViews_)
+			if (!v->open && v->path) retiredPaths_.push_back(std::move(v->path));
 		cameraViews_.erase(
 			std::remove_if(cameraViews_.begin(), cameraViews_.end(),
 				[](const std::unique_ptr<CameraView>& v) { return !v->open; }),
@@ -2924,3 +3075,331 @@ void st::EditorUI::RenderCameraViews(float dt)
 	}
 }
 
+// -------------------------------------------------------------------- templates ---
+//
+//	A template is one object saved on its own (scene/ObjectTemplate.h). Three ways in: a
+//	Hierarchy row's "Save as Template...", a .sttd dropped on a viewport (placed under the
+//	cursor), and a .sttd double-clicked in the Resource Explorer (opened in a preview window
+//	of its own - imtemplatepreview.h).
+
+void st::EditorUI::OpenTemplate(const std::string& path) {
+    if (!path.empty())
+        pendingTemplateOpens_.push_back(path);
+}
+
+void st::EditorUI::RequestSaveTemplate(wi::scene::Scene& scene, Entity entity) {
+    saveTemplateScene_  = &scene;
+    saveTemplateEntity_ = entity;
+    saveTemplateRequested_ = true;
+    // The object's own name is the obvious file name.
+    std::string name = "Template";
+    if (const wi::scene::NameComponent* n = scene.names.GetComponent(entity))
+        if (!n->name.empty()) name = n->name;
+    std::snprintf(saveTemplateName_, sizeof(saveTemplateName_), "%s", name.c_str());
+}
+
+void st::EditorUI::DrawSaveTemplatePopup() {
+    const char* popup = "Save as Template##simtary_save_template";
+    if (saveTemplateRequested_) {
+        ImGui::OpenPopup(popup);
+        saveTemplateRequested_ = false;
+    }
+    if (!ImGui::BeginPopupModal(popup, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    // The scene the request came from may be a preview that has since closed.
+    bool sceneAlive = (saveTemplateScene_ == &wi::scene::GetScene());
+    for (const auto& preview : templatePreviews_)
+        sceneAlive |= preview->Owns(saveTemplateScene_);
+    if (!sceneAlive || !saveTemplateScene_->transforms.Contains(saveTemplateEntity_)) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+
+    ImGui::Text("Save \"%s\" with everything under it as a template.",
+        st::devui::EntityLabel(*saveTemplateScene_, saveTemplateEntity_).c_str());
+    ImGui::SetNextItemWidth(320.0f);
+    if (ImGui::IsWindowAppearing())
+        ImGui::SetKeyboardFocusHere();
+    const bool enter = ImGui::InputText("Name", saveTemplateName_, sizeof(saveTemplateName_),
+        ImGuiInputTextFlags_EnterReturnsTrue);
+
+    // A file name, not a path: anything that would leave the templates folder is dropped.
+    std::string fileName;
+    for (const char* c = saveTemplateName_; *c != 0; ++c) {
+        const char ch = *c;
+        const bool bad = ch == '/' || ch == '\\' || ch == ':' || ch == '*' || ch == '?' ||
+                         ch == '"' || ch == '<' || ch == '>' || ch == '|';
+        fileName += bad ? '_' : ch;
+    }
+    while (!fileName.empty() && (fileName.back() == ' ' || fileName.back() == '.'))
+        fileName.pop_back();
+    const std::string path = std::string(st::kTemplateFolder) + "/" + fileName + "." + st::kTemplateExtension;
+
+    std::error_code ec;
+    const bool exists = !fileName.empty() && std::filesystem::exists(std::filesystem::u8path(path), ec);
+    ImGui::TextDisabled("%s", fileName.empty() ? "(enter a name)" : path.c_str());
+    if (exists)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "A template with this name exists - it will be replaced.");
+
+    ImGui::BeginDisabled(fileName.empty());
+    const bool save = ImGui::Button(exists ? "Replace" : "Save") || (enter && !fileName.empty());
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    const bool cancel = ImGui::Button("Cancel");
+
+    if (save) {
+        SaveTemplate(*saveTemplateScene_, saveTemplateEntity_, path);
+        ImGui::CloseCurrentPopup();
+    }
+    if (cancel)
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+bool st::EditorUI::SaveTemplate(wi::scene::Scene& scene, Entity root, const std::string& path) {
+    wi::scene::Scene tmpl;
+    st::TemplateBuildReport report;
+    const Entity tmplRoot = st::BuildTemplateScene(scene, root, tmpl, &report);
+    if (tmplRoot == INVALID_ENTITY) {
+        lastSaveMessage_ = "TEMPLATE FAILED: " + report.error;
+        wi::backlog::post("Editor: " + lastSaveMessage_, wi::backlog::LogLevel::Error);
+        return false;
+    }
+
+    std::error_code ec;
+    const std::string dir = wi::helper::GetDirectoryFromPath(path);
+    if (!dir.empty())
+        std::filesystem::create_directories(std::filesystem::u8path(dir), ec);
+
+    // The same save a map gets - resource list, export for the next build, sidecar package
+    //	for whatever no mounted package holds - plus the tag that makes it a template.
+    const st::nbt::Tag project = st::TemplateProjectTag(tmpl, tmplRoot);
+    if (!SaveSceneDescriptor(tmpl, path, &project)) {
+        wi::backlog::post("Editor: FAILED to save template " + path + " (" + lastSaveMessage_ + ")",
+            wi::backlog::LogLevel::Error);
+        return false;
+    }
+
+    wi::backlog::post("Editor: saved template " + path + " (" + std::to_string(report.entities) +
+        " entities: " + std::to_string(report.subtree) + " in the hierarchy, " +
+        std::to_string(report.dependencies) + " meshes/materials/other it uses)");
+    if (report.clearedRefs > 0)
+        wi::backlog::post("Editor: template " + path + ": " + std::to_string(report.clearedRefs) +
+            " component reference(s) pointed at objects outside it and were cleared",
+            wi::backlog::LogLevel::Warning);
+
+    std::string sourceCopy;
+    if (st::dev::MirrorToSource(path, &sourceCopy))
+        wi::backlog::post("Editor: dev build - also saved to " + sourceCopy);
+    if (app_ != nullptr)
+        app_->Resources().InvalidateLooseTemplates();
+    return true;
+}
+
+Entity st::EditorUI::PlaceTemplate(wi::scene::Scene& scene, const std::string& path, const XMFLOAT3& position) {
+    st::ObjectTemplate tpl;
+    std::string error;
+    if (!tpl.Load(path, &error)) {
+        lastImportMessage_ = "TEMPLATE FAILED: " + error;
+        wi::backlog::post("Editor: " + lastImportMessage_, wi::backlog::LogLevel::Warning);
+        return INVALID_ENTITY;
+    }
+    wi::vector<Entity> created;
+    const Entity root = tpl.Instantiate(scene, position, XMFLOAT4(0, 0, 0, 1), &created);
+    if (root == INVALID_ENTITY) {
+        lastImportMessage_ = "TEMPLATE FAILED: " + path + " has no root";
+        wi::backlog::post("Editor: " + lastImportMessage_, wi::backlog::LogLevel::Warning);
+        return INVALID_ENTITY;
+    }
+    history_.RecordCreatedMany(scene, created, "Place Template");
+    lastImportMessage_ = "placed " + tpl.Name() + "  (" + std::to_string(created.size()) + " entities)";
+    wi::backlog::post("Editor: " + lastImportMessage_ + " from " + tpl.Path());
+    return root;
+}
+
+void st::EditorUI::FlushPendingTemplates(wi::scene::Scene& scene) {
+    for (const PendingPlacement& p : pendingTemplatePlacements_) {
+        const Entity root = PlaceTemplate(scene, p.path, p.position);
+        if (root != INVALID_ENTITY)
+            pendingSelection_ = root;
+    }
+    pendingTemplatePlacements_.clear();
+
+    for (const std::string& path : pendingTemplateOpens_) {
+        // Already open: bring that window forward instead of opening a second copy.
+        bool found = false;
+        for (const auto& preview : templatePreviews_) {
+            if (wi::helper::toLower(preview->FilePath()) == wi::helper::toLower(path) ||
+                wi::helper::toLower(preview->FilePath()) == wi::helper::toLower("assets/" + path)) {
+                found = true;
+                break;
+            }
+        }
+        if (found)
+            continue;
+
+        auto preview = std::make_unique<TemplatePreview>(nextTemplatePreviewID_++,
+            [this](wi::scene::Scene& s, Entity root, const std::string& file) { return SaveTemplate(s, root, file); },
+            [this](const std::string& file) {
+                pendingTemplatePlacements_.push_back(PendingPlacement{ file, SpawnPoint() });
+            });
+        std::string error;
+        if (!preview->Open(path, &error)) {
+            wi::backlog::post("Editor: cannot open template " + path + ": " + error, wi::backlog::LogLevel::Warning);
+            continue;
+        }
+        templatePreviews_.push_back(std::move(preview));
+    }
+    pendingTemplateOpens_.clear();
+}
+
+void st::EditorUI::DrawTemplatePreviews() {
+    templatePreviewFocused_ = false;
+    for (auto& preview : templatePreviews_) {
+        preview->Draw();
+        templatePreviewFocused_ |= preview->IsFocused();
+    }
+
+    // Closed windows: their render targets may still be in flight, as with camera views.
+    bool anyClosed = false;
+    for (const auto& preview : templatePreviews_)
+        anyClosed |= !preview->IsOpen();
+    if (anyClosed) {
+        // Drawn this frame, so their textures are in this frame's ImGui draw data: retired,
+        //	freed by ReleaseRetired() at the top of the next one.
+        for (auto& p : templatePreviews_)
+            if (!p->IsOpen()) retiredPreviews_.push_back(std::move(p));
+        templatePreviews_.erase(
+            std::remove_if(templatePreviews_.begin(), templatePreviews_.end(),
+                [](const std::unique_ptr<TemplatePreview>& p) { return !p; }),
+            templatePreviews_.end());
+    }
+}
+
+void st::EditorUI::RenderTemplatePreviews(float dt) {
+    if (!enabled_)
+        return;
+    for (auto& preview : templatePreviews_)
+        preview->Render(dt);
+}
+
+XMFLOAT3 st::EditorUI::ViewportPoint(wi::RenderPath3D& path, const wi::scene::CameraComponent& cam,
+    wi::scene::Scene& scene, float u, float v) const {
+    u = std::clamp(u, 0.0f, 1.0f);
+    v = std::clamp(v, 0.0f, 1.0f);
+    const long cx = (long)(u * path.GetLogicalWidth());
+    const long cy = (long)(v * path.GetLogicalHeight());
+    const wi::primitive::Ray ray = wi::renderer::GetPickRay(cx, cy, path, cam);
+
+    const wi::scene::PickResult hit = wi::scene::Pick(ray, wi::enums::FILTER_OPAQUE, ~0u, scene);
+    if (hit.entity != INVALID_ENTITY)
+        return hit.position;
+
+    // The ground: absolute y = 0, which in the origin-relative space everything here works
+    //	in sits at -origin.y.
+    const float groundY = (float)-wi::scene::GetRenderOrigin().y;
+    if (std::abs(ray.direction.y) > 1e-4f) {
+        const float t = (groundY - ray.origin.y) / ray.direction.y;
+        if (t > 0.0f && t < 2000.0f)
+            return XMFLOAT3(ray.origin.x + ray.direction.x * t, groundY, ray.origin.z + ray.direction.z * t);
+    }
+    return XMFLOAT3(ray.origin.x + ray.direction.x * 10.0f, ray.origin.y + ray.direction.y * 10.0f,
+        ray.origin.z + ray.direction.z * 10.0f);
+}
+
+void st::EditorUI::DrawPoolsWindow(wi::scene::Scene& scene) {
+    ImGui::SetNextWindowSize(ImVec2(520, 260), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Template Pools", &showPools_)) {
+        ImGui::End();
+        return;
+    }
+    // Add a pool by path; scripts (Pool.Spawn) and the bridge (pool.*) add theirs on first use.
+    static char path[256] = "templates/";
+    ImGui::SetNextItemWidth(260.0f);
+    ImGui::InputText("##poolpath", path, sizeof(path));
+    ImGui::SameLine();
+    static int prewarm = 8;
+    ImGui::SetNextItemWidth(70.0f);
+    ImGui::InputInt("##prewarm", &prewarm);
+    ImGui::SameLine();
+    const bool editing = st::PlayControl::Get().IsEditing();
+    ImGui::BeginDisabled(editing);
+    const bool prewarmPressed = ImGui::Button("Prewarm");
+    ImGui::EndDisabled();
+    if (prewarmPressed) {
+        std::string error;
+        if (st::TemplatePool* pool = st::TemplatePools::Get().Acquire(path, &error))
+            pool->Prewarm(scene, (uint32_t)std::max(0, prewarm));
+        else
+            wi::backlog::post("Editor: pool: " + error, wi::backlog::LogLevel::Warning);
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Make parked copies now, so a later Spawn costs nothing.\n"
+            "Drop a template from the Resource Explorer on the path box to fill it in.");
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(st::SIMTARY_ASSET_PAYLOAD)) {
+            const st::AssetPayload* a = (const st::AssetPayload*)p->Data;
+            if (p->DataSize == (int)sizeof(st::AssetPayload) && a->IsTemplate())
+                std::snprintf(path, sizeof(path), "%s", a->path);
+        }
+        ImGui::EndDragDropTarget();
+    }
+
+    if (editing)
+        ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f),
+            "Edit mode: pools hold Play-mode objects. Press Play to prewarm or spawn.");
+    ImGui::Separator();
+    const ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("##pools", 7, flags)) {
+        ImGui::TableSetupColumn("template", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("active");
+        ImGui::TableSetupColumn("parked");
+        ImGui::TableSetupColumn("created");
+        ImGui::TableSetupColumn("reused");
+        ImGui::TableSetupColumn("max");
+        ImGui::TableSetupColumn("");
+        ImGui::TableHeadersRow();
+        std::string clearKey;
+        st::TemplatePools::Get().ForEach([&](const std::string& key, st::TemplatePool& pool) {
+            const st::TemplatePoolStats s = pool.Stats();
+            ImGui::PushID(key.c_str());
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(key.c_str());
+            ImGui::TableNextColumn(); ImGui::Text("%u", s.active);
+            ImGui::TableNextColumn(); ImGui::Text("%u", s.parked);
+            ImGui::TableNextColumn(); ImGui::Text("%u", s.created);
+            ImGui::TableNextColumn(); ImGui::Text("%u", s.reused);
+            ImGui::TableNextColumn();
+            int maxActive = (int)pool.maxActive;
+            ImGui::SetNextItemWidth(50.0f);
+            if (ImGui::DragInt("##max", &maxActive, 0.2f, 0, 100000))
+                pool.maxActive = (uint32_t)std::max(0, maxActive);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Most copies active at once (0 = no limit). At the limit Spawn fails,\n"
+                    "or takes back the oldest when 'recycle' is ticked.");
+            ImGui::SameLine();
+            ImGui::Checkbox("recycle", &pool.recycleOldest);
+            ImGui::TableNextColumn();
+            ImGui::BeginDisabled(editing);
+            const bool spawnPressed = ImGui::SmallButton("spawn");
+            ImGui::EndDisabled();
+            if (spawnPressed)
+                pool.Spawn(scene, SpawnPoint());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("release all"))
+                pool.ReleaseAll(scene);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("clear"))
+                clearKey = key;
+            ImGui::PopID();
+        });
+        ImGui::EndTable();
+        if (!clearKey.empty())
+            if (st::TemplatePool* pool = st::TemplatePools::Get().Find(clearKey))
+                pool->Clear(scene);
+    }
+    ImGui::TextDisabled("Parked copies stay in the scene, hidden and asleep. 'clear' deletes them.");
+    ImGui::End();
+}

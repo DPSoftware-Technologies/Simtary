@@ -37,6 +37,7 @@
 // st::App::HandleDroppedFile. SDL owns the string it hands over; the caller frees it.
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -74,6 +75,16 @@ struct AssetPayload {
         for (char& c : ext) if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
         return ext == "stsd" || ext == "wiscene";
     }
+
+    // True for a .sttd: an object template, placed at the drop point rather than merged.
+    bool IsTemplate () const {
+        const std::string p(path);
+        const size_t dot = p.find_last_of('.');
+        if (dot == std::string::npos) return false;
+        std::string ext = p.substr(dot + 1);
+        for (char& c : ext) if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+        return ext == "sttd";
+    }
 };
 
 class AssetExplorer {
@@ -95,6 +106,14 @@ public:
     void QueueMount (const std::string& path);
 
     bool HasPendingImports () const;
+
+    // Opening a template (double-click, or "Open template" on a row) is the editor's job;
+    // the editor installs this. Unset = the row only says how to use it.
+    std::function<void(const std::string& logicalPath)> onOpenTemplate;
+
+    // Rescan the loose .sttd files under assets/ on the next draw. The editor calls it after
+    // a template save, so the new file is draggable before any package holds it.
+    void InvalidateLooseTemplates () { looseTemplatesStamp_ = 0.0; }
 
 private:
     // one row of the working set
@@ -218,6 +237,13 @@ private:
 
     // state
     mutable std::mutex       importMutex_;
+
+    // Loose .sttd files under assets/ that no mounted package holds - templates saved this
+    // session. Listed in browse mode beside the packages, rescanned every few seconds.
+    struct LooseTemplate { std::string path; uint64_t size = 0; };
+    mutable std::vector<LooseTemplate> looseTemplates_;
+    mutable double                     looseTemplatesStamp_ = 0.0;
+    void RefreshLooseTemplates () const;
     std::vector<std::string> queuedImports_;
     std::vector<std::string> queuedMounts_;
 

@@ -15,6 +15,18 @@ Milistry.exe --scene=vehicletest --server[=27015] [--server-config=server.cfg] [
 Milistry.exe --scene=vehicletest --connect=<host>[:port] --name=<name> [--transport=tcp]
 ```
 
+```
+# integrated host: this process runs the world AND a local player (client id 1)
+Milistry.exe --scene=vehicletest --host            # single player, not open to the network
+Milistry.exe --scene=vehicletest --host=27020      # same, also open to other players
+```
+
+- `--host`: `NetSession::StartHost()`, then `OpenToLan(port)` / `CloseLan()` at runtime (bridge
+  `net.host {open: port}` / `{close: true}`). The local player has no connection: its vehicle is
+  driven by the local keyboard, remote players join like on a dedicated server, and closing the
+  network drops them (their vehicles are removed). `IsServer()` is true for a host as well as a
+  dedicated server; `HasLocalPlayer()` tells them apart. `SendToServer` on a host runs the game
+  message handler in place.
 - `--server-window` keeps the server's window (debugging). `--transport` must match on both ends.
 - GNS (UDP, default) needs a numeric IP in `--connect`; TCP also resolves host names.
 - `server.cfg`: `port`, `max_players`, `name`, `transport` (key = value, `#` comments); the
@@ -24,6 +36,17 @@ Milistry.exe --scene=vehicletest --connect=<host>[:port] --name=<name> [--transp
 - Dev bridge: `net.status` (mode, peers + ping, vehicles + positions). A second instance on the
   same folder takes `--devbridge-port=57231` (info file `devbridge_57231.json`).
 - B / Shift+B on a client asks the SERVER for the explosion; it detonates and broadcasts it.
+
+## In-game window (F10 in Milistry)
+
+`Framework/net/NetUI` draws a window for host / join / leave: your name, UDP or TCP, `host:port` to join, a
+port and "open to other players" to host, the player list with ping and a Kick button, Leave / Stop. A game
+calls `st::net::DrawMultiplayerWindow(open, reloadScene)` from `RenderUI()` (Milistry: F10). It uses
+`NetSession::StartHost / OpenToLan / StartClient / Leave` (so the same things work at runtime from code and from
+the bridge: `net.join {address, name, transport}` / `{leave: true}`), and remembers the form in the options
+store (`net.*`). Both sides must be in the same scene; Leave reloads the scene because the session took the
+vehicle template away. Verified through the bridge (host started at runtime, a second instance joined, both
+saw both vehicles, leaving removed the guest's vehicle); the window itself has NOT been looked at yet.
 
 ## Using it in a project
 

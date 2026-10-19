@@ -27,6 +27,7 @@
 #include "SceneManager.h"
 #include "scene/DayNight.h"
 #include "scene/PlayControl.h"
+#include "scene/SceneSnapshot.h"
 #include "ZmqHandler.h"
 #include "devui/imbacklog.h"
 #include "devui/imgraphicsettings.h"
@@ -394,6 +395,13 @@ private:
     GraphicsSettings graphicsSettings;
     DisplaySettings  displaySettings_;
     bool             xrVsyncOff_ = false;   // XR session forced the desktop v-sync off
+
+    // Edit / Play mode (PlayControl). The snapshot Play mode is restored from, and the
+    //	daylight clock, which lives outside the scene.
+    st::SceneSnapshot playSnapshot_;
+    float            playDayTime_ = 12.0f;
+    bool             startInEdit_ = false;   // --edit: open the editor in Edit mode on frame 1
+    void ApplyPlayModeTransition();
     bool             xrDesktopOff_ = false; // XR session: the game path is not updated/rendered
     bool             pathOff_ = false;      // xrDesktopOff_ or headless: game path not updated/rendered
     SubWinStatus m_loadingScreen;

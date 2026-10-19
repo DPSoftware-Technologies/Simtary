@@ -210,6 +210,9 @@ namespace wi::input
 	bool Down(BUTTON button, int playerindex = 0);
 	// check if a button is pressed once
 	bool Press(BUTTON button, int playerindex = 0);
+	// SIMTARY: a button held by something that is not a local device - a remote viewer (BHS
+	//	streaming) or tooling. Down() answers true for it on player 0 until it is released.
+	void InjectButton(BUTTON button, bool down);
 	// check if a button has been just released
 	bool Release(BUTTON button, int playerindex = 0);
 	// check if a button is held down

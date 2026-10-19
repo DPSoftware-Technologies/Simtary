@@ -158,16 +158,58 @@ Known limits to plan around:
 
 ## Milestones
 
-0. **No code:** run Sunshine on the Milistry window, connect a Moonlight client, note the feel. This is the
-   latency baseline BHS has to match.
-1. Standalone test program: test pattern -> hardware encode -> MP4 file.
-2. Same program: one WebRTC session to a browser, input back over the data channel.
-3. Simtary adapter: Milistry's vehicle scene rendered offscreen and streamed; driving from the browser
-   (the input-injection path already exists).
+0. ~~Sunshine / Moonlight baseline~~ - dropped (2026-10-19). BHS has its own native protocol;
+   `bhs/PROTOCOL.md` is the draft spec. Latency is measured on BHS itself from milestone 2.
+1. **DONE 2026-10-19** - standalone test program `bhs/tools/encode_test` (`bhs_encode_test`, Windows,
+   Media Foundation): GPU-drawn test pattern -> D3D11 texture -> hardware H.264 -> MP4, no CPU copy.
+   Build: `cmake -S Simtary/bhs -B build/bhs -G "Visual Studio 18 2026" -A x64`. Measured on this PC
+   (RTX 5050 laptop, driver 616.92, 1080p, 8 Mbps): 1 session 322 fps (5.4x realtime); 3 sessions 527 fps
+   total; 6 sessions 558 fps; 12 sessions 598 fps (0.8x realtime each = 48 fps). No concurrent-session
+   cap was hit up to 12. Encode alone therefore fits ~9 sessions at 1080p60 or 12 at 1080p30 / 720p60 on
+   this GPU; the engine's own render time comes on top and is NOT measured yet. Not verified which of the
+   three listed encoders (NVIDIA / AMD x2) did the work - confirm before quoting the numbers.
+2. **DONE 2026-10-19** - `bhs/tools/stream_test` (`bhs_stream_test`) + `bhs/web/index.html`: GPU test
+   pattern -> BGRA to NV12 on the GPU (D3D11 video processor) -> NVIDIA H.264 encoder MFT (picked by the
+   GPU's LUID, async, no B-frames, CBR) -> libdatachannel RTP -> browser (Chrome / Edge 155 verified).
+   Signalling is `PROTOCOL.md` section 1 (hello / welcome / offer / answer / candidate / error, a second
+   viewer gets `capacity_full`); data channels `input` (unordered, no retransmit) and `control` (stats
+   1 Hz). Mouse and keys come back and move a crosshair and a box in the picture. Measured: 1280x720 @ 60
+   fps, ~6 Mbps, convert + encode 0.7-1.0 ms per frame, 60 fps delivered. Latency and a second GPU
+   vendor are NOT measured. Lessons: (a) Mbed TLS cannot be used - the browser's DTLS handshake fails
+   with "message could not be parsed" (suspected fragmented ClientHello; not proven); the build uses
+   OpenSSL 3 from msys2 via `bhs/tools/setup_openssl_msys.ps1`. (b) libdatachannel's WebSocketServer hands
+   over the only reference to a client socket: keep it or it closes right after the handshake. (c) The
+   hardware encoder MFT is async and needs `MFTEnum2` + `MFT_ENUM_ADAPTER_LUID` to pick the right GPU.
+3. **DONE 2026-10-19** - Simtary adapter. `bhs.dll` (C interface `bhs/include/bhs.h`, built and installed
+   once by `bhs/tools/build_bhs.ps1` into `deps/bhs-install`, imported by CMake as `SimtaryBHS`) and
+   `Framework/stream/StreamHost`: `Milistry.exe --scene=vehicletest --stream[=port]` renders in a HIDDEN
+   window of exactly the stream size (DirectX 12), copies each finished backbuffer into a ring of three
+   shared textures (engine hook `Application::onFrameComposed`), hands the oldest to BHS (two frames old,
+   so the GPU is surely done; no fence yet), and feeds the viewer's keys / mouse / wheel back through
+   `wi::input::InjectButton` and ImGui's input events. Verified in Chrome: the vehicle scene with its
+   HUD at 720p, 58 fps delivered (engine 60), W drives the vehicle, right-drag orbits the chase camera.
+   Lessons: (a) D3D11 can only open a D3D12 shared texture that has RENDER_TARGET in its bind flags
+   (`bhs/tools/share_test` prints the matrix); (b) the input gate treated the hidden window as
+   unfocused and read nothing, and the display standby cap held an unfocused window to 30 fps - both now
+   count a connected stream viewer as focus. The same standby cap is a likely cause of the VR 30 fps
+   (not re-tested). Not done: gamepad / touch input, fence-based sync (the two-frame delay is added
+   latency), Vulkan, Linux, resize, per-viewer cameras, loading screen while the scene loads.
 4. Node agent running several sessions; measure real capacity on this machine.
 5. Gateway: signalling, auth, placement, TURN config.
 6. Multi-view: several cameras of one world.
 7. Publish the protocol spec + conformance tests.
+
+## No GPU, naming, voice (decided 2026-10-19)
+
+- **No GPU = no streaming.** The node agent checks for a usable GPU and a hardware encoder at start-up;
+  without them it reports capacity 0 and answers `create_session` with `no_gpu`. No software-render
+  fallback. Such a machine can still run a dedicated server.
+- **Names:** *dedicated server* (headless, no GPU), *integrated server* (world + local player),
+  *streaming session* (BHS, real GPU, offscreen). *World host* is the code they share.
+- **Packages:** the dedicated server build is small (`SIMTARY_NO_SHADERS`, Debian 11 chroot). The BHS node
+  needs the full build with shaders, so a newer build chroot (libdxcompiler needs a newer libstdc++).
+- **Voice:** the protocol reserves a send+receive audio line and a host `on_audio_in` callback; enabled per
+  account through `limits.voice`; not recorded by default. Built after the first browser session works.
 
 ## Open questions
 
@@ -175,4 +217,4 @@ Known limits to plan around:
   boxes contain?
 - Do the three "Core" names (HMMWV4, JLTV4, Blackhawk4) change now that BHS is the framework name?
 - First deployment: local test on this PC, or a real cloud server (a GPU-less VPS cannot hardware-encode)?
-- Signalling: Epic-compatible, or BHS's own?
+- ~~Signalling: Epic-compatible, or BHS's own?~~ Decided: BHS's own, see `bhs/PROTOCOL.md`.

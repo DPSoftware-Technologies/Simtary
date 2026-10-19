@@ -639,6 +639,10 @@ namespace wi::scene
 		bool phaseRunning = false;                    // true while the lifecycle passes are running
 		wi::vector<wi::ecs::Entity> pendingRemovals;  // Entity_Remove asked for mid-pass
 		bool pendingClear = false;                    // Scene::Clear asked for mid-pass
+		// SIMTARY: false = build instances from metadata (so an inspector can show them) but
+		//	never Awake/Start/Update/LateUpdate them. For scenes that are looked at, not run -
+		//	the editor's template preview. Instances made here were never awoken.
+		bool lifecycleEnabled = true;
 
 		// This frame's execution lists, rebuilt every RunUpdate. Kept as members so the
 		//	allocation is paid once instead of per frame.

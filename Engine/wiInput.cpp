@@ -76,6 +76,7 @@ namespace wi::input
 	CURSOR cursor_next = CURSOR_DEFAULT;
 	std::deque<float> mouse_scroll_events;
 	std::deque<XMFLOAT2> mouse_move_events;
+	bool injected_buttons[BUTTON_ENUM_SIZE] = {}; // SIMTARY: see InjectButton
 
 #ifdef SDL2
 	static SDL_Cursor* cursor_table_original[] = {
@@ -704,6 +705,10 @@ namespace wi::input
 		}
 		else if (playerindex == 0) // keyboard or mouse
 		{
+			if (button > BUTTON_NONE && button < BUTTON_ENUM_SIZE && injected_buttons[button])
+			{
+				return true;
+			}
 			if (button == MOUSE_SCROLL_AS_BUTTON_UP)
 			{
 				return mouse.delta_wheel > 0.1f;
@@ -1880,6 +1885,14 @@ namespace wi::input
 		return "";
 	}
 
+
+	void InjectButton(BUTTON button, bool down)
+	{
+		if (button > BUTTON_NONE && button < BUTTON_ENUM_SIZE)
+		{
+			injected_buttons[button] = down;
+		}
+	}
 
 	void AddMouseScrollEvent(float value)
 	{

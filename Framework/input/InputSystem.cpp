@@ -1,4 +1,5 @@
 #include "input/InputSystem.h"
+#include "stream/StreamHost.h"
 
 #include <SDL.h>
 #include "imgui.h"
@@ -91,7 +92,9 @@ void InputSystem::Update(float dt) {
 	//	an open debug window (ImGui keyboard nav) would silently eat WASD. Focus is still
 	//	required so we don't read keys while another OS window is active.
 	const ImGuiIO& io = ImGui::GetIO();
-	const bool unfocused = (SDL_GetKeyboardFocus() == nullptr);
+	// A connected stream viewer is the player: the (hidden) window never has focus, but the input
+	//	that arrives through the stream (Framework/stream) is exactly as live as a local keyboard.
+	const bool unfocused = (SDL_GetKeyboardFocus() == nullptr) && !st::stream::StreamHost::Get().HasViewer();
 	//	uiMouseLook_ is the developer-tooling override: the editor's free camera is flying,
 	//	so nothing reaches the game at all until the look ends.
 	//	Three-way ownership, in priority order:

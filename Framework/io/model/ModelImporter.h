@@ -63,6 +63,9 @@ struct ImportOptions {
 	// Generate normals for meshes that ship without them, rather than importing a mesh that
 	//	renders black.
 	bool  generateMissingNormals = true;
+	// Build levels of detail for every mesh big enough to benefit (render/MeshLOD.h). Done
+	//	by the editor after the import, not by the importers.
+	bool  generateLODs = true;
 };
 
 struct ImportResult {
