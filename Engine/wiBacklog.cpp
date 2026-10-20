@@ -18,9 +18,9 @@
 #include <iostream>
 #include <thread>
 #include <condition_variable>
+#include <chrono>
 #include <atomic>
 #include <fstream>
-#include <chrono>
 
 using namespace wi::graphics;
 
@@ -245,6 +245,10 @@ namespace wi::backlog
 		// These must have common lifetime and destruction order, so keep them together in a struct:
 		std::deque<LogEntry> entries;
 		std::mutex entriesLock;
+		uint64_t nextSerial = 1;
+		std::vector<std::pair<int, std::function<void(const LogEntry&)>>> listeners;
+		std::mutex listenersLock;
+		int nextListener = 1;
 
 		InternalState() = default;
 		~InternalState()
@@ -548,6 +552,34 @@ namespace wi::backlog
 	{
 		internal_state._forEachLogEntry_unsafe(cb);
 	}
+	void GetEntries(std::vector<LogEntry>& out)
+	{
+		std::scoped_lock lck(internal_state.entriesLock);
+		out.assign(internal_state.entries.begin(), internal_state.entries.end());
+	}
+
+	int AddListener(std::function<void(const LogEntry&)> listener)
+	{
+		std::scoped_lock lck(internal_state.listenersLock);
+		const int handle = internal_state.nextListener++;
+		internal_state.listeners.emplace_back(handle, std::move(listener));
+		return handle;
+	}
+
+	void RemoveListener(int handle)
+	{
+		std::scoped_lock lck(internal_state.listenersLock);
+		auto& v = internal_state.listeners;
+		for (size_t i = 0; i < v.size(); ++i)
+		{
+			if (v[i].first == handle)
+			{
+				v.erase(v.begin() + i);
+				return;
+			}
+		}
+	}
+
 	void clear()
 	{
 		std::scoped_lock lck(internal_state.entriesLock);
@@ -586,9 +618,11 @@ namespace wi::backlog
 		LogEntry entry;
 		entry.text = str;
 		entry.level = level;
+		entry.time = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
 
 		// Add to in-memory display buffer
 		internal_state.entriesLock.lock();
+		entry.serial = internal_state.nextSerial++;
 		internal_state.entries.push_back(entry);
 		if (internal_state.entries.size() > deleteFromLine)
 		{
@@ -616,6 +650,12 @@ namespace wi::backlog
 		}
 
 		unseen = std::max(unseen, level);
+
+		{
+			std::scoped_lock lck(internal_state.listenersLock);
+			for (auto& x : internal_state.listeners)
+				x.second(entry);
+		}
 
 		// Force an immediate flush on errors to prevent potential data loss
 		//	in case the application is about to crash

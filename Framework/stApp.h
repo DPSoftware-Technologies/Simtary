@@ -402,6 +402,9 @@ private:
     float            playDayTime_ = 12.0f;
     bool             startInEdit_ = false;   // --edit: open the editor in Edit mode on frame 1
     void ApplyPlayModeTransition();
+    // Game UI (Framework/ui): the pointer from the window or the Game Viewport, then layout,
+    //	input and events. After the scene update and OnUpdate, so it lays out this frame's values.
+    void UpdateGameUI(float dt, bool editing);
     bool             xrDesktopOff_ = false; // XR session: the game path is not updated/rendered
     bool             pathOff_ = false;      // xrDesktopOff_ or headless: game path not updated/rendered
     SubWinStatus m_loadingScreen;

@@ -57,6 +57,7 @@
 #include "io/model/ModelImporter.h"
 #include "io/Nbt.h"
 #include "imtemplatepreview.h"
+#include "imuieditor.h"
 
 #include <memory>
 #include <vector>
@@ -75,6 +76,15 @@ class App;
 class EditorUI {
 public:
     bool IsEnabled() const { return enabled_; }
+    // The Game Viewport's game image this frame (screen pixels); false when the panel is
+    // not showing it. `hovered`: the pointer is on the image.
+    bool GameImage(ImVec2& pos, ImVec2& size, bool& hovered) const
+    {
+        pos = gameImagePos_;
+        size = gameImageSize_;
+        hovered = gameImageHovered_;
+        return gameImageValid_;
+    }
     // Entering creates the editor render path; leaving frees it (after a GPU wait, since
     // the render targets may still be in flight).
     void SetEnabled(bool on);
@@ -287,6 +297,8 @@ private:
     // toggling editor mode never fights the plain-DevUI window state.
     bool showEditorViewport_ = true;
     bool showGameViewport_   = true;
+    bool showUIEditor_       = true;
+    UIEditorPanel uiEditor_;
     bool showHierarchy_      = true;
     bool showProperties_     = true;
     bool showResources_      = true;
@@ -406,6 +418,12 @@ private:
     // Input ownership. The game only gets keyboard/mouse while the Game Viewport panel is
     // the focused one - click into it to play, click anywhere else and the editor has input.
     bool    gameViewFocused_    = false;
+    // Where the Game Viewport drew the game image this frame (screen pixels), for the game
+    //	UI's pointer (st::ui) and the UI edit overlay.
+    ImVec2  gameImagePos_       = ImVec2(0, 0);
+    ImVec2  gameImageSize_      = ImVec2(0, 0);
+    bool    gameImageValid_     = false;
+    bool    gameImageHovered_   = false;
     bool    gameViewHovered_    = false;
     bool    inputCaptureActive_ = false;
 

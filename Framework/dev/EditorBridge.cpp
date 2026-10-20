@@ -31,6 +31,8 @@
 #include "terrain/TerrainSystem.h"
 #include "terrain/TerrainGenerate.h"
 #include "vehicle/VehicleComponent.h"
+#include "ui/UISystem.h"
+#include "ui/UIRml.h"
 
 #include "wiScene.h"
 #include "wiPhysics.h"
@@ -515,6 +517,190 @@ void EditorBridge::RegisterAll () {
             out.Set(key, std::move(v));
         });
         return out;
+    });
+    // ---- game UI (Framework/ui) ----
+    Register("ui.create", "{preset: canvas|world_canvas|panel|image|text|button|toggle|slider|document|vertical|horizontal|grid, parent?, name?} -> {id, created}",
+        [S](const Value& a, std::string& err) {
+        static const std::pair<const char*, st::ui::Preset> kPresets[] = {
+            { "canvas", st::ui::Preset::Canvas }, { "world_canvas", st::ui::Preset::WorldCanvas },
+            { "panel", st::ui::Preset::Panel }, { "image", st::ui::Preset::Image },
+            { "text", st::ui::Preset::Text }, { "button", st::ui::Preset::Button },
+            { "toggle", st::ui::Preset::Toggle }, { "slider", st::ui::Preset::Slider },
+            { "document", st::ui::Preset::Document }, { "vertical", st::ui::Preset::VerticalLayout },
+            { "horizontal", st::ui::Preset::HorizontalLayout }, { "grid", st::ui::Preset::Grid },
+        };
+        const std::string want = a["preset"].AsString();
+        const st::ui::Preset* preset = nullptr;
+        for (const auto& p : kPresets)
+            if (want == p.first) preset = &p.second;
+        if (preset == nullptr) { err = "unknown preset '" + want + "'"; return Value(); }
+        WScene& scene = S();
+        Entity parent = INVALID_ENTITY;
+        if (a.Has("parent")) {
+            Value pa = Value::Object();
+            pa.Set("id", a["parent"]);
+            parent = ResolveEntity(scene, pa, err);
+            if (parent == INVALID_ENTITY) return Value();
+        }
+        wi::vector<Entity> created;
+        const Entity e = st::ui::Create(scene, *preset, parent, a["name"].AsString(), &created);
+        Value out = Value::Object();
+        out.Set("id", uint64_t(e));
+        Value list = Value::Array();
+        for (Entity c : created) list.push_back(uint64_t(c));
+        out.Set("created", std::move(list));
+        return out;
+    });
+    Register("ui.set", "{id|name, + any of: anchorMin anchorMax pivot position size [x,y], order, opacity, hidden, clip, "
+                       "text, fontSize, font, textColor [rgba], wrap, shadow, align [h,v] (0 start 1 centre 2 end), color [rgba], "
+                       "texture, border [l,t,r,b], cornerRadius, imageType (0 simple 1 sliced 2 fillH 3 fillV), fill, source, fonts, "
+                       "onClick, onValueChanged, eventTarget, value, isOn, interactable, scaleMode, reference [w,h], match, "
+                       "sortOrder, spacing [x,y], padding [l,t,r,b], childAlignment, layoutFlags, cellSize [x,y]} -> true",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        auto v2 = [&a](const char* key, XMFLOAT2& out) {
+            const Value& v = a[key];
+            if (v.IsArray() && v.size() >= 2) out = XMFLOAT2(v.At(0).AsFloat(), v.At(1).AsFloat());
+        };
+        auto v4 = [&a](const char* key, XMFLOAT4& out) {
+            const Value& v = a[key];
+            if (v.IsArray() && v.size() >= 4) out = XMFLOAT4(v.At(0).AsFloat(), v.At(1).AsFloat(), v.At(2).AsFloat(), v.At(3).AsFloat());
+        };
+        auto flag = [&a](const char* key, uint32_t& flags, uint32_t bit) {
+            if (!a.Has(key)) return;
+            if (a[key].AsBool()) flags |= bit;
+            else flags &= ~bit;
+        };
+        auto entityArg = [&](const char* key, Entity& out) {
+            if (!a.Has(key)) return;
+            Value pa = Value::Object();
+            pa.Set("id", a[key]);
+            std::string ignored;
+            out = ResolveEntity(scene, pa, ignored);
+        };
+        if (st::ui::UIRectComponent* r = st::ui::Rects(scene).GetComponent(e)) {
+            v2("anchorMin", r->anchorMin); v2("anchorMax", r->anchorMax); v2("pivot", r->pivot);
+            v2("position", r->position); v2("size", r->size);
+            if (a.Has("order")) r->order = (int)a["order"].AsInt();
+            if (a.Has("opacity")) r->opacity = a["opacity"].AsFloat();
+            flag("hidden", r->_flags, st::ui::UIRectComponent::HIDDEN);
+            flag("clip", r->_flags, st::ui::UIRectComponent::CLIP_CHILDREN);
+        }
+        if (st::ui::UITextComponent* t = st::ui::Texts(scene).GetComponent(e)) {
+            if (a.Has("text")) t->text = a["text"].AsString();
+            if (a.Has("fontSize")) t->size = a["fontSize"].AsFloat();
+            if (a.Has("font")) t->fontName = a["font"].AsString();
+            v4("textColor", t->color);
+            flag("wrap", t->_flags, st::ui::UITextComponent::WRAP);
+            flag("shadow", t->_flags, st::ui::UITextComponent::SHADOW);
+            const Value& al = a["align"];
+            if (al.IsArray() && al.size() >= 2) {
+                t->hAlign = (st::ui::UITextComponent::Align)al.At(0).AsInt();
+                t->vAlign = (st::ui::UITextComponent::Align)al.At(1).AsInt();
+            }
+        }
+        if (st::ui::UIImageComponent* i = st::ui::Images(scene).GetComponent(e)) {
+            v4("color", i->color);
+            if (a.Has("texture")) i->textureName = a["texture"].AsString();
+            if (a.Has("cornerRadius")) i->cornerRadius = a["cornerRadius"].AsFloat();
+            if (a.Has("imageType")) i->type = (st::ui::UIImageComponent::Type)a["imageType"].AsInt();
+            if (a.Has("fill")) i->fillAmount = a["fill"].AsFloat();
+            v4("border", i->border);
+        }
+        if (st::ui::UIDocumentComponent* d = st::ui::Documents(scene).GetComponent(e)) {
+            if (a.Has("source")) d->source = a["source"].AsString();
+            if (a.Has("fonts")) d->fonts = a["fonts"].AsString();
+            entityArg("eventTarget", d->eventTarget);
+        }
+        if (st::ui::UIButtonComponent* b = st::ui::Buttons(scene).GetComponent(e)) {
+            if (a.Has("onClick")) b->onClick = a["onClick"].AsString();
+            if (a.Has("interactable")) b->SetInteractable(a["interactable"].AsBool());
+            entityArg("eventTarget", b->eventTarget);
+        }
+        if (st::ui::UIToggleComponent* t = st::ui::Toggles(scene).GetComponent(e)) {
+            if (a.Has("isOn")) t->SetOn(a["isOn"].AsBool());
+            if (a.Has("onValueChanged")) t->onValueChanged = a["onValueChanged"].AsString();
+            entityArg("eventTarget", t->eventTarget);
+        }
+        if (st::ui::UISliderComponent* s = st::ui::Sliders(scene).GetComponent(e)) {
+            if (a.Has("value")) s->value = a["value"].AsFloat();
+            if (a.Has("onValueChanged")) s->onValueChanged = a["onValueChanged"].AsString();
+            entityArg("eventTarget", s->eventTarget);
+        }
+        if (st::ui::UICanvasComponent* c = st::ui::Canvases(scene).GetComponent(e)) {
+            if (a.Has("scaleMode")) c->scaleMode = (st::ui::UICanvasComponent::ScaleMode)a["scaleMode"].AsInt();
+            v2("reference", c->referenceResolution);
+            if (a.Has("match")) c->match = a["match"].AsFloat();
+            if (a.Has("sortOrder")) c->sortOrder = (int)a["sortOrder"].AsInt();
+        }
+        if (st::ui::UILayoutComponent* l = st::ui::Layouts(scene).GetComponent(e)) {
+            v2("spacing", l->spacing);
+            v4("padding", l->padding);
+            if (a.Has("childAlignment")) l->childAlignment = (uint32_t)a["childAlignment"].AsInt();
+            if (a.Has("layoutFlags")) l->_flags = (uint32_t)a["layoutFlags"].AsInt();
+            v2("cellSize", l->cellSize);
+        }
+        return Value(true);
+    });
+    Register("ui.get", "{id|name} -> rect (canvas units), pixels, visible, components, document status", [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        Value out = Value::Object();
+        if (const st::ui::UIRectComponent* r = st::ui::Rects(scene).GetComponent(e)) {
+            out.Set("rect", Vec4(r->_rect));
+            out.Set("pixels", Vec4(r->_pixels));
+            out.Set("visible", r->_visible);
+        }
+        if (const st::ui::UITextComponent* t = st::ui::Texts(scene).GetComponent(e)) out.Set("text", t->text);
+        if (const st::ui::UISliderComponent* s = st::ui::Sliders(scene).GetComponent(e)) out.Set("value", s->value);
+        if (const st::ui::UIToggleComponent* t = st::ui::Toggles(scene).GetComponent(e)) out.Set("isOn", t->IsOn());
+        if (st::ui::Documents(scene).Contains(e)) out.Set("document", st::ui::RmlHost::Get().Status(e));
+        out.Set("clicked", st::ui::UISystem::Get().WasClicked(e));
+        out.Set("components", ComponentNames(scene, e));
+        return out;
+    });
+    Register("ui.list", "{} -> visible elements in draw order: id, name, pixels", [S](const Value&, std::string&) {
+        WScene& scene = S();
+        Value out = Value::Array();
+        for (Entity e : st::ui::UISystem::Get().DrawOrder()) {
+            Value v = Value::Object();
+            v.Set("id", uint64_t(e));
+            const wi::scene::NameComponent* n = scene.names.GetComponent(e);
+            v.Set("name", n ? n->name : std::string());
+            if (const st::ui::UIRectComponent* r = st::ui::Rects(scene).GetComponent(e)) v.Set("pixels", Vec4(r->_pixels));
+            out.push_back(std::move(v));
+        }
+        return out;
+    });
+    Register("ui.click", "{id|name} -> fires the element as a click (Button onClick, Toggle flip)", [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        if (!st::ui::UISystem::Get().Click(scene, e)) { err = "not a button or toggle (or not interactable)"; return Value(); }
+        return Value(true);
+    });
+    Register("ui.pick", "{x, y} (game image pixels) -> topmost element id or null", [S](const Value& a, std::string&) {
+        const Entity e = st::ui::UISystem::Get().Pick(S(), XMFLOAT2(a["x"].AsFloat(), a["y"].AsFloat()));
+        return e == INVALID_ENTITY ? Value() : Value(uint64_t(e));
+    });
+    Register("ui.reload", "{} -> reload every RmlUi document from its files", [](const Value&, std::string&) {
+        st::ui::RmlHost::Get().ReloadAll();
+        return Value(true);
+    });
+    Register("ui.doc", "{id|name, element, rml?, class?, on?, property?, value?} -> edits an element of a document; returns its value",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        st::ui::RmlHost& host = st::ui::RmlHost::Get();
+        const std::string id = a["element"].AsString();
+        if (a.Has("rml") && !host.SetInnerRml(e, id, a["rml"].AsString())) { err = "no such document element"; return Value(); }
+        if (a.Has("class")) host.SetClass(e, id, a["class"].AsString(), a["on"].AsBool(true));
+        if (a.Has("property")) host.SetProperty(e, id, a["property"].AsString(), a["value"].AsString());
+        return Value(host.GetValue(e, id));
     });
     Register("mesh.generate_lods", "{id|name (an entity with a mesh, or an object), levels=4, keep=0.5, error=0.02} or {all:true} -> levels / meshes",
         [S](const Value& a, std::string& err) {

@@ -1,6 +1,7 @@
 #include "script/ScriptComponent.h"
 #include "script/ScriptSystem.h"
 #include "devui/imscripteditor.h"
+#include "ui/UISystem.h"
 
 #include "imgui.h"
 #include "wiBacklog.h"
@@ -307,6 +308,16 @@ void ScriptComponent::Unload (bool callDestroy) {
     status_ = "not loaded";
 }
 
+bool ScriptComponent::CallEvent (const char* name, const tb::Value* args, int argc) {
+    if (!Ready() || name == nullptr || name[0] == 0) return false;
+    tb::VM* vm = ScriptSystem::Get().VM();
+    if (!tb::HasFunction(vm, script_, name)) return false;
+    if (!tb::CallFunction(vm, script_, name, args, argc))
+        wi::backlog::post("[taipan] " + file + ": error in UI event handler " + name,
+                          wi::backlog::LogLevel::Warning);
+    return true;
+}
+
 void ScriptComponent::Invoke (const Slot& slot, float dt) {
     tb::Value args[2] = { EntityValue(entity), tb::Value::Float(dt) };
     if (tb::CallFunction(ScriptSystem::Get().VM(), script_, slot.name.c_str(), args, slot.withDt ? 2 : 1)) return;
@@ -349,6 +360,7 @@ void ScriptComponent::OnDisable () {
 
 void ScriptComponent::Destroy () {
     Unload(true);
+    st::ui::UISystem::Get().UnsubscribeTarget(entity);   // its UI.On handlers
 }
 
 void ScriptComponent::Reload () {

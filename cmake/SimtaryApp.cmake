@@ -539,6 +539,7 @@ function(simtary_add_app)
         libzmq-static   # ZeroMQ C API (zmq.h); propagates include dir + ZMQ_STATIC + sys libs
         OpenAL          # openal-soft; also linked PUBLIC by Simtary_common (stAudio.cpp)
         libgfx          # software 2D rasterizer (GFX.h); propagates its include dir + GFXSDL
+        RmlUi::RmlUi    # game UI documents (Framework/ui); core + debugger, FreeType fonts
         ${APP_EXTRA_LIBS}
     )
     if (TARGET SimtaryOpenXR)
@@ -764,6 +765,8 @@ function(simtary_add_app)
     # and both land in the same output folder, which is case-insensitive on Windows.
     simtary_compile_shader(TARGET ${APP_NAME} PROFILE vs_6_0 SOURCE ${SIMTARY_ROOT}/assets/shaders/ImGuiVS.hlsl)
     simtary_compile_shader(TARGET ${APP_NAME} PROFILE ps_6_0 SOURCE ${SIMTARY_ROOT}/assets/shaders/ImGuiPS.hlsl)
+    simtary_compile_shader(TARGET ${APP_NAME} PROFILE vs_6_0 SOURCE ${SIMTARY_ROOT}/assets/shaders/StUiVS.hlsl)
+    simtary_compile_shader(TARGET ${APP_NAME} PROFILE ps_6_0 SOURCE ${SIMTARY_ROOT}/assets/shaders/StUiPS.hlsl)
     simtary_compile_shader(TARGET ${APP_NAME} PROFILE vs_6_0 SOURCE ${SIMTARY_ROOT}/assets/shaders/StLensFlareVS.hlsl)
     simtary_compile_shader(TARGET ${APP_NAME} PROFILE ps_6_0 SOURCE ${SIMTARY_ROOT}/assets/shaders/StLensFlarePS.hlsl)
 

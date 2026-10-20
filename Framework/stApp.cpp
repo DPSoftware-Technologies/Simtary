@@ -11,6 +11,7 @@
 #include "dev/DevBuild.h"
 #include "dev/EditorBridge.h"
 #include "scene/TemplatePool.h"
+#include "ui/UISystem.h"
 #include "xr/XRSystem.h"
 #include "net/NetSession.h"
 #include "stream/StreamHost.h"
@@ -640,6 +641,7 @@ void st::App::Update(float dt) {
     }
 
     OnUpdate(dt);
+    UpdateGameUI(dt, editing);
     if (MobileMinimal()) ApplyMobileMinimalWeather(wi::scene::GetScene());
 
     // After sceneManager.Update: the scene's light system has refreshed the sun's
@@ -683,6 +685,37 @@ void st::App::Update(float dt) {
     }
 }
 
+void st::App::UpdateGameUI(float dt, bool editing) {
+    XMUINT2 size = renderPath.GetInternalResolution();
+    if (const wi::graphics::Texture* last = renderPath.GetLastPostprocessRT(); last && last->IsValid())
+        size = XMUINT2(last->desc.width, last->desc.height);
+
+    // The pointer in game-image pixels: from the Game Viewport panel in the editor, from the
+    //	window otherwise. Not while the game holds the cursor (mouse look), and not while a
+    //	DevUI window has it.
+    const ImGuiIO& io = ImGui::GetIO();
+    st::ui::Pointer p;
+    p.down = io.MouseDown[0];
+    p.wheel = io.MouseWheel;
+    if (!st::InputSystem::Get().IsMouseCaptured() && size.x > 0 && size.y > 0) {
+        if (editor_.IsEnabled()) {
+            ImVec2 pos, extent;
+            bool hovered = false;
+            if (editor_.GameImage(pos, extent, hovered) && hovered && extent.x > 0 && extent.y > 0) {
+                p.valid = true;
+                p.pos = XMFLOAT2((io.MousePos.x - pos.x) / extent.x * size.x,
+                                 (io.MousePos.y - pos.y) / extent.y * size.y);
+            }
+        } else if (!io.WantCaptureMouse && io.DisplaySize.x > 0 && io.DisplaySize.y > 0) {
+            p.valid = true;
+            p.pos = XMFLOAT2(io.MousePos.x / io.DisplaySize.x * size.x, io.MousePos.y / io.DisplaySize.y * size.y);
+        }
+    }
+    st::ui::UISystem& ui = st::ui::UISystem::Get();
+    ui.SetPointer(p);
+    ui.Update(wi::scene::GetScene(), dt, size, !editing);
+}
+
 void st::App::FixedUpdate() {
     wi::Application::FixedUpdate();
     OnFixedUpdate();
@@ -693,6 +726,11 @@ void st::App::Render() {
         wi::lua::Render();             // what wi::Application::Render does besides the path
     } else {
         wi::Application::Render();
+        // Game UI onto the path's final image, so the HUD is in the fullscreen frame, the
+        //	editor's Game Viewport and every screenshot alike.
+        wi::graphics::GraphicsDevice* device = wi::graphics::GetDevice();
+        wi::graphics::CommandList cmd = device->BeginCommandList();
+        st::ui::UISystem::Get().Render(wi::scene::GetScene(), renderPath.GetLastPostprocessRT(), cmd);
     }
 
     // The editor's second viewport has its own RenderPath3D and its own camera. The
@@ -767,6 +805,7 @@ void st::App::Exit() {
 
     // Frees the editor's render path (and waits for the GPU) before the device goes away.
     editor_.Shutdown();
+    st::ui::UISystem::Get().Shutdown();   // RmlUi and the world-canvas targets, before the device
 
     // Persist current graphics + any option edits on the way out, so quitting without
     // pressing Apply still keeps the live settings.

@@ -41,6 +41,30 @@ namespace wi::scene
 		return scene;
 	}
 
+	static wi::vector<SceneComponentRegistrar>& SceneComponentRegistrars()
+	{
+		static wi::vector<SceneComponentRegistrar> registrars;
+		return registrars;
+	}
+
+	void AddSceneComponentRegistrar(SceneComponentRegistrar registrar)
+	{
+		auto& registrars = SceneComponentRegistrars();
+		for (SceneComponentRegistrar r : registrars)
+		{
+			if (r == registrar)
+				return;
+		}
+		registrars.push_back(registrar);
+		registrar(GetScene());
+	}
+
+	Scene::Scene()
+	{
+		for (SceneComponentRegistrar r : SceneComponentRegistrars())
+			r(*this);
+	}
+
 	CameraComponent& GetCamera()
 	{
 		static CameraComponent camera;

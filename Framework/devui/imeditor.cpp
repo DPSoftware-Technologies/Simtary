@@ -542,6 +542,7 @@ void st::EditorUI::BuildDefaultLayout(ImGuiID dockspaceID, ImVec2 size)
 	// Both viewports land in the centre node, so they come up as tabs and either can be
 	// pulled out into a split by hand.
 	ImGui::DockBuilderDockWindow(kGameViewport, centre);
+	ImGui::DockBuilderDockWindow(UIEditorPanel::kWindowName, centre);
 	ImGui::DockBuilderDockWindow(kEditorViewport, centre);
 
 	ImGui::DockBuilderFinish(dockspaceID);
@@ -683,6 +684,9 @@ void st::EditorUI::DrawDockHost(App& app, wi::scene::Scene& scene)
 			ImGui::MenuItem("Game Viewport", nullptr, &showGameViewport_);
 			if (ImGui::IsItemHovered())
 				ImGui::SetTooltip("Its menu bar sets the resolution the GAME renders at.");
+			ImGui::MenuItem("UI Editor", nullptr, &showUIEditor_);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Lay out game UI (canvases, buttons, RmlUi documents) on the game image.");
 			ImGui::Separator();
 			if (ImGui::MenuItem("New Camera View"))
 			{
@@ -1088,6 +1092,10 @@ void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3
 	{
 		if (focused) gameViewFocused_ = true;
 		if (hovered) gameViewHovered_ = true;
+		gameImagePos_ = imagePos;
+		gameImageSize_ = imageSize;
+		gameImageValid_ = imageDrawn;
+		gameImageHovered_ = hovered;
 	}
 
 	// From here down: editing. The Game Viewport is play-only - no freecam, no gizmo, no
@@ -2596,6 +2604,8 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	freeCamLookWanted_ = false; // ditto for cursor ownership (see ReleaseFreeCamLook)
 	gameViewFocused_   = false; // ...and for input ownership (see ReleaseInputCapture)
 	gameViewHovered_   = false;
+	gameImageValid_    = false;
+	gameImageHovered_  = false;
 
 	if (showEditorViewport_ && editorPath_)
 		DrawViewport(kEditorViewport, &showEditorViewport_, *editorPath_, editorCamera_, true, scene, selected);
@@ -2605,6 +2615,9 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 		CameraComponent& gameCam = gamePath.camera ? *gamePath.camera : wi::scene::GetCamera();
 		DrawViewport(kGameViewport, &showGameViewport_, gamePath, gameCam, false, scene, selected);
 	}
+
+	if (showUIEditor_)
+		uiEditor_.Draw(scene, selected, &history_, gamePath.GetLastPostprocessRT(), &showUIEditor_);
 
 	DrawCameraViews(scene, selected);
 

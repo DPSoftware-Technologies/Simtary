@@ -5,6 +5,8 @@
 #include "imeditorhistory.h"
 #include "imhierarchy.h"
 #include "render/MeshLOD.h"
+#include "ui/UIComponents.h"
+#include "ui/UIRml.h"
 #include "wiBacklog.h"
 
 #include "wiScene.h"
@@ -3778,6 +3780,8 @@ void DrawGaussianSplat(Scene& scene, Entity e, st::EditorHistory* history)
 
 // dispatch
 
+#include "imuiinspectors.inl"
+
 // One row per manager, in the same order the Add Component catalogue lists them, so the
 //	inspector and that menu read alike. Names and transforms are absent on purpose - see the
 //	header.
@@ -3824,6 +3828,16 @@ const InspectorEntry g_inspectors[] = {
 	{ "wi::scene::Scene::constraints",        DrawConstraint },
 	{ "wi::scene::Scene::splines",            DrawSpline },
 	{ "wi::scene::Scene::gaussian_splats",    DrawGaussianSplat },
+	// Framework/ui
+	{ st::ui::kCanvases,                      DrawUICanvas },
+	{ st::ui::kRects,                         DrawUIRect },
+	{ st::ui::kImages,                        DrawUIImage },
+	{ st::ui::kTexts,                         DrawUIText },
+	{ st::ui::kButtons,                       DrawUIButton },
+	{ st::ui::kToggles,                       DrawUIToggle },
+	{ st::ui::kSliders,                       DrawUISlider },
+	{ st::ui::kLayouts,                       DrawUILayout },
+	{ st::ui::kDocuments,                     DrawUIDocument },
 };
 
 } // namespace

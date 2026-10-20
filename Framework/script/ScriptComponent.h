@@ -66,6 +66,11 @@ struct ScriptComponent : wi::scene::NativeComponent {
     // Hot reload the file for every instance, then retry this one if it never loaded.
     void Reload ();
 
+    // Call `name` with `args` if the running script defines it - what UI events use
+    //	(a Button's onClick, a document's onclick="..."). False when the script is not
+    //	running or has no such function; an error inside it is logged, not a fault.
+    bool CallEvent (const char* name, const st::taipan::Value* args, int argc);
+
 private:
     void Load ();
     void Unload (bool callDestroy);

@@ -3,6 +3,7 @@
 #include "imeditorhistory.h"
 #include "stNativeComponent.h"
 #include "wiScene.h"
+#include "ui/UIComponents.h"
 #include "wiBacklog.h"
 #include "imgui.h"
 
@@ -67,6 +68,23 @@ static const EngineComponentType g_engineComponents[] = {
 
 #undef ST_ENGINE_COMPONENT
 
+// Framework/ui. Every UI element needs a UIRect, so adding any of them adds one too.
+#define ST_UI_COMPONENT(DisplayName, Getter, Key)                                          	{ DisplayName, Key, false,                                                             	  [](Scene& s, Entity e) -> bool { return st::ui::Getter(s).Contains(e); },            	  [](Scene& s, Entity e) {                                                             		  if (!st::ui::Rects(s).Contains(e)) st::ui::Rects(s).Create(e);                   		  if (!st::ui::Getter(s).Contains(e)) st::ui::Getter(s).Create(e); },              	  [](Scene& s, Entity e) { st::ui::Getter(s).Remove(e); } }
+
+static const EngineComponentType g_uiComponents[] = {
+	ST_UI_COMPONENT("UI Canvas",          Canvases,  st::ui::kCanvases),
+	ST_UI_COMPONENT("UI Rect",            Rects,     st::ui::kRects),
+	ST_UI_COMPONENT("UI Image",           Images,    st::ui::kImages),
+	ST_UI_COMPONENT("UI Text",            Texts,     st::ui::kTexts),
+	ST_UI_COMPONENT("UI Button",          Buttons,   st::ui::kButtons),
+	ST_UI_COMPONENT("UI Toggle",          Toggles,   st::ui::kToggles),
+	ST_UI_COMPONENT("UI Slider",          Sliders,   st::ui::kSliders),
+	ST_UI_COMPONENT("UI Layout",          Layouts,   st::ui::kLayouts),
+	ST_UI_COMPONENT("UI Document (RmlUi)", Documents, st::ui::kDocuments),
+};
+
+#undef ST_UI_COMPONENT
+
 const EngineComponentType* EngineComponentTable(size_t& count)
 {
 	count = IM_ARRAYSIZE(g_engineComponents);
@@ -76,6 +94,11 @@ const EngineComponentType* EngineComponentTable(size_t& count)
 const EngineComponentType* FindEngineComponentByKey(const std::string& libraryKey)
 {
 	for (const EngineComponentType& t : g_engineComponents)
+	{
+		if (libraryKey == t.libraryKey)
+			return &t;
+	}
+	for (const EngineComponentType& t : g_uiComponents)
 	{
 		if (libraryKey == t.libraryKey)
 			return &t;
@@ -248,6 +271,44 @@ bool AddComponentButton(Scene& scene, Entity entity, st::EditorHistory* history)
 		}
 	}
 
+	// --- UI components (Framework/ui) ---
+	{
+		int uiMatches = 0;
+		for (const EngineComponentType& t : g_uiComponents)
+		{
+			if (MatchesFilter(t.name, filter))
+				++uiMatches;
+		}
+		char uiHeader[96];
+		snprintf(uiHeader, sizeof(uiHeader), "UI components (%d)###group_ui", uiMatches);
+		if (filtering)
+			ImGui::SetNextItemOpen(uiMatches > 0, ImGuiCond_Always);
+		if (ImGui::CollapsingHeader(uiHeader))
+		{
+			for (const EngineComponentType& t : g_uiComponents)
+			{
+				if (!MatchesFilter(t.name, filter))
+					continue;
+				const bool present = t.Has(scene, entity);
+				ImGui::BeginDisabled(present);
+				if (ImGui::Selectable(t.name))
+				{
+					if (history) history->BeginEntity(scene, entity, "Add UI Component");
+					t.Add(scene, entity);
+					if (history) history->Commit(scene);
+					added = true;
+					ImGui::CloseCurrentPopup();
+				}
+				ImGui::EndDisabled();
+				if (present)
+				{
+					ImGui::SameLine();
+					ImGui::TextDisabled("(on)");
+				}
+			}
+		}
+	}
+
 	// --- engine components ---
 	// Closed by default and last: 38 rows that are the same in every project, so they are
 	// the part of this popup least worth scrolling past to reach anything else.
@@ -410,6 +471,38 @@ Entity CreateObjectMenuItems(Scene& scene, const XMFLOAT3& spawnPosition, Entity
 		// this camera is ever made active.
 		created = scene.Entity_CreateCamera(UniqueName(scene, "Camera"), 1920.0f, 1080.0f);
 		label = "Create Camera";
+	}
+
+	// Game UI: lands on the selected UI element, else on the first screen canvas (made if
+	//	there is none) - never at the spawn point, which means nothing on a canvas.
+	if (ImGui::BeginMenu("UI"))
+	{
+		static const st::ui::Preset presets[] = {
+			st::ui::Preset::Canvas, st::ui::Preset::WorldCanvas, st::ui::Preset::Panel,
+			st::ui::Preset::Image, st::ui::Preset::Text, st::ui::Preset::Button, st::ui::Preset::Toggle,
+			st::ui::Preset::Slider, st::ui::Preset::VerticalLayout, st::ui::Preset::HorizontalLayout,
+			st::ui::Preset::Grid, st::ui::Preset::Document,
+		};
+		for (st::ui::Preset preset : presets)
+		{
+			if (preset == st::ui::Preset::Panel || preset == st::ui::Preset::VerticalLayout ||
+				preset == st::ui::Preset::Document)
+				ImGui::Separator();
+			if (!ImGui::MenuItem(st::ui::PresetName(preset)))
+				continue;
+			wi::vector<Entity> made;
+			const Entity uiParent = st::ui::Rects(scene).Contains(parent) ? parent : INVALID_ENTITY;
+			const Entity root = st::ui::Create(scene, preset, uiParent, "", &made);
+			if (preset == st::ui::Preset::WorldCanvas)
+				PlaceEntityAt(scene, root, spawnPosition, INVALID_ENTITY);
+			const std::string what = std::string("Create UI ") + st::ui::PresetName(preset);
+			if (history != nullptr)
+				history->RecordCreatedMany(scene, made, what.c_str());
+			wi::backlog::post("Editor: " + what + " (entity " + std::to_string(root) + ")");
+			ImGui::EndMenu();
+			return root;
+		}
+		ImGui::EndMenu();
 	}
 
 	ImGui::Separator();

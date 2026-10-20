@@ -158,7 +158,7 @@ set(SIMTARY_DEPS_DIR "${SIMTARY_ROOT}/deps" CACHE PATH
 # files), so it is recognised by a file it does own.
 set(_dep_markers "sentry=CMakeLists.txt" "openal=CMakeLists.txt"
                  "tinygltf=CMakeLists.txt" "ufbx=ufbx.c"
-                 "opus=CMakeLists.txt"
+                 "opus=CMakeLists.txt" "freetype=CMakeLists.txt"
                  "steamaudio=include/phonon.h")
 foreach(_entry IN LISTS _dep_markers)
     string(REPLACE "=" ";" _parts "${_entry}")
@@ -928,6 +928,45 @@ target_include_directories(ImGui_Lib PUBLIC
 )
 target_link_libraries(ImGui_Lib PRIVATE SDL2::SDL2)
 set_target_properties(ImGui_Lib PROPERTIES FOLDER "Simtary")
+
+# RmlUi (libs/RmlUi, submodule pinned to a release tag) + FreeType, its font engine.
+# Game UI: Framework/ui draws UICanvas elements itself and hands a UIDocument's rectangle
+# to RmlUi (.rml/.rcss pages). Both are added AFTER the /EHsc- /GR- flags: RmlUi checks
+# _CPPRTTI and falls back to its own type ids, and throws nowhere it is built for, so its
+# objects stay ABI-consistent with the framework that includes its headers. FreeType is
+# C. Its optional codecs are all off - RmlUi only needs TrueType/OpenType outlines.
+set(FT_DISABLE_ZLIB     ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BZIP2    ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_PNG      ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BROTLI   ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    freetype
+    GIT_REPOSITORY https://github.com/freetype/freetype.git
+    GIT_TAG        VER-2-13-3
+)
+FetchContent_MakeAvailable(freetype)
+if (NOT TARGET Freetype::Freetype)
+    add_library(Freetype::Freetype ALIAS freetype)
+endif()
+# The fetched target IS the package; a system FreeType found by RmlUi's find_package
+#	would be a second copy with its own headers.
+set(CMAKE_DISABLE_FIND_PACKAGE_Freetype ON)
+set(RMLUI_FONT_ENGINE          "freetype" CACHE STRING "" FORCE)
+set(RMLUI_SAMPLES              OFF CACHE BOOL "" FORCE)
+set(RMLUI_LUA_BINDINGS         OFF CACHE BOOL "" FORCE)
+set(RMLUI_PRECOMPILED_HEADERS  OFF CACHE BOOL "" FORCE)
+set(RMLUI_COMPILER_OPTIONS     OFF CACHE BOOL "" FORCE)   # our flags, not RmlUi's /W4 + /MP set
+set(RMLUI_INSTALL_LICENSES_AND_BUILD_INFO OFF CACHE BOOL "" FORCE)
+set(_simtary_shared_libs ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF)
+add_subdirectory(libs/RmlUi EXCLUDE_FROM_ALL)
+set(BUILD_SHARED_LIBS ${_simtary_shared_libs})
+foreach (_t freetype rmlui_core rmlui_debugger)
+    if (TARGET ${_t})
+        set_target_properties(${_t} PROPERTIES FOLDER "Simtary/ThirdParty")
+    endif()
+endforeach()
 
 # Crash reporter GUI (separate process, shown after a crash)
 # One reporter binary serves every project; simtary_add_app() copies it next to

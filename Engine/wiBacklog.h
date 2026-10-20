@@ -84,7 +84,17 @@ namespace wi::backlog
 	{
 		std::string text;
 		LogLevel level = LogLevel::Default;
+		double time = 0;		// wall clock, seconds since the Unix epoch
+		uint64_t serial = 0;	// 1, 2, 3... in posting order, never reused (clear() keeps counting)
 	};
+
+	// Copy of every entry still held (the oldest are dropped past the line limit).
+	void GetEntries(std::vector<LogEntry>& out);
+	// Called for every entry from now on, on the thread that posted it, after the entry
+	//	is stored - so a listener may read the backlog but must lock its own state.
+	//	A listener must not post (it would deadlock). Returns a handle for RemoveListener.
+	int AddListener(std::function<void(const LogEntry&)> listener);
+	void RemoveListener(int handle);
 	// this function is intended to be used only in crash handlers to write the current
 	// backlog, but without locking or any mallocs. It might iterate over complete garbage,
 	// so it should only be used as a last resort.

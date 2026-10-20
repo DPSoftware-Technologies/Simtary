@@ -28,6 +28,8 @@
 // are their instance pointer, checked against the scene's instance table on each use.
 #include "script/ScriptSystem.h"
 #include "scene/TemplatePool.h"
+#include "ui/UISystem.h"
+#include "ui/UIRml.h"
 #include "scene/PlayControl.h"
 
 #include "input/InputComponent.h"
@@ -374,6 +376,320 @@ void PoolParked (tb::Call* call, void*) {
     st::TemplatePool* pool = PoolArg(call);
     if (pool == nullptr) return;
     tb::ReturnInt(call, pool->Stats().parked);
+}
+
+// ---------------------------------------------------------------------------
+// UI (Framework/ui) - elements are GameObjects; the component decides what applies.
+// ---------------------------------------------------------------------------
+
+Entity UIArg (tb::Call* call) {
+    void* h = tb::ArgObject(call, 0, kGameObject);
+    return h ? EntityOf(h) : INVALID_ENTITY;
+}
+
+void UISetText (tb::Call* call, void*) {
+    st::ui::UITextComponent* t = st::ui::Texts(SceneRef()).GetComponent(UIArg(call));
+    if (t) t->text = tb::ArgText(call, 1);
+    tb::ReturnBool(call, t != nullptr);
+}
+
+void UIGetText (tb::Call* call, void*) {
+    const st::ui::UITextComponent* t = st::ui::Texts(SceneRef()).GetComponent(UIArg(call));
+    tb::ReturnString(call, t ? t->text.c_str() : "");
+}
+
+void UISetVisible (tb::Call* call, void*) {
+    st::ui::UIRectComponent* r = st::ui::Rects(SceneRef()).GetComponent(UIArg(call));
+    if (r) r->SetHidden(!tb::ArgBool(call, 1));
+    tb::ReturnBool(call, r != nullptr);
+}
+
+void UIIsVisible (tb::Call* call, void*) {
+    const st::ui::UIRectComponent* r = st::ui::Rects(SceneRef()).GetComponent(UIArg(call));
+    tb::ReturnBool(call, r && r->_visible);
+}
+
+void UISetColor (tb::Call* call, void*) {
+    const tb::Rgba c = tb::ArgColor(call, 1);
+    const XMFLOAT4 color(c.r, c.g, c.b, c.a);
+    const Entity e = UIArg(call);
+    bool any = false;
+    if (st::ui::UIImageComponent* i = st::ui::Images(SceneRef()).GetComponent(e)) { i->color = color; any = true; }
+    else if (st::ui::UITextComponent* t = st::ui::Texts(SceneRef()).GetComponent(e)) { t->color = color; any = true; }
+    tb::ReturnBool(call, any);
+}
+
+void UISetFill (tb::Call* call, void*) {
+    st::ui::UIImageComponent* i = st::ui::Images(SceneRef()).GetComponent(UIArg(call));
+    if (i) i->fillAmount = (float)tb::ArgFloat(call, 1);
+    tb::ReturnBool(call, i != nullptr);
+}
+
+void UISetOpacity (tb::Call* call, void*) {
+    st::ui::UIRectComponent* r = st::ui::Rects(SceneRef()).GetComponent(UIArg(call));
+    if (r) r->opacity = (float)tb::ArgFloat(call, 1);
+    tb::ReturnBool(call, r != nullptr);
+}
+
+void UISetPosition (tb::Call* call, void*) {
+    st::ui::UIRectComponent* r = st::ui::Rects(SceneRef()).GetComponent(UIArg(call));
+    if (r) r->position = XMFLOAT2((float)tb::ArgFloat(call, 1), (float)tb::ArgFloat(call, 2));
+    tb::ReturnBool(call, r != nullptr);
+}
+
+void UISetSize (tb::Call* call, void*) {
+    st::ui::UIRectComponent* r = st::ui::Rects(SceneRef()).GetComponent(UIArg(call));
+    if (r) r->size = XMFLOAT2((float)tb::ArgFloat(call, 1), (float)tb::ArgFloat(call, 2));
+    tb::ReturnBool(call, r != nullptr);
+}
+
+void UIGetValue (tb::Call* call, void*) {
+    const st::ui::UISliderComponent* s = st::ui::Sliders(SceneRef()).GetComponent(UIArg(call));
+    tb::ReturnFloat(call, s ? s->value : 0.0);
+}
+
+void UISetValue (tb::Call* call, void*) {
+    st::ui::UISliderComponent* s = st::ui::Sliders(SceneRef()).GetComponent(UIArg(call));
+    if (s) s->value = std::clamp((float)tb::ArgFloat(call, 1), std::min(s->minValue, s->maxValue),
+                                 std::max(s->minValue, s->maxValue));
+    tb::ReturnBool(call, s != nullptr);
+}
+
+void UIIsOn (tb::Call* call, void*) {
+    const st::ui::UIToggleComponent* t = st::ui::Toggles(SceneRef()).GetComponent(UIArg(call));
+    tb::ReturnBool(call, t && t->IsOn());
+}
+
+void UISetOn (tb::Call* call, void*) {
+    st::ui::UIToggleComponent* t = st::ui::Toggles(SceneRef()).GetComponent(UIArg(call));
+    if (t) t->SetOn(tb::ArgBool(call, 1));
+    tb::ReturnBool(call, t != nullptr);
+}
+
+void UIClicked (tb::Call* call, void*) {
+    tb::ReturnBool(call, st::ui::UISystem::Get().WasClicked(UIArg(call)));
+}
+
+void UISetInteractable (tb::Call* call, void*) {
+    const Entity e = UIArg(call);
+    const bool on = tb::ArgBool(call, 1);
+    bool any = false;
+    if (auto* b = st::ui::Buttons(SceneRef()).GetComponent(e)) { b->SetInteractable(on); any = true; }
+    if (auto* t = st::ui::Toggles(SceneRef()).GetComponent(e)) {
+        if (on) t->_flags |= st::ui::UIToggleComponent::INTERACTABLE; else t->_flags &= ~st::ui::UIToggleComponent::INTERACTABLE;
+        any = true;
+    }
+    if (auto* s = st::ui::Sliders(SceneRef()).GetComponent(e)) {
+        if (on) s->_flags |= st::ui::UISliderComponent::INTERACTABLE; else s->_flags &= ~st::ui::UISliderComponent::INTERACTABLE;
+        any = true;
+    }
+    tb::ReturnBool(call, any);
+}
+
+void UIPointerOver (tb::Call* call, void*) {
+    tb::ReturnBool(call, st::ui::UISystem::Get().PointerOverUI());
+}
+
+void UIDocSetRml (tb::Call* call, void*) {
+    tb::ReturnBool(call, st::ui::RmlHost::Get().SetInnerRml(UIArg(call), tb::ArgText(call, 1), tb::ArgText(call, 2)));
+}
+
+void UIDocSetClass (tb::Call* call, void*) {
+    tb::ReturnBool(call, st::ui::RmlHost::Get().SetClass(UIArg(call), tb::ArgText(call, 1), tb::ArgText(call, 2),
+                                                         tb::ArgBool(call, 3)));
+}
+
+void UIDocSetProperty (tb::Call* call, void*) {
+    tb::ReturnBool(call, st::ui::RmlHost::Get().SetProperty(UIArg(call), tb::ArgText(call, 1), tb::ArgText(call, 2),
+                                                            tb::ArgText(call, 3)));
+}
+
+void UIDocSetAttribute (tb::Call* call, void*) {
+    tb::ReturnBool(call, st::ui::RmlHost::Get().SetAttribute(UIArg(call), tb::ArgText(call, 1), tb::ArgText(call, 2),
+                                                             tb::ArgText(call, 3)));
+}
+
+void UIDocGetValue (tb::Call* call, void*) {
+    const std::string v = st::ui::RmlHost::Get().GetValue(UIArg(call), tb::ArgText(call, 1));
+    tb::ReturnString(call, v.c_str());
+}
+
+// --- reading back what the setters set ------------------------------------------------
+
+void UIGetPosition (tb::Call* call, void*) {
+    const st::ui::UIRectComponent* r = st::ui::Rects(SceneRef()).GetComponent(UIArg(call));
+    tb::ReturnVector2(call, r ? tb::Vec2{ r->position.x, r->position.y } : tb::Vec2{});
+}
+
+void UIGetSize (tb::Call* call, void*) {
+    const st::ui::UIRectComponent* r = st::ui::Rects(SceneRef()).GetComponent(UIArg(call));
+    tb::ReturnVector2(call, r ? tb::Vec2{ r->size.x, r->size.y } : tb::Vec2{});
+}
+
+// Where it is on the game image this frame (pixels, top left 0,0), after anchors and layouts.
+void UIGetScreenPosition (tb::Call* call, void*) {
+    const st::ui::UIRectComponent* r = st::ui::Rects(SceneRef()).GetComponent(UIArg(call));
+    tb::ReturnVector2(call, r ? tb::Vec2{ r->_pixels.x, r->_pixels.y } : tb::Vec2{});
+}
+
+void UIGetScreenSize (tb::Call* call, void*) {
+    const st::ui::UIRectComponent* r = st::ui::Rects(SceneRef()).GetComponent(UIArg(call));
+    tb::ReturnVector2(call, r ? tb::Vec2{ r->_pixels.z, r->_pixels.w } : tb::Vec2{});
+}
+
+void UIGetColor (tb::Call* call, void*) {
+    const Entity e = UIArg(call);
+    XMFLOAT4 c(1, 1, 1, 1);
+    if (const st::ui::UIImageComponent* i = st::ui::Images(SceneRef()).GetComponent(e)) c = i->color;
+    else if (const st::ui::UITextComponent* t = st::ui::Texts(SceneRef()).GetComponent(e)) c = t->color;
+    tb::ReturnColor(call, tb::Rgba{ c.x, c.y, c.z, c.w });
+}
+
+void UIGetOpacity (tb::Call* call, void*) {
+    const st::ui::UIRectComponent* r = st::ui::Rects(SceneRef()).GetComponent(UIArg(call));
+    tb::ReturnFloat(call, r ? r->opacity : 0.0);
+}
+
+void UIGetFill (tb::Call* call, void*) {
+    const st::ui::UIImageComponent* i = st::ui::Images(SceneRef()).GetComponent(UIArg(call));
+    tb::ReturnFloat(call, i ? i->fillAmount : 0.0);
+}
+
+void UIIsHovered (tb::Call* call, void*) { tb::ReturnBool(call, st::ui::UISystem::Get().IsHovered(UIArg(call))); }
+void UIIsPressed (tb::Call* call, void*) { tb::ReturnBool(call, st::ui::UISystem::Get().IsPressed(UIArg(call))); }
+
+// --- the tree, in UI order (sibling `order`, then creation) -----------------------------
+
+std::vector<Entity> UIChildren (Entity parent) {
+    wi::scene::Scene& s = SceneRef();
+    auto& rects = st::ui::Rects(s);
+    std::vector<Entity> out;
+    if (parent == INVALID_ENTITY) return out;
+    for (size_t i = 0; i < s.hierarchy.GetCount(); ++i) {
+        const Entity e = s.hierarchy.GetEntity(i);
+        if (s.hierarchy[i].parentID == parent && rects.Contains(e)) out.push_back(e);
+    }
+    std::sort(out.begin(), out.end(), [&rects](Entity a, Entity b) {
+        const int oa = rects.GetComponent(a)->order, ob = rects.GetComponent(b)->order;
+        return oa != ob ? oa < ob : a < b;
+    });
+    return out;
+}
+
+void UIGetParent (tb::Call* call, void*) {
+    const Entity e = UIArg(call);
+    const Entity p = ParentOf(e);
+    tb::Return(call, ObjectValue(Kind::GameObject, st::ui::Rects(SceneRef()).Contains(p) ? p : INVALID_ENTITY));
+}
+
+void UIChildCount (tb::Call* call, void*) { tb::ReturnInt(call, (int64_t)UIChildren(UIArg(call)).size()); }
+
+void UIGetChild (tb::Call* call, void*) {
+    const std::vector<Entity> kids = UIChildren(UIArg(call));
+    const int64_t i = tb::ArgInt(call, 1);
+    tb::Return(call, ObjectValue(Kind::GameObject, i >= 0 && i < (int64_t)kids.size() ? kids[(size_t)i] : INVALID_ENTITY));
+}
+
+// A descendant of `root` by name, breadth first - scene.find is global, this is one panel's.
+void UIFind (tb::Call* call, void*) {
+    const Entity root = UIArg(call);
+    const std::string name = tb::ArgString(call, 1);
+    if (tb::Failed(call)) return;
+    wi::scene::Scene& s = SceneRef();
+    std::vector<Entity> queue = UIChildren(root);
+    for (size_t i = 0; i < queue.size() && i < 4096; ++i) {
+        const wi::scene::NameComponent* n = s.names.GetComponent(queue[i]);
+        if (n && n->name == name) { tb::Return(call, ObjectValue(Kind::GameObject, queue[i])); return; }
+        for (Entity c : UIChildren(queue[i])) queue.push_back(c);
+    }
+    tb::Return(call, tb::Value::Null());
+}
+
+// Moves `e` under `parent` (a UI element), last among its new siblings.
+void UISetParent (tb::Call* call, void*) {
+    const Entity e = UIArg(call);
+    void* h = tb::ArgObject(call, 1, kGameObject);
+    if (tb::Failed(call)) return;
+    const Entity parent = h ? EntityOf(h) : INVALID_ENTITY;
+    wi::scene::Scene& s = SceneRef();
+    auto& rects = st::ui::Rects(s);
+    st::ui::UIRectComponent* r = rects.GetComponent(e);
+    if (r == nullptr || !rects.Contains(parent) || parent == e) { tb::ReturnBool(call, false); return; }
+    for (Entity p = parent; p != INVALID_ENTITY; p = ParentOf(p))
+        if (p == e) { tb::ReturnBool(call, false); return; }   // into its own child
+    int last = -1;
+    for (Entity c : UIChildren(parent)) last = std::max(last, rects.GetComponent(c)->order);
+    s.Component_Detach(e);
+    s.Component_Attach(e, parent, true);
+    r = rects.GetComponent(e);
+    r->order = last + 1;
+    tb::ReturnBool(call, true);
+}
+
+// --- creating and destroying ------------------------------------------------------------
+
+void UICreate (tb::Call* call, void*) {
+    std::string type = tb::ArgString(call, 0);
+    if (tb::Failed(call)) return;
+    Entity parent = INVALID_ENTITY;
+    if (tb::ArgCount(call) > 1 && tb::ArgType(call, 1) == tb::Type::Object) parent = EntityOf(tb::ArgObject(call, 1, kGameObject));
+    const std::string name = tb::ArgCount(call) > 2 ? tb::ArgString(call, 2) : "";
+    if (tb::Failed(call)) return;
+    // "Vertical Layout", "VerticalLayout" and "verticallayout" are the same preset.
+    auto key = [](std::string t) {
+        std::string k;
+        for (char c : t) if (c != ' ' && c != '_') k += (char)std::tolower((unsigned char)c);
+        return k;
+    };
+    const std::string want = key(type);
+    for (uint32_t i = 0; i <= (uint32_t)st::ui::Preset::Grid; ++i) {
+        const st::ui::Preset preset = (st::ui::Preset)i;
+        if (key(st::ui::PresetName(preset)) != want) continue;
+        if (parent != INVALID_ENTITY && !st::ui::Rects(SceneRef()).Contains(parent)) {
+            tb::Fail(call, "UI.Create: the parent is not a UI element");
+            return;
+        }
+        tb::Return(call, ObjectValue(Kind::GameObject, st::ui::Create(SceneRef(), preset, parent, name)));
+        return;
+    }
+    tb::Fail(call, ("UI.Create: unknown type '" + type + "' (Canvas, World Canvas, Panel, Image, Text, Button, "
+                    "Toggle, Slider, Document, Vertical Layout, Horizontal Layout, Grid)").c_str());
+}
+
+// The element and everything under it.
+void UIDestroy (tb::Call* call, void*) {
+    const Entity e = UIArg(call);
+    if (!st::ui::Rects(SceneRef()).Contains(e)) { tb::ReturnBool(call, false); return; }
+    SceneRef().Entity_Remove(e, true);
+    tb::ReturnBool(call, true);
+}
+
+// --- events from code -------------------------------------------------------------------
+// UI.On(button, "click", self, "OnPlay"): `event` on `element` calls func handler on the
+//	scripts of `target`. Events: click, value (toggle bool / slider float), enter, exit,
+//	down, up. Gone when the element or the target's script is.
+
+void UIOn (tb::Call* call, void*) {
+    const Entity element = UIArg(call);
+    const std::string event = tb::ArgString(call, 1);
+    void* t = tb::ArgObject(call, 2, kGameObject);
+    const std::string handler = tb::ArgString(call, 3);
+    if (tb::Failed(call)) return;
+    if (!st::ui::Rects(SceneRef()).Contains(element)) { tb::ReturnBool(call, false); return; }
+    if (!st::ui::UISystem::Get().Subscribe(element, event, t ? EntityOf(t) : INVALID_ENTITY, handler)) {
+        tb::Fail(call, ("UI.On: unknown event '" + event + "' (click, value, enter, exit, down, up)").c_str());
+        return;
+    }
+    tb::ReturnBool(call, true);
+}
+
+void UIOff (tb::Call* call, void*) {
+    const Entity element = UIArg(call);
+    const std::string event = tb::ArgCount(call) > 1 ? tb::ArgString(call, 1) : "";
+    void* t = tb::ArgCount(call) > 2 ? tb::ArgObject(call, 2, kGameObject) : nullptr;
+    const std::string handler = tb::ArgCount(call) > 3 ? tb::ArgString(call, 3) : "";
+    if (tb::Failed(call)) return;
+    tb::ReturnInt(call, st::ui::UISystem::Get().Unsubscribe(element, event, t ? EntityOf(t) : INVALID_ENTITY, handler));
 }
 
 // ---------------------------------------------------------------------------
@@ -1138,6 +1454,49 @@ void RegisterEngineBindings (tb::VM* vm) {
     tb::RegisterFunction(vm, "Pool.Release", &PoolRelease, nullptr, "(GameObject?) -> bool");
     tb::RegisterFunction(vm, "Pool.Active", &PoolActive, nullptr, "(str) -> int");
     tb::RegisterFunction(vm, "Pool.Parked", &PoolParked, nullptr, "(str) -> int");
+
+    // Game UI. Elements are GameObjects (find them with scene.find); each function does
+    //	what applies to the element's components and returns false when nothing did.
+    tb::RegisterFunction(vm, "UI.SetText", &UISetText, nullptr, "(GameObject?, str) -> bool");
+    tb::RegisterFunction(vm, "UI.GetText", &UIGetText, nullptr, "(GameObject?) -> str");
+    tb::RegisterFunction(vm, "UI.SetVisible", &UISetVisible, nullptr, "(GameObject?, bool) -> bool");
+    tb::RegisterFunction(vm, "UI.IsVisible", &UIIsVisible, nullptr, "(GameObject?) -> bool");
+    tb::RegisterFunction(vm, "UI.SetColor", &UISetColor, nullptr, "(GameObject?, Color) -> bool");
+    tb::RegisterFunction(vm, "UI.SetFill", &UISetFill, nullptr, "(GameObject?, float) -> bool");
+    tb::RegisterFunction(vm, "UI.SetOpacity", &UISetOpacity, nullptr, "(GameObject?, float) -> bool");
+    tb::RegisterFunction(vm, "UI.SetPosition", &UISetPosition, nullptr, "(GameObject?, float, float) -> bool");
+    tb::RegisterFunction(vm, "UI.SetSize", &UISetSize, nullptr, "(GameObject?, float, float) -> bool");
+    tb::RegisterFunction(vm, "UI.GetValue", &UIGetValue, nullptr, "(GameObject?) -> float");
+    tb::RegisterFunction(vm, "UI.SetValue", &UISetValue, nullptr, "(GameObject?, float) -> bool");
+    tb::RegisterFunction(vm, "UI.IsOn", &UIIsOn, nullptr, "(GameObject?) -> bool");
+    tb::RegisterFunction(vm, "UI.SetOn", &UISetOn, nullptr, "(GameObject?, bool) -> bool");
+    tb::RegisterFunction(vm, "UI.Clicked", &UIClicked, nullptr, "(GameObject?) -> bool");
+    tb::RegisterFunction(vm, "UI.SetInteractable", &UISetInteractable, nullptr, "(GameObject?, bool) -> bool");
+    tb::RegisterFunction(vm, "UI.PointerOver", &UIPointerOver, nullptr, "() -> bool");
+    // RmlUi documents: (document, element id, ...).
+    tb::RegisterFunction(vm, "UI.DocSetRml", &UIDocSetRml, nullptr, "(GameObject?, str, str) -> bool");
+    tb::RegisterFunction(vm, "UI.DocSetClass", &UIDocSetClass, nullptr, "(GameObject?, str, str, bool) -> bool");
+    tb::RegisterFunction(vm, "UI.DocSetProperty", &UIDocSetProperty, nullptr, "(GameObject?, str, str, str) -> bool");
+    tb::RegisterFunction(vm, "UI.DocSetAttribute", &UIDocSetAttribute, nullptr, "(GameObject?, str, str, str) -> bool");
+    tb::RegisterFunction(vm, "UI.DocGetValue", &UIDocGetValue, nullptr, "(GameObject?, str) -> str");
+    tb::RegisterFunction(vm, "UI.GetPosition", &UIGetPosition, nullptr, "(GameObject?) -> Vector2");
+    tb::RegisterFunction(vm, "UI.GetSize", &UIGetSize, nullptr, "(GameObject?) -> Vector2");
+    tb::RegisterFunction(vm, "UI.GetScreenPosition", &UIGetScreenPosition, nullptr, "(GameObject?) -> Vector2");
+    tb::RegisterFunction(vm, "UI.GetScreenSize", &UIGetScreenSize, nullptr, "(GameObject?) -> Vector2");
+    tb::RegisterFunction(vm, "UI.GetColor", &UIGetColor, nullptr, "(GameObject?) -> Color");
+    tb::RegisterFunction(vm, "UI.GetOpacity", &UIGetOpacity, nullptr, "(GameObject?) -> float");
+    tb::RegisterFunction(vm, "UI.GetFill", &UIGetFill, nullptr, "(GameObject?) -> float");
+    tb::RegisterFunction(vm, "UI.IsHovered", &UIIsHovered, nullptr, "(GameObject?) -> bool");
+    tb::RegisterFunction(vm, "UI.IsPressed", &UIIsPressed, nullptr, "(GameObject?) -> bool");
+    tb::RegisterFunction(vm, "UI.GetParent", &UIGetParent, nullptr, "(GameObject?) -> GameObject?");
+    tb::RegisterFunction(vm, "UI.ChildCount", &UIChildCount, nullptr, "(GameObject?) -> int");
+    tb::RegisterFunction(vm, "UI.GetChild", &UIGetChild, nullptr, "(GameObject?, int) -> GameObject?");
+    tb::RegisterFunction(vm, "UI.Find", &UIFind, nullptr, "(GameObject?, str) -> GameObject?");
+    tb::RegisterFunction(vm, "UI.SetParent", &UISetParent, nullptr, "(GameObject?, GameObject?) -> bool");
+    tb::RegisterFunction(vm, "UI.Create", &UICreate, nullptr, "(str, GameObject?=, str=) -> GameObject?");
+    tb::RegisterFunction(vm, "UI.Destroy", &UIDestroy, nullptr, "(GameObject?) -> bool");
+    tb::RegisterFunction(vm, "UI.On", &UIOn, nullptr, "(GameObject?, str, GameObject?, str) -> bool");
+    tb::RegisterFunction(vm, "UI.Off", &UIOff, nullptr, "(GameObject?, str=, GameObject?=, str=) -> int");
 
     // ----------------------------------------------------------------- Transform
     const char* T = kTransform;

@@ -8,6 +8,9 @@
 #include "stRun.h"
 #include "crash/CrashHandler.h"
 #include "io/UserData.h"
+#include "io/LogFormat.h"
+#include "ui/UIComponents.h"
+#include "ui/UISystem.h"
 #include "io/asset/AssetSystem.h"
 #include "input/InputSystem.h"
 #include "dev/DevBuild.h"
@@ -164,6 +167,10 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     // graphics device is created - so "vulkan", "dx12", "debugdevice" and the GPU
     // preference flags were all read from an empty argument set and did nothing.
     wi::arguments::Parse(argc, argv);
+    // Every backlog line from here on is also printed to the process console, coloured.
+    st::log::InstallConsoleLog();
+    // The UI component managers, in every Scene from the first one on (Framework/ui).
+    st::ui::InstallUIComponents();
     st::stream::StreamHost::Get().ParseCommandLine();   // --stream: decides the window below
     {
         std::string port;
@@ -210,7 +217,6 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
             syncWindow.SetStatus(phase, "dev build: assets/ changed since the last sync");
         });
         if (windowShown) syncWindow.Hide();
-        printf("Dev asset sync: %s\n", sync.message.c_str());
         wi::backlog::post("Dev asset sync: " + sync.message,
                           sync.ok ? wi::backlog::LogLevel::Default : wi::backlog::LogLevel::Error);
     }
@@ -437,6 +443,12 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
                 }
                 continue;
             }
+
+            // A text field in a game UI document has focus: its keys and text are its own.
+            if ((event.type == SDL_KEYDOWN || event.type == SDL_KEYUP || event.type == SDL_TEXTINPUT)
+                && st::ui::UISystem::Get().WantsKeyboard()
+                && st::ui::UISystem::Get().HandleSdlEvent(event))
+                continue;
 
             // Developer-tooling toggle. Checked before the capture guard below, not just
             // before the project hook: with an editor panel focused the guard swallows every

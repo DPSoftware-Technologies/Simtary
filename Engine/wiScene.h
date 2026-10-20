@@ -33,8 +33,22 @@ namespace wi::scene
 	//	The callback fires on the loading thread; keep it lightweight and thread-safe if loading asynchronously.
 	using LoadModelProgressCallback = std::function<void(float fraction, const std::string& status)>;
 
+	struct Scene;
+
+	// SIMTARY EXTENSION: component managers a layer above the engine adds to EVERY Scene.
+	//	The framework's UI components (Framework/ui) are real component managers so that save,
+	//	load, undo, templates, merge and Play-mode restore all treat them like Light or Mesh -
+	//	but a manager only exists in a scene that registered it, and an archive entry with no
+	//	manager is skipped on load (its data lost). So every Scene runs the registrars from its
+	//	constructor: the main scene, the editor's template previews, the temporary scenes a
+	//	template load or an import reads into. A registrar must be idempotent.
+	using SceneComponentRegistrar = void(*)(Scene&);
+	// Also runs `registrar` on the global GetScene(), which may already exist.
+	void AddSceneComponentRegistrar(SceneComponentRegistrar registrar);
+
 	struct Scene
 	{
+		Scene();
 		virtual ~Scene() = default;
 
 		wi::ecs::ComponentLibrary componentLibrary;
