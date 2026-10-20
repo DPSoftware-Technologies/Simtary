@@ -182,7 +182,14 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
     // buffered: a crash would swallow the last few KB of log - exactly the lines that say
     // where it died. Line buffering costs nothing at a server's log rate.
     if (g_headless) {
+#ifdef _WIN32
+        // MSVC's CRT has no line buffering (_IOLBF means full buffering there) and rejects a
+        //	zero size as an invalid parameter - a fast-fail before the first log line. Unbuffered
+        //	is the Windows equivalent.
+        setvbuf(stdout, nullptr, _IONBF, 0);
+#else
         setvbuf(stdout, nullptr, _IOLBF, 0);
+#endif
         setvbuf(stderr, nullptr, _IONBF, 0);
     }
 

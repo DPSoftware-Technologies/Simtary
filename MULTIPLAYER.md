@@ -194,3 +194,74 @@ bash Simtary/tools/package_server_linux.sh /root/mbuild/Release /root/linux_serv
 - Scene choice from the server (both ends launch `--scene=vehicletest` today)
 - Characters, then weapons
 - Steam relay / NAT traversal (not wanted for dedicated servers so far)
+
+## v2: replication and scripted networking (design, 2026-10-20)
+
+**Step 1 done (2026-10-20)**: `net/Replication.*` + `net/NetObjectComponent.cpp` ("stNetObject").
+Verified with a headless server and a client on one PC (bridge `net.objects / net.spawn /
+net.despawn / net.owner`): a spawned template appears on the client and its copy follows the
+server's physics ~0.1 s behind; despawn removes it; after `net.owner` the client moves it and
+the server follows as a kinematic proxy; a placed object (matched by key `path:SunLight`) binds
+whichever side registers first. Found on the way: the Windows headless server fast-failed in
+`setvbuf(stdout, nullptr, _IOLBF, 0)` (MSVC rejects it) - now unbuffered on Windows. A headless
+server only builds terrain around its camera/vehicles: objects elsewhere fall through.
+
+Goal: Roblox's "build it once and it is multiplayer". v1 synchronises vehicles only; anything
+else is a hand-written game message. v2 makes ANY entity replicable, gives Taipan scripts a
+networking API, and lets the editor start a server plus clients on one PC. Built on what v1
+has: `NetSession` (roles, handshake, transports, game messages), `Writer` / `Reader`, the
+headless server. VehicleSync stays as it is for now; vehicles move onto v2 once it is proven.
+
+### The model
+
+- **Server authoritative.** The server's scene is the truth. Clients load the same map, so
+  objects placed in it already exist on every machine; objects made at runtime are spawned by
+  the server and appear on clients.
+- **What is replicated is chosen per entity**: the `stNetObject` native component on an entity
+  (root or child). Everything else stays local (effects, UI, the camera).
+- **Ownership**: every net object has an owner - the server (0) or one client. The owner of a
+  player's character / vehicle can be given authority over its transform (it moves at once,
+  the server re-sends it to everyone else). Server-owned objects are only ever moved by the
+  server; on clients they are kinematic proxies.
+
+### Identity
+
+| object | key on the wire | how a client finds its copy |
+|---|---|---|
+| placed in the map | the entity's `EntityGUID` (metadata, saved with the map; the editor stamps it when `stNetObject` is attached) | `FindEntityByGUID` in its own copy of the map |
+| spawned at runtime | a net id + the template path (`.sttd`) | instantiates the template (`ObjectTemplate`) |
+
+Net ids are the server's, 32-bit, never reused within a session.
+
+### Steps
+
+| # | What | Done when |
+|---|---|---|
+| 1 | **Transform replication.** `stNetObject` (fields: `syncTransform`, `ownerAuthority`); `net/Replication.*` owned by `NetSession`. Server: binds placed objects (GUID), spawns template objects, sends transforms at 20 Hz (unreliable, changed objects + a full keyframe every second), `Despawn` when an object goes. Client: binds / spawns / removes, interpolates 100 ms behind the server clock, makes non-owned rigid bodies kinematic. Owner authority: the owning client sends its object's transform up, the server applies it and passes it on. Joining clients get the whole world state. | Two instances: a box pushed on the server moves on the client; a spawned template appears on both; owner-moved object moves on the other client. |
+| 2 | **State replication.** Whatever else changes on a server object (material colour, light, a component field) reaches clients: per object, the components are archived (as `SceneSnapshot` does) at 10 Hz, compared with what was last sent, and re-sent reliably when they differ. `NetVar`s: small named values on a net object (int / float / bool / string / vector / colour), set on the server, readable everywhere, with a change callback. | Changing a light colour on the server shows on the client; a NetVar set by a server script is read by a client script. |
+| 3 | **Taipan networking.** `Net.IsServer / IsClient / IsOnline / LocalPlayer / PlayerCount / PlayerId / PlayerName`; remote events `Net.FireServer(name, ...)`, `Net.FireClient(player, name, ...)`, `Net.FireAllClients(name, ...)`, received through `Net.On(name, self, "Handler")` (server handlers get the sender's player id first); `Net.Spawn(template, pos, rot, owner)`, `Net.Despawn(go)`, `Net.Owner / IsOwner / SetOwner`; `Net.SetVar / GetVar`; `OnPlayerJoined(int)` / `OnPlayerLeft(int)` called on server scripts. Arguments: int, float, bool, str, Vector2/3, Quaternion, Color, GameObject (sent as its net id). Script role per stScript: `runOn` = Both / Server / Client. | A client script fires an event, the server script answers every client, each logs it. |
+| 4 | **Test from the editor.** Toolbar "Play > Server + N clients": saves the scene to a temp map, starts a headless server and N client windows on 127.0.0.1 (tiled, `--name=Player1..N`, own bridge ports), Stop closes them. The editor itself stays in Edit mode. | One click gives a server and two clients of the open map. |
+| 5 | **Players.** A player template per scene (`stNetPlayerSpawn`: template + spawn points): the server spawns one per joining client, owned by it with transform authority; Milistry's soldier and vehicles use it. | Two players walking/driving in the same world. |
+
+### Messages (types 20..39; VehicleSync keeps 10..19)
+
+| id | dir | delivery | content |
+|---|---|---|---|
+| 20 Bind | S->C | reliable | u32 net id, str guid, u32 owner |
+| 21 Spawn | S->C | reliable | u32 net id, str template, u32 owner, transform |
+| 22 Despawn | S->C | reliable | u32 net id |
+| 23 Transforms | S->C | unreliable | f64 server time, u16 n, n x (u32 net id, transform) |
+| 24 OwnerTransforms | C->S | unreliable | u16 n, n x (u32 net id, transform) |
+| 25 Owner | S->C | reliable | u32 net id, u32 owner |
+| 26 State | S->C | reliable | u32 net id, archive bytes (step 2) |
+| 27 Var | S->C | reliable | u32 net id, str name, value (step 2) |
+| 30 Event | both | reliable | str name, u8 n, n x value (step 3) |
+
+Transform on the wire: u8 flags (large-world position, has scale), position (f64 x3 for a
+large-world transform, else f32 x3 `translation_local`), rotation f32 x4, scale f32 x3 if
+flagged. Local transforms are sent, not world: both machines have the same hierarchy.
+
+### Not in v2
+Client-side prediction with rollback, lag compensation (hit rewind), delta compression,
+interest management / relevancy, cheat validation beyond speed limits. All later, all behind
+the same messages.

@@ -1,4 +1,5 @@
 #include "net/NetSession.h"
+#include "net/Replication.h"
 
 #include "dev/DevBuild.h"
 #include "dev/EditorBridge.h"
@@ -162,6 +163,7 @@ void NetSession::Initialize (const std::string& appName) {
         mode_ = Mode::Server;
         ready_ = true;
         vehicles_ = std::make_unique<VehicleSync>(*this);
+        Replication::Get().OnSessionStarted(*this);
         Log("server \"" + config_.name + "\" listening on " + (config_.transport == "tcp" ? "TCP " : "UDP ") +
             std::to_string(config_.port) + " (" + transport_->Name() + "), up to " +
             std::to_string(config_.maxPlayers) + " players. Console: help");
@@ -183,6 +185,7 @@ bool NetSession::StartHost () {
     ready_ = true;
     localClientId_ = nextClientId_++;
     vehicles_ = std::make_unique<VehicleSync>(*this);
+    Replication::Get().OnSessionStarted(*this);
     Log("integrated server \"" + config_.name + "\" started (local player #" + std::to_string(localClientId_) +
         ", not open to the network)");
     return true;
@@ -207,6 +210,7 @@ void NetSession::Leave () {
     if (mode_ == Mode::Off) return;
     Log("leaving the network game");
     if (vehicles_) vehicles_->DespawnAll();
+    Replication::Get().OnSessionEnded();
     Shutdown();
     connecting_ = false;
     reconnectTimer_ = -1.0f;
@@ -233,6 +237,7 @@ bool NetSession::OpenToLan (uint16_t port, const std::string& transport) {
 void NetSession::DropRemotePeers (const char* reason) {
     for (const Peer& p : peers_) {
         if (p.clientId != 0 && vehicles_) vehicles_->OnPlayerLeft(p.clientId);
+        if (p.clientId != 0) Replication::Get().OnPlayerLeft(p.clientId);
         if (transport_) transport_->Close(p.connection, reason);
     }
     peers_.clear();
@@ -324,6 +329,7 @@ void NetSession::Update (float dt) {
     if (mode_ == Mode::Off) return;
     if (!transport_) {
         if (vehicles_) vehicles_->Update(dt);   // integrated host, not open to the network
+        Replication::Get().Update(dt);
         return;
     }
 
@@ -365,6 +371,7 @@ void NetSession::Update (float dt) {
     }
 
     if (vehicles_) vehicles_->Update(dt);
+    Replication::Get().Update(dt);
 
     // A line every 60 s while anyone is connected: who, and how far away.
     statusLogTimer_ += dt;
@@ -394,6 +401,7 @@ void NetSession::Kick (uint32_t clientId, const char* reason) {
             Log("kicking " + p.name + " (#" + std::to_string(clientId) + "): " + reason);
             transport_->Close(p.connection, reason);
             if (vehicles_) vehicles_->OnPlayerLeft(clientId);
+            Replication::Get().OnPlayerLeft(clientId);
             peers_.erase(std::remove_if(peers_.begin(), peers_.end(),
                 [&](const Peer& x) { return x.clientId == clientId; }), peers_.end());
             return;
@@ -429,6 +437,8 @@ void NetSession::Dispatch (const Event& e, Peer* from) {
     const uint8_t type = r.U8();
     if (type >= 10 && type < 20) {
         if (vehicles_) vehicles_->OnMessage(e.connection, type, r);
+    } else if (type >= 20 && type < 40) {
+        Replication::Get().OnMessage(from != nullptr ? from->clientId : 0, type, r);
     } else if (type >= kFirstGameMessage && handlers_[type]) {
         handlers_[type](from != nullptr ? from->clientId : 0, r);
     }
@@ -448,6 +458,7 @@ void NetSession::OnServerEvent (const Event& e) {
             if (p == nullptr) break;
             Log((!p->name.empty() ? p->name : std::to_string(e.connection)) + " left (" + e.reason + ")");
             if (p->clientId != 0 && vehicles_) vehicles_->OnPlayerLeft(p->clientId);
+            if (p->clientId != 0) Replication::Get().OnPlayerLeft(p->clientId);
             peers_.erase(std::remove_if(peers_.begin(), peers_.end(),
                 [&](const Peer& x) { return x.connection == e.connection; }), peers_.end());
             break;
@@ -487,6 +498,7 @@ void NetSession::OnServerEvent (const Event& e) {
             transport_->Send(e.connection, w.Bytes().data(), w.Bytes().size(), Delivery::Reliable);
             Log(p->name + " joined as client " + std::to_string(p->clientId));
             if (vehicles_) vehicles_->OnPlayerJoined(p->clientId, e.connection);
+            Replication::Get().OnPlayerJoined(p->clientId, e.connection);
             break;
         }
     }
@@ -522,6 +534,7 @@ void NetSession::OnClientEvent (const Event& e) {
             localClientId_ = 0;
             // The server will hand out a new vehicle on the next Welcome.
             if (vehicles_) vehicles_->DespawnAll();
+            Replication::Get().OnSessionEnded();   // the server re-sends the world after the next Welcome
             reconnectTimer_ = final ? -1.0f : kReconnectDelay;
             break;
         }
@@ -535,6 +548,7 @@ void NetSession::OnClientEvent (const Event& e) {
                 const std::string serverName = r.Str();
                 if (!r.ok()) break;
                 ready_ = true;
+                Replication::Get().OnSessionStarted(*this);
                 Log("welcomed by \"" + serverName + "\" as client " + std::to_string(localClientId_) +
                     ", " + std::to_string(tickRate) + " Hz");
                 break;
@@ -552,6 +566,7 @@ void NetSession::Shutdown () {
         transport_.reset();
     }
     vehicles_.reset();
+    Replication::Get().OnSessionEnded();
     peers_.clear();
     localClientId_ = 0;
     mode_ = Mode::Off;
@@ -603,6 +618,48 @@ void NetSession::RegisterBridge () {
             }
             o.Set("vehicles", vl);
             return o;
+        });
+    st::dev::EditorBridge::Get().Register("net.objects", "{} -> replicated objects: netId, entity, owner, key / template, bound, authority, position",
+        [](const st::json::Value&, std::string&) {
+            st::json::Value list = st::json::Value::Array();
+            wi::scene::Scene& scene = wi::scene::GetScene();
+            for (const Replication::Info& i : Replication::Get().List()) {
+                st::json::Value o = st::json::Value::Object();
+                o.Set("netId", unsigned(i.netId));
+                o.Set("entity", unsigned(i.entity));
+                o.Set("owner", unsigned(i.owner));
+                o.Set("key", i.key);
+                o.Set("template", i.templatePath);
+                o.Set("bound", i.bound);
+                o.Set("authority", Replication::Get().HasAuthority(i.entity));
+                if (const wi::scene::TransformComponent* t = scene.transforms.GetComponent(i.entity)) {
+                    const XMFLOAT3 pos = t->GetPosition();
+                    st::json::Value pa = st::json::Value::Array();
+                    pa.push_back(pos.x); pa.push_back(pos.y); pa.push_back(pos.z);
+                    o.Set("position", pa);
+                }
+                list.push_back(o);
+            }
+            return list;
+        });
+    st::dev::EditorBridge::Get().Register("net.spawn", "{template, position=[0,0,0], owner=0} -> server: spawn a template on every machine, returns entity id",
+        [](const st::json::Value& a, std::string& err) {
+            const st::json::Value& pv = a["position"];
+            const XMFLOAT3 pos((float)pv.At(0).AsNumber(), (float)pv.At(1).AsNumber(), (float)pv.At(2).AsNumber());
+            const wi::ecs::Entity e = Replication::Get().Spawn(a["template"].AsString(), pos, XMFLOAT4(0, 0, 0, 1),
+                                                                uint32_t(a["owner"].AsNumber()));
+            if (e == wi::ecs::INVALID_ENTITY) { err = "spawn failed (not the server, or the template did not load)"; return st::json::Value(); }
+            return st::json::Value(uint64_t(e));
+        });
+    st::dev::EditorBridge::Get().Register("net.despawn", "{id} -> server: remove a replicated object everywhere",
+        [](const st::json::Value& a, std::string& err) {
+            if (!Replication::Get().Despawn(wi::ecs::Entity(a["id"].AsNumber()))) { err = "not a replicated object here, or not the server"; return st::json::Value(); }
+            return st::json::Value(true);
+        });
+    st::dev::EditorBridge::Get().Register("net.owner", "{id, owner} -> server: give a replicated object to a client (0 = server)",
+        [](const st::json::Value& a, std::string& err) {
+            if (!Replication::Get().SetOwner(wi::ecs::Entity(a["id"].AsNumber()), uint32_t(a["owner"].AsNumber()))) { err = "not a replicated object here, or not the server"; return st::json::Value(); }
+            return st::json::Value(true);
         });
     st::dev::EditorBridge::Get().Register("net.host", "{open?: port, close?: true} -> start the integrated host, open / close it to the network",
         [this](const st::json::Value& a, std::string&) {
