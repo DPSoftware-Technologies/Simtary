@@ -212,7 +212,10 @@ private:
     void GizmoPhysicsRelease(wi::scene::Scene& scene, wi::ecs::Entity entity);
     // Pull the free camera back to where the selected entity fills the view (F over the
     // editor viewport), keeping the current view angle.
+    // Also what a double-click in the Hierarchy does. The camera flies there over a
+    // fraction of a second (StepCamFly, each frame); moving it yourself cancels the flight.
     void FrameSelected(wi::scene::Scene& scene, wi::ecs::Entity selected);
+    void StepCamFly(float dt);
 
     // Dispatches on the extension: ".wiscene" writes a plain wi::Archive, anything
     // else (including no extension) writes the native .stsd.
@@ -414,6 +417,9 @@ private:
     float camSpeed_  = 8.0f;
     float camBoost_  = 4.0f;
     float camSens_   = 0.004f;
+    XMFLOAT3 camFlyFrom_ = XMFLOAT3(0, 0, 0);
+    XMFLOAT3 camFlyTo_   = XMFLOAT3(0, 0, 0);
+    float    camFlyT_    = -1.0f;                // < 0: not flying
     float camNear_   = 0.1f;
     float camFar_    = 5000.0f;
     bool  camInitialized_ = false; // snapped to the game camera on first open

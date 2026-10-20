@@ -1448,21 +1448,46 @@ void st::EditorUI::FrameSelected(wi::scene::Scene& scene, Entity selected)
 	if (t == nullptr)
 		return;
 
-	// Pull back along the current view direction by the object's own size, so the framing
-	// keeps whatever angle the user was already looking from.
-	float radius = 2.0f;
-	if (scene.objects.Contains(selected))
+	// The bounds of the entity AND everything under it: a vehicle or a soldier root has no
+	//	mesh of its own, and framing its pivot with a 2 m guess put the camera inside it.
+	wi::primitive::AABB box;
+	bool any = false;
+	for (size_t i = 0; i < scene.objects.GetCount() && i < scene.aabb_objects.size(); ++i)
 	{
-		const size_t index = scene.objects.GetIndex(selected);
-		if (index < scene.aabb_objects.size())
-			radius = std::max(0.25f, scene.aabb_objects[index].getRadius());
+		const Entity e = scene.objects.GetEntity(i);
+		if (e != selected && !scene.Entity_IsDescendant(e, selected))
+			continue;
+		box = any ? wi::primitive::AABB::Merge(box, scene.aabb_objects[i]) : scene.aabb_objects[i];
+		any = true;
+	}
+	XMFLOAT3 target = t->GetPosition();
+	float radius = 1.0f;
+	if (any && box.IsValid())
+	{
+		target = box.getCenter();
+		radius = std::max(0.25f, box.getRadius());
 	}
 
+	// Pull back along the current view direction until the bounds fill the view, so the
+	//	framing keeps whatever angle the user was already looking from.
+	const float distance   = radius / std::tan(camFov_ * 0.5f) * 1.15f;
 	const XMVECTOR q       = XMQuaternionRotationRollPitchYaw(camRot_.x, camRot_.y, camRot_.z);
 	const XMVECTOR forward = XMVector3Rotate(XMVectorSet(0, 0, 1, 0), q);
-	const XMFLOAT3 target  = t->GetPosition();
-	XMStoreFloat3(&camPos_, XMVectorSubtract(XMLoadFloat3(&target),
-		XMVectorScale(forward, radius * 3.0f)));
+	camFlyFrom_ = camPos_;
+	XMStoreFloat3(&camFlyTo_, XMVectorSubtract(XMLoadFloat3(&target), XMVectorScale(forward, distance)));
+	camFlyT_ = 0.0f;
+}
+
+void st::EditorUI::StepCamFly(float dt)
+{
+	if (camFlyT_ < 0.0f)
+		return;
+	constexpr float kFlyTime = 0.35f;
+	camFlyT_ = std::min(1.0f, camFlyT_ + dt / kFlyTime);
+	const float s = 1.0f - (1.0f - camFlyT_) * (1.0f - camFlyT_) * (1.0f - camFlyT_); // ease out
+	XMStoreFloat3(&camPos_, XMVectorLerp(XMLoadFloat3(&camFlyFrom_), XMLoadFloat3(&camFlyTo_), s));
+	if (camFlyT_ >= 1.0f)
+		camFlyT_ = -1.0f;
 }
 
 void st::EditorUI::UpdateFreeCam(float dt, bool interactive)
@@ -1517,6 +1542,9 @@ void st::EditorUI::UpdateFreeCam(float dt, bool interactive)
 		if (ImGui::IsKeyDown(ImGuiKey_Q)) up     -= 1.0f;
 	}
 
+	if (fwd == 0.0f && strafe == 0.0f && up == 0.0f && !flying)
+		return;
+	camFlyT_ = -1.0f; // the user took the camera back mid-flight
 	if (fwd == 0.0f && strafe == 0.0f && up == 0.0f)
 		return;
 
@@ -2583,6 +2611,7 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	// Terrain is built in chunks around ONE point. While you work in the Editor Viewport that
 	//	has to be the free camera, or you would be sculpting ground that is not there; the
 	//	moment the Game Viewport has input it goes back to the game camera.
+	StepCamFly(ImGui::GetIO().DeltaTime);
 	st::terrain::TerrainSystem::Get().SetFocus(editorViewLive_ && !gameViewFocused_, camPos_);
 
 	if (showTerrain_)
@@ -2598,6 +2627,10 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 		if (ImGui::Begin(kHierarchy, &showHierarchy_))
 			HierarchyGUI(scene, selected, &history_);
 		ImGui::End();
+		// Double-click a row: fly the editor camera to it.
+		const Entity framed = TakeHierarchyDoubleClick();
+		if (framed != INVALID_ENTITY)
+			FrameSelected(scene, framed);
 	}
 
 	if (showProperties_)

@@ -64,6 +64,10 @@ void HierarchyGUI(wi::scene::Scene& scene, wi::ecs::Entity& selected,
 // "Save as Template..." in the row menu. The editor installs it; unset, the item is not shown.
 void SetSaveTemplateHandler(std::function<void(wi::scene::Scene&, wi::ecs::Entity)> handler);
 
+// The entity whose row was double-clicked since the last call, or INVALID_ENTITY. The
+//	caller of HierarchyGUI takes it right after drawing and frames its camera on it.
+wi::ecs::Entity TakeHierarchyDoubleClick();
+
 // Standalone "Hierarchy" window wrapper. p_open is optional (pass a bool* for a close box).
 void HierarchyWindow(wi::scene::Scene& scene, wi::ecs::Entity& selected, bool* p_open = nullptr);
 

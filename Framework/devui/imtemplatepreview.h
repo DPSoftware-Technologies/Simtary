@@ -61,7 +61,8 @@ public:
 private:
     void Save ();
     void Revert ();
-    void Frame ();
+    // Orbit to fit `focus` and everything under it; INVALID_ENTITY = the whole template.
+    void Frame (wi::ecs::Entity focus = wi::ecs::INVALID_ENTITY);
     void DrawView ();
     void DrawCloseConfirm ();
     void AddHelpers ();

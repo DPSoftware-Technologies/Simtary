@@ -129,13 +129,14 @@ void TemplatePreview::Revert () {
     lastMessage_ = "reverted";
 }
 
-void TemplatePreview::Frame () {
+void TemplatePreview::Frame (Entity focus) {
     if (!scene_) return;
+    if (focus == wi::ecs::INVALID_ENTITY) focus = root_;
     wi::primitive::AABB box;
     bool any = false;
     for (size_t i = 0; i < scene_->objects.GetCount() && i < scene_->aabb_objects.size(); ++i) {
         const Entity e = scene_->objects.GetEntity(i);
-        if (e != root_ && !scene_->Entity_IsDescendant(e, root_)) continue;
+        if (e != focus && !scene_->Entity_IsDescendant(e, focus)) continue;
         box = any ? wi::primitive::AABB::Merge(box, scene_->aabb_objects[i]) : scene_->aabb_objects[i];
         any = true;
     }
@@ -143,7 +144,7 @@ void TemplatePreview::Frame () {
         target_ = box.getCenter();
         const float radius = std::max(0.25f, box.getRadius());
         distance_ = radius / std::tan(fov_ * 0.5f) * 1.15f;
-    } else if (const TransformComponent* t = scene_->transforms.GetComponent(root_)) {
+    } else if (const TransformComponent* t = scene_->transforms.GetComponent(focus)) {
         target_ = t->GetPosition();
         distance_ = 5.0f;
     }
@@ -359,6 +360,8 @@ void TemplatePreview::Draw () {
             ImGui::TableSetColumnIndex(0);
             ImGui::BeginChild("##template_hierarchy");
             HierarchyGUI(*scene_, selected_, &history_, root_);
+            const Entity framed = TakeHierarchyDoubleClick();
+            if (framed != wi::ecs::INVALID_ENTITY) Frame(framed);
             ImGui::EndChild();
 
             ImGui::TableSetColumnIndex(1);

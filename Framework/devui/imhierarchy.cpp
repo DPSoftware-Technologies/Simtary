@@ -39,6 +39,16 @@ static Entity g_scopeRoot = INVALID_ENTITY;
 
 static std::function<void(Scene&, Entity)> g_saveTemplate;
 
+// The row double-clicked this frame, held until the panel's owner takes it.
+static Entity g_doubleClicked = INVALID_ENTITY;
+
+Entity TakeHierarchyDoubleClick()
+{
+	const Entity e = g_doubleClicked;
+	g_doubleClicked = INVALID_ENTITY;
+	return e;
+}
+
 void SetSaveTemplateHandler(std::function<void(Scene&, Entity)> handler)
 {
 	g_saveTemplate = std::move(handler);
@@ -160,6 +170,13 @@ static void HierarchyRowInteract(Scene& scene, Entity e, Entity& selected,
 		&& ImGui::IsMouseReleased(ImGuiMouseButton_Left)
 		&& !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left))
 		selected = e;
+
+	// Double-click: select and ask the owner to bring its camera to the entity.
+	if (hovered && !toggledOpen && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+	{
+		selected = e;
+		g_doubleClicked = e;
+	}
 }
 
 // ------------------------------------------------------------ script drops ---
