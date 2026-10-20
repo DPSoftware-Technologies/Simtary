@@ -14,6 +14,8 @@ namespace st {
 
 namespace {
 
+constexpr float kFrozenStep = 1e-6f;
+
 constexpr Scene::EntitySerializeFlags kFlags = Scene::EntitySerializeFlags::KEEP_INTERNAL_ENTITY_REFERENCES;
 
 void WriteEntity (Scene& scene, Entity e, wi::Archive& archive) {
@@ -165,8 +167,13 @@ void StepSceneFrozen (Scene& scene, const CameraComponent& camera) {
     scene.camera = camera;
     const bool physics = wi::physics::IsEnabled();
     wi::physics::SetEnabled(false);
-    scene.Update(1e-6f);
+    scene.Update(kFrozenStep);
     wi::physics::SetEnabled(physics);
+    // To everything AFTER the update - the render path reads scene.dt - the frozen scene
+    //	is paused. Motion blur divides by it (strength / 60 / dt), so a 1e-6 left here
+    //	smeared the whole view by a factor of ~16000 the moment the camera moved.
+    scene.dt = 0.0f;
+    scene.time -= kFrozenStep;
 
     restore(scene.scripts);
     restore(scene.animations);
