@@ -27,6 +27,7 @@
 #include "wiArchive.h"
 #include "wiHelper.h"
 #include "wiBacklog.h"
+#include <SDL.h>
 #include "wiEnums.h"
 #include "wiMath.h"
 
@@ -1521,7 +1522,16 @@ void st::EditorUI::UpdateFreeCam(float dt, bool interactive)
 
 	// Right mouse held = "flying": look with the mouse, WASD/QE to move. Releasing it
 	// hands W/E/R back to the gizmo-operation shortcuts, the way an editor expects.
-	const bool flying = ImGui::IsMouseDown(ImGuiMouseButton_Right);
+	//
+	// The OS decides whether the button is held, not ImGui. ImGui's state is built from SDL
+	//	events, and SDL on Windows loses the release (or replays a press) around switching
+	//	relative mouse mode on and off - the look then never ended and the cursor stayed
+	//	hidden and locked after letting go. When the two disagree ImGui is corrected too, so
+	//	no other panel is left believing the button is down.
+	const bool osRight = (SDL_GetGlobalMouseState(nullptr, nullptr) & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
+	if (ImGui::IsMouseDown(ImGuiMouseButton_Right) && !osRight)
+		io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+	const bool flying = osRight && ImGui::IsMouseDown(ImGuiMouseButton_Right);
 
 	// Ask for the cursor. Draw() reconciles the request at the end of the frame, so the
 	// look is released even when the panel stops being drawn mid-drag.
