@@ -16,9 +16,9 @@
 #include "net/NetSession.h"
 #include "stream/StreamHost.h"
 #include "stRun.h"
+#include "render/api/Backend.h"
 #include "wiEventHandler.h"
 #include "wiGraphicsDevice_Null.h"
-#include "wiImage.h"
 #include "wiLua.h"
 #include "wiPhysics.h"
 #include "wiScene.h"
@@ -34,34 +34,6 @@ namespace {
 // get a stable frame first, then turn things back on one at a time to find what breaks.
 bool MobileMinimal() {
     return wi::arguments::HasArgument("mobile_minimal");
-}
-
-void ApplyMobileMinimal(wi::RenderPath3D& path) {
-    path.setAO(wi::RenderPath3D::AO_DISABLED);
-    path.setSSREnabled(false);
-    path.setSSGIEnabled(false);
-    path.setRaytracedReflectionsEnabled(false);
-    path.setRaytracedDiffuseEnabled(false);
-    path.setReflectionsEnabled(false);
-    path.setShadowsEnabled(false);
-    path.setBloomEnabled(false);
-    path.setDepthOfFieldEnabled(false);
-    path.setMotionBlurEnabled(false);
-    path.setEyeAdaptionEnabled(false);
-    path.setLensFlareEnabled(false);
-    path.setLightShaftsEnabled(false);
-    path.setVolumeLightsEnabled(false);
-    path.setOcclusionCullingEnabled(false);
-    path.setMeshBlendEnabled(false);
-    path.setFSREnabled(false);
-    path.setFXAAEnabled(false);
-    path.setOutlineEnabled(false);
-    path.setVisibilityComputeShadingEnabled(false);
-    wi::renderer::SetDDGIEnabled(false);
-    wi::renderer::SetSurfelGIEnabled(false);
-    wi::renderer::SetTessellationEnabled(false);
-    wi::renderer::SetVariableRateShadingClassification(false);
-    wi::backlog::post("mobile_minimal: optional render passes off");
 }
 
 // Weather is rewritten every frame (DayNight), so its effects are switched off every frame.
@@ -205,7 +177,8 @@ const st::AppConfig& st::App::Config() {
 // 300x75 fitted one short line. The loading window now carries a phase, a percentage
 // and an asset path on its own row, and a path is long - at 300 wide every one of them
 // elided down to nothing useful.
-st::App::App() : m_loadingScreen("Starting up", 470, 124) {}
+st::App::App() : m_loadingScreen("Starting up", 470, 124),
+                 renderer_(std::make_unique<st::render::detroit::DetroitRenderer>()) {}
 
 void st::App::CreateGraphicsDevice(st::GraphicsAPI api, wi::platform::window_type window) {
     if (graphicsDevice != nullptr)
@@ -335,73 +308,49 @@ void st::App::Initialize() {
     }
 
     m_loadingScreen.SetStatusText("starting ImGui");
-    ImguiInit(window);
+    ImguiInit(window);   // also runs wi::Application::Initialize: the device and canvas are up
+
+    // The render interface (render/api) - from here on Framework code draws through it.
+    st::render::Install(renderer_.get());
 
     // Video options (window mode, monitor, resolution, v-sync, frame cap, render
     // scale) before the render path is built, so the canvas is sized from the final
     // window rather than the one st::Run happened to open.
     displaySettings_.LoadAndApply(st::SettingsManager::Get().SubCompound("display"), *this);
 
-    // After ImguiInit, which runs wi::Application::Initialize() and so guarantees the
-    // graphics device exists and the shader path has its backend subfolder appended.
-    lensFlare.Init();
-    projectors_.Init();
-    // Optics first: it has no GPU state of its own, and the laser system traces
-    // through it from the moment it starts running.
+    // Optics first: it has no GPU state of its own, and the laser system traces through
+    // it from the moment it starts running.
     optics_.Init();
-    lasers_.Init();
 
-    renderPath.init(canvas);
-    renderPath.Load();
-
-    // Scenes own wi::scene::Scene::Update(dt) - they run it from sceneManager.Update(),
-    // after st::InputSystem refresh, which native components read. RenderPath3D::Update()
-    // would update the scene a second time (and too early). A second update per frame
-    // swaps MeshComponent's so_pos/so_pre streamout views twice, which cancels out: GPU
-    // skinning then always writes the same half and the previous-position half is never
-    // written, so skinned meshes get garbage velocity (broken motion blur, TAA, FSR2).
-    // "External" rather than disabled: a disabled path renders the scene as frozen - frame
-    // delta time 0 (GPU particles never simulate), no probe / lightmap / decal refresh, no
-    // acceleration structure updates for ray tracing or DDGI.
-    renderPath.setSceneUpdateExternal(true);
-
-    // Project hook: last chance to configure the path (or activate one of your own)
-    // before it goes live.
-    OnRenderPathSetup(renderPath);
-
-    // Only claim the path if the project did not activate one of its own.
-    if (GetActivePath() == nullptr) ActivatePath(&renderPath);
-
-    // The projector pass rides on the render path's custom post process list, so it
-    // has to be told which path after OnRenderPathSetup has had its say. It only
-    // inserts itself while there is something to draw.
-    projectors_.Bind(renderPath);
-    // The path records the projector depth maps at the top of its post process chain,
-    // where this frame's render data is already uploaded (see ProjectorRenderPath).
-    renderPath.projectors = &projectors_;
-
-    // The laser pass rides on the same custom post process list, for the same reason
-    // and at the same stage. It has no shadow maps, so it needs nothing from the path
-    // beyond the hook.
-    lasers_.Bind(renderPath);
-
-    // Push saved graphics options to the engine now, so the first frame reflects them.
-    // Get() constructs the manager on first call and its constructor already reads
-    // options.stad (in AppData/LocalLow/PlatoonLabs/Milistry) - no explicit Load() needed.
-    graphicsSettings.loadAndApply(st::SettingsManager::Get().GraphicsTag(), renderPath, *this);
-    if (MobileMinimal()) ApplyMobileMinimal(renderPath);
-    // lensFlare.Init() already ran above; this just fills its settings from disk.
-    lensFlare.LoadFrom(st::SettingsManager::Get().SubCompound("lensflare"));
-    projectors_.LoadFrom(st::SettingsManager::Get().SubCompound("projectors"));
+    // The game path and what rides on it (lens flare, projectors, lasers), the saved
+    // graphics options. The project's render hooks go with it.
+    st::render::detroit::DetroitRenderer::Hooks hooks;
+    hooks.onPathSetup = [this](wi::RenderPath3D& path) { OnRenderPathSetup(path); };
+    hooks.onPreCompose = [this](wi::graphics::CommandList cmd) { OnPreCompose(cmd); };
+    hooks.onCompose = [this](wi::graphics::CommandList cmd) { OnCompose(cmd); };
+    renderer_->Initialize(*this, std::move(hooks));
+#if defined(SIMTARY_HAS_HURRICANES)
+    if (st::render::ChosenBackend() == st::render::Backend::Hurricanes && window != nullptr) {
+        hurricanes_ = std::make_unique<st::render::hurricanes::HurricanesRenderer>(
+            (void*)wi::platform::GetWindowHandle(window));
+        if (hurricanes_->Ready()) st::render::Install(hurricanes_.get());
+    }
+#endif
     optics_.LoadFrom(st::SettingsManager::Get().SubCompound("optics"));
-    lasers_.LoadFrom(st::SettingsManager::Get().SubCompound("lasers"));
     st::DayNight::Get().LoadFrom(st::SettingsManager::Get().SubCompound("daynight"));
 
     // Edit / Play mode transitions (snapshot, restore, reload) are applied by
     // ApplyPlayModeTransition at the top of each frame. --edit opens straight into the
-    // editor in Edit mode, the way the Unity editor opens.
+    // editor in Edit mode, the way the Unity editor opens. Not on Hurricanes: that edition is
+    // play-only (EDITIONS.md), and Edit mode without an editor is just a frozen game.
     if (st::dev::IsDevBuild() && (wi::arguments::HasArgument("--edit") || wi::arguments::HasArgument("edit")) &&
         Config().devUI != st::DevUIMode::Disabled) {
+        if (st::render::ChosenBackend() != st::render::Backend::Detroit)
+            wi::backlog::post("--edit ignored: the editor runs on Detroit only (Hurricanes is play-only)",
+                              wi::backlog::LogLevel::Warning);
+    }
+    if (st::dev::IsDevBuild() && (wi::arguments::HasArgument("--edit") || wi::arguments::HasArgument("edit")) &&
+        Config().devUI != st::DevUIMode::Disabled && st::render::ChosenBackend() == st::render::Backend::Detroit) {
         st::PlayControl::Get().StartInEditMode();
         startInEdit_ = true;
     }
@@ -644,51 +593,21 @@ void st::App::Update(float dt) {
     UpdateGameUI(dt, editing);
     if (MobileMinimal()) ApplyMobileMinimalWeather(wi::scene::GetScene());
 
-    // After sceneManager.Update: the scene's light system has refreshed the sun's
-    // direction and the camera has already moved this frame, so the projected sun
-    // position matches what the render path is about to draw.
-    lensFlare.Update(wi::scene::GetScene(), wi::scene::GetCamera(), dt);
-
-    // Same reason: followed entities carry this frame's transform only after the
-    // scene update, and the pass' constants must be in place before Render().
-    // Optics FIRST, then everything that reflects through them. A mirror bolted to a
-    // moving rig has to be where it will be DRAWN before a beam is traced off it or a
-    // virtual projector is placed behind it, or the reflection lags the mirror by a
-    // frame - which reads as the reflection sliding around on its own.
+    // After sceneManager.Update: followed entities carry this frame's transform only after
+    // the scene update. Optics FIRST, then the renderer's effects that reflect through
+    // them. A mirror bolted to a moving rig has to be where it will be DRAWN before a beam
+    // is traced off it or a virtual projector is placed behind it, or the reflection lags
+    // the mirror by a frame - which reads as the reflection sliding around on its own.
     optics_.Update(wi::scene::GetScene());
-    projectors_.Update(wi::scene::GetScene(), dt);
-    lasers_.Update(wi::scene::GetScene(), dt);
+    renderer_->Update(dt);
+    renderer_->SetDebugOverlays(debugOverlays_);
 
-    flagsChangedThisFrame = 
-        (STDDBoneLines != lastState.BoneLines) ||
-        (STDDCameras != lastState.Cameras) ||
-        (STDDColliders != lastState.Colliders) ||
-        (STDDEmitters != lastState.Emitters) ||
-        (STDDEnvProbes != lastState.EnvProbes) ||
-        (STDDForceFields != lastState.ForceFields) ||
-        (STDDPartitionTree != lastState.PartitionTree) ||
-        (STDDSprings != lastState.Springs);
-
-    if (flagsChangedThisFrame) {
-        lastState = { STDDBoneLines, STDDCameras, STDDColliders, STDDEmitters, STDDEnvProbes, STDDForceFields, STDDPartitionTree, STDDSprings };
-        
-        wi::renderer::SetToDrawDebugBoneLines(STDDBoneLines);
-        wi::renderer::SetToDrawDebugCameras(STDDCameras);
-        wi::renderer::SetToDrawDebugColliders(STDDColliders);
-        wi::renderer::SetToDrawDebugEmitters(STDDEmitters);
-        wi::renderer::SetToDrawDebugEnvProbes(STDDEnvProbes);
-        wi::renderer::SetToDrawDebugForceFields(STDDForceFields);
-        wi::renderer::SetToDrawDebugPartitionTree(STDDPartitionTree);
-        wi::renderer::SetToDrawDebugSprings(STDDSprings);
-        wi::renderer::SetToDrawVoxelHelper(STDVoxelHelper, STDGridHelper_clipmap_level);
-        wi::renderer::SetToDrawGridHelper(STDGridHelper);
-    }
 }
 
 void st::App::UpdateGameUI(float dt, bool editing) {
-    XMUINT2 size = renderPath.GetInternalResolution();
-    if (const wi::graphics::Texture* last = renderPath.GetLastPostprocessRT(); last && last->IsValid())
-        size = XMUINT2(last->desc.width, last->desc.height);
+    XMUINT2 size = st::render::Get().GameResolution();
+    if (const st::render::TextureObject* last = st::render::Get().GameImage())
+        size = XMUINT2(last->width, last->height);
 
     // The pointer in game-image pixels: from the Game Viewport panel in the editor, from the
     //	window otherwise. Not while the game holds the cursor (mouse look), and not while a
@@ -722,15 +641,15 @@ void st::App::FixedUpdate() {
 }
 
 void st::App::Render() {
+    renderer_->BeginFrame();
     if (pathOff_) {
         wi::lua::Render();             // what wi::Application::Render does besides the path
     } else {
         wi::Application::Render();
         // Game UI onto the path's final image, so the HUD is in the fullscreen frame, the
         //	editor's Game Viewport and every screenshot alike.
-        wi::graphics::GraphicsDevice* device = wi::graphics::GetDevice();
-        wi::graphics::CommandList cmd = device->BeginCommandList();
-        st::ui::UISystem::Get().Render(wi::scene::GetScene(), renderPath.GetLastPostprocessRT(), cmd);
+        st::render::Renderer& r = st::render::Get();
+        st::ui::UISystem::Get().Render(wi::scene::GetScene(), r.UI(), r.GameImage());
     }
 
     // The editor's second viewport has its own RenderPath3D and its own camera. The
@@ -741,56 +660,18 @@ void st::App::Render() {
     editor_.RenderTemplatePreviews(lastDt_);
 
     // The headset's two eyes: their own paths, configured like the game's.
-    st::xr::XRSystem::Get().RenderEyes(lastDt_, [this](wi::RenderPath3D& path) {
-        path.colorspace = renderPath.colorspace;
-        graphicsSettings.MirrorTo(path, false);
-        path.setlayerMask(renderPath.getLayerMask());
-        path.custom_post_processes = renderPath.custom_post_processes;
-    });
+    renderer_->RenderXREyes(lastDt_);
 
     OnRender();
+
+    // Hurricanes: Filament draws the frame and presents it itself (Wicked's device is the null one).
+    if (hurricanes_ && hurricanes_->Ready())
+        hurricanes_->RenderFrame(canvas.GetPhysicalWidth(), canvas.GetPhysicalHeight());
 }
 
 void st::App::Compose(wi::graphics::CommandList cmd) {
-    // Editor mode draws the 3D through ImGui (each viewport panel samples its path's
-    // render target), so the full-screen compose is skipped entirely: the dock host
-    // covers the whole window anyway, and blitting under it would only cost a pass and
-    // make the game's aspect ratio visible behind the panels for a frame after a resize.
-    if (editor_.IsEnabled()) {
-        ImguiCompose(cmd);
-        return;
-    }
-
-    // VR: the window mirrors the left eye, letterboxed (the eye is taller than the window).
-    if (xrDesktopOff_) {
-        if (const wi::graphics::Texture* eye = st::xr::XRSystem::Get().MirrorTexture()) {
-            const float cw = canvas.GetLogicalWidth(), ch = canvas.GetLogicalHeight();
-            const float aspect = float(eye->desc.width) / float(std::max(1u, eye->desc.height));
-            float h = ch, w = ch * aspect;
-            if (w > cw) { w = cw; h = cw / aspect; }
-            wi::image::Params fx((cw - w) * 0.5f, (ch - h) * 0.5f, w, h);
-            fx.blendFlag = wi::enums::BLENDMODE_OPAQUE;
-            wi::image::Draw(eye, fx, cmd);
-        }
-        OnCompose(cmd);
-        ImguiCompose(cmd);
-        return;
-    }
-
-    // Under everything: a backdrop drawn before the engine composes the frame.
-    OnPreCompose(cmd);
-
-    wi::Application::Compose(cmd);
-
-    // Between the two: additively over the composed 3D frame, but under the UI, so
-    // the flare never washes out ImGui windows.
-    // The render path's depth copy goes with it: the flare is light that reached the
-    // lens, so it has to be hidden by whatever is standing in front of the sun.
-    lensFlare.Draw(canvas, cmd, &renderPath.depthBuffer_Copy);
-
-    OnCompose(cmd);
-
-    ImguiCompose(cmd);
+    using Mode = st::render::detroit::DetroitRenderer::ComposeMode;
+    renderer_->Compose(cmd, editor_.IsEnabled() ? Mode::EditorOnly : xrDesktopOff_ ? Mode::XRMirror : Mode::Game);
 }
 
 void st::App::Exit() {
@@ -806,15 +687,14 @@ void st::App::Exit() {
     // Frees the editor's render path (and waits for the GPU) before the device goes away.
     editor_.Shutdown();
     st::ui::UISystem::Get().Shutdown();   // RmlUi and the world-canvas targets, before the device
+    if (hurricanes_) hurricanes_->Shutdown();
+    if (renderer_) renderer_->Shutdown();
 
     // Persist current graphics + any option edits on the way out, so quitting without
     // pressing Apply still keeps the live settings.
-    graphicsSettings.SaveTo(st::SettingsManager::Get().GraphicsTag());
+    renderer_->SaveSettings();
     displaySettings_.SaveTo(st::SettingsManager::Get().SubCompound("display"));
-    lensFlare.SaveTo(st::SettingsManager::Get().SubCompound("lensflare"));
-    projectors_.SaveTo(st::SettingsManager::Get().SubCompound("projectors"));
     optics_.SaveTo(st::SettingsManager::Get().SubCompound("optics"));
-    lasers_.SaveTo(st::SettingsManager::Get().SubCompound("lasers"));
     st::DayNight::Get().SaveTo(st::SettingsManager::Get().SubCompound("daynight"));
     st::SettingsManager::Get().SubCompound("input")
         .putInt("gamepadBackend", int(wi::input::GetGamepadBackend()));

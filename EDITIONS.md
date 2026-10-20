@@ -3,6 +3,16 @@
 Status: **design only (2026-10-14).** Nothing below is implemented except the Detroit renderer
 (the current engine) and the Gumin safeguards already made for Mali-G68 (PORTING-ANDROID.md).
 
+**Phase 1 done (2026-10-20).** `Framework/render/api/Renderer.h` is the render interface
+(Renderer + Draw2D), `Framework/render/detroit/` implements it on Wicked, and
+`cmake/SimtaryRenderBoundary.cmake` fails the build when Framework code outside its
+Detroit-only list touches Wicked's renderer. See "Phase 1 as built" below.
+
+**Phase 3 spike running (2026-10-20): Hurricanes on Filament draws vehicletest.** `libs/filament`
+(submodule, tag v1.77.3), `tools/build_filament.ps1` -> `deps/filament-install`, CMake
+`SIMTARY_RENDERERS="Detroit;Hurricanes"` (Milistry preset `win_x86-64-hurricanes-dev`), run with
+`--renderer=hurricanes`. See "Phase 3 spike as built" below.
+
 **DRAFT (2026-10-20): Hurricanes on Google Filament.** The Petrol renderer is proposed to be an
 adapter over Filament instead of a hand-written GL renderer - see "Hurricanes renderer
 (Petrol)". Not decided; it waits on the Phase 3 spike.
@@ -261,6 +271,73 @@ the device lacks bindless / Vulkan 1.3, start Hurricanes instead - one APK for b
 Phase 1 alone is worth doing even before Hurricanes: it is what makes the Mali work, the
 editor, and the dev bridge stop reaching into `wi::renderer` from everywhere.
 
+### Phase 1 as built (2026-10-20)
+
+The interface came out smaller in one place and larger in another than the sketch above:
+
+- **Frame lifecycle stays with `wi::Application`.** `st::App` is still a `wi::Application`; its
+  `Render()` / `Compose(cmd)` overrides forward to the Detroit renderer's host half
+  (`DetroitRenderer::Initialize / BeginFrame / RenderXREyes / Compose`). This matches the plan
+  for Petrol: there, `wi::Application` keeps running the loop on `GraphicsDevice_Null` and the
+  Filament renderer presents - so no portable `RenderFrame/Present` was needed yet.
+- **Draw2D was added** (the `UIRenderer` drafted above): game UI and RmlUi draw only through
+  it. `TextureRef` / `GeometryRef` are `shared_ptr` handles the backend subclasses.
+- **Services the framework and games actually used** went into `Renderer`: `GameImage`,
+  `GameResolution`, `SaveImage`, `ToResource` (a renderer texture as a `wi::Resource`, which is
+  how scene data holds textures), `ImGuiTexture`, `PickRay`, thread-safe debug shapes,
+  `DebugOverlays`, pipeline/VRAM/adapter status, `Update`, `Load/SaveSettings`.
+- **Detroit-only, by list** (the boundary script says why for each): the backend; the
+  `wi::Application` host (`stApp.*`, `stRun.cpp`); lens flare, projector, laser, framebuffer,
+  GraphicsAPI; XR; streaming; the editor's viewports, template preview, terrain panel and the
+  graphics options panel. Everything else in Framework is on the interface - UI, RmlUi, DevUI
+  (asset thumbnails, About icon, VRAM readout), loading screen, display options, scripts' debug
+  lines, ray component, editor bridge screenshots - and so are Milistry's two users (mouse
+  raycast, explosion puff texture).
+- **Not done in Phase 1:** `stApp.h` still hands out Detroit types (`GamePath()`, `Graphics()`,
+  `Projectors()`, `Lasers()`, `OnRenderPathSetup(wi::RenderPath3D&)`, `OnPreCompose/OnCompose(
+  CommandList)`) - code using those is Detroit code, whatever folder it is in. Device creation
+  is still `stRun`/`GraphicsAPI`. Phase 3 moves these behind the edition switch.
+
+## Phase 3 spike as built (2026-10-20)
+
+- **Switching**: a build carries the renderers `SIMTARY_RENDERERS` lists; `--renderer=` picks one
+  at startup (`Framework/render/api/Backend.h`), restart to change. Detroit-only builds carry no
+  Filament (a stub `HurricanesRenderer` that is never Ready). The About box shows the RUNNING
+  edition (`Caps::codename / architecture / api / basedOn`).
+- **A Hurricanes run**: `stRun` gives Wicked `GraphicsDevice_Null` (no SDL_WINDOW_VULKAN), the
+  Detroit host still initialises on it (so Detroit-only accessors have objects), and
+  `HurricanesRenderer` takes the window's HWND, becomes `st::render::Get()`, and in
+  `App::Render` mirrors `wi::scene` into Filament and presents. Scene update, physics,
+  terrain generation, scripts, input all run unchanged on the null device.
+- **Mirror**: Wicked is left-handed; positions/normals and world matrices are mirrored in Z
+  (`S*M*S`), which also turns clockwise front faces into Filament's counter-clockwise ones.
+  Meshes (LOD 0 subsets), materials (`StLit.mat`: base colour x vertex colour x base colour map,
+  roughness, metalness, emissive), the directional light as the sun (wicked intensity x 8000 lux
+  against a sunny-16 exposure), the game camera, a flat sky and a constant SH ambient.
+- **Terrain**: chunks are ordinary meshes; their layer blend (`ChunkData::blendmap_layers`,
+  CPU) becomes vertex colour (each layer's base colour x its texture's average, stacked like the
+  engine's shader). Chunk materials get no emissive - Wicked gives them strength 100 against a
+  black virtual-texture emissive map Filament does not have.
+- **Build facts**: Filament's headers need C++20 - only `render/hurricanes/*.cpp` compile as
+  C++20. Filament's `zstd` / `meshoptimizer` are not linked (the engine has both). Built from
+  PowerShell: Filament refuses MSYS2 (Git Bash sets `MSYSTEM`). Exe +3.3 MB (17.2 -> 20.5 MB).
+- **2D** (`render/hurricanes/HurricanesUI.*`, the Overlay): Draw2D, RmlUi and ImGui all go into
+  ONE triangle batch per frame, drawn as one renderable (a primitive per texture/scissor change,
+  ordered by blendOrder) in an orthographic, no-post-processing view over the 3D with
+  `materials/StUi.mat`. Rounded corners are a CPU fan, gradients vertex colour, text stb_truetype
+  atlases (Latin-1) with Liberation Sans as font 0. ImGui's font atlas is re-made on Filament;
+  ImGui images the overlay did not make (the editor's Wicked viewports) are skipped. Verified:
+  DevUI, the vehicle HUD, the test UI (panel, buttons, toggle, slider, text) and the RmlUi page
+  look like Detroit's; the About box says Hurricanes / Petrol.
+- **UV origin**: Filament samples v bottom-up; image rows are uploaded top first, so both
+  materials flip v (3D textures were upside down until then).
+- **Not yet**: debug shapes, skinning, point/spot lights, weather/sky, DDS/KTX textures (stb
+  only: PNG/JPG/TGA/BMP), particles, live terrain edits (chunk meshes cached), transparency, UI
+  world canvases (no render targets), text shadow softness/bolden, `FromResource` (a Wicked
+  resource has no pixels on the null device unless it kept its file - the About icon and asset
+  thumbnails are blank), frame-time numbers (the fps readout is Wicked's loop, not Filament's
+  presents), and the Mali tablet.
+
 ## Open questions
 
 - Should Hurricanes run the same physics / vehicle model at full fidelity, or a cheaper
@@ -273,7 +350,8 @@ editor, and the dev bridge stop reaching into `wi::renderer` from everywhere.
   per platform (faster builds, but `matc` / `cmgen` must match the library version)?
 - Filament: does it build and link under `/EHsc- /GR-`, or does it need a wrapper boundary?
 - Filament: which Filament version to pin, and who bumps it (same policy as RmlUi / Taipan)?
-- Does the editor ever run on Hurricanes (Petrol editor on a low-end PC), or is Petrol
-  play-only with authoring always on Detroit? Play-only keeps ImGuizmo, editor viewports and
-  the UI Editor Detroit-side.
+- ~~Does the editor ever run on Hurricanes?~~ **Decided 2026-10-20: no. Hurricanes is play-only**;
+  authoring and development are Detroit's. A Hurricanes run refuses editor mode (F2, `--edit`,
+  the bridge) with a log line; DevUI windows (backlog, graphics, scene manager, ...) still work.
+  The editor's viewports, template preview and UI Editor stay Detroit render paths.
 - Streaming from a Petrol server (BHS): needed, or is cloud always Detroit?

@@ -17,3 +17,7 @@
 [submodule "libs/RmlUi"]
 	path = libs/RmlUi
 	url = https://github.com/mikke89/RmlUi.git
+[submodule "libs/filament"]
+	path = libs/filament
+	url = https://github.com/google/filament
+	shallow = true

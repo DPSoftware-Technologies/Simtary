@@ -469,13 +469,12 @@ void EditorBridge::RegisterAll () {
     });
     Register("template.preview_shot", "{path} -> PNG of the newest template preview's view",
         [&app](const Value& a, std::string& err) {
-        const wi::graphics::Texture* tex = app.Editor().TemplatePreviewFrame();
-        if (tex == nullptr || !tex->IsValid()) { err = "no template preview has rendered"; return Value(); }
+        if (!app.Editor().HasTemplatePreviewFrame()) { err = "no template preview has rendered"; return Value(); }
         std::string path = a["path"].AsString();
         if (path.empty()) path = "devbridge_shots/template_preview.png";
         std::error_code ec;
         std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
-        if (!wi::helper::saveTextureToFile(*tex, path)) { err = "could not write " + path; return Value(); }
+        if (!app.Editor().SaveTemplatePreviewFrame(path)) { err = "could not write " + path; return Value(); }
         return Value(std::filesystem::absolute(path, ec).generic_u8string());
     });
     Register("pool.prewarm", "{path, count} -> parked copies the pool now holds",
@@ -1153,8 +1152,8 @@ void EditorBridge::RegisterAll () {
         return Value(true);
     });
     Register("screenshot", "{path?} -> PNG of the game view (last rendered frame), absolute path", [this, &app](const Value& a, std::string& err) {
-        const wi::graphics::Texture* tex = app.renderPath.GetLastPostprocessRT();
-        if (tex == nullptr || !tex->IsValid()) { err = "nothing rendered yet"; return Value(); }
+        const st::render::TextureObject* tex = st::render::Get().GameImage();
+        if (tex == nullptr) { err = "nothing rendered yet"; return Value(); }
         std::string path = a["path"].AsString();
         if (path.empty()) {
             std::error_code ec;
@@ -1163,7 +1162,7 @@ void EditorBridge::RegisterAll () {
             std::snprintf(name, sizeof(name), "devbridge_shots/shot_%03d.png", ++shotCounter_);
             path = name;
         }
-        if (!wi::helper::saveTextureToFile(*tex, path)) { err = "could not write " + path; return Value(); }
+        if (!st::render::Get().SaveImage(*tex, path)) { err = "could not write " + path; return Value(); }
         std::error_code ec;
         return Value(std::filesystem::absolute(path, ec).generic_u8string());
     });

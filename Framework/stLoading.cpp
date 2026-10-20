@@ -19,7 +19,7 @@
 #include "stApp.h"
 
 namespace {
-// wi::renderer::IsPipelineCreationActive() sums four job-system contexts, and one of
+// The renderer's pipeline count (Detroit: IsPipelineCreationActive) sums four job-system contexts, and one of
 // them (object_pso_job_ctx) is Priority::Low. A low-priority job can stay queued
 // behind other work indefinitely, so "N jobs remaining" is NOT a reliable
 // "startup is still going" signal - waiting for it to reach zero can pin this overlay
@@ -35,7 +35,7 @@ void st::App::RenderLoadingScreen(const st::LoadingState& state) {
 
         // wi::renderer compiles object shaders + builds PSOs on background job-system
         // threads; this returns the number of jobs still in flight.
-        const int active = wi::renderer::IsPipelineCreationActive();
+        const int active = st::render::Get().PipelinesCompiling();
 
         if (active > 0) { loadingSawWork_ = true; loadingIdleFrames_ = 0; }
         else            { loadingIdleFrames_++; }
@@ -66,7 +66,7 @@ void st::App::RenderLoadingScreen(const st::LoadingState& state) {
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_AlwaysAutoResize);
 
     if (!loadingDone_) {
-        const int active = wi::renderer::IsPipelineCreationActive();
+        const int active = st::render::Get().PipelinesCompiling();
         if (active > 0)
             ImGui::Text("Creating Pipeline... (%d job%s remaining)", active, active == 1 ? "" : "s");
         else

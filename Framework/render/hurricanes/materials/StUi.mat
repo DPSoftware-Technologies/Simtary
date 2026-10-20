@@ -1,0 +1,32 @@
+// StUi - the Hurricanes renderer's 2D material: every overlay triangle (game UI, RmlUi, ImGui)
+// is vertex colour x texture, blended over the frame. Values are display values (the overlay
+// view has no post-processing), the way ImGui and the UI author their colours.
+//   texPremul    1 when the texture is already premultiplied (generated glyph atlases)
+//   colorPremul  1 when the vertex colour is (RmlUi's are)
+material {
+    name : StUi,
+    shadingModel : unlit,
+    blending : transparent,
+    culling : none,
+    depthWrite : false,
+    depthCulling : false,
+    requires : [ uv0, color ],
+    parameters : [
+        { type : sampler2d, name : albedo },
+        { type : float,     name : texPremul },
+        { type : float,     name : colorPremul }
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        float4 c = getColor();
+        if (materialParams.colorPremul < 0.5) c.rgb *= c.a;
+        // Texture rows are uploaded top first (stb, ImGui) and Filament's v runs bottom-up.
+        float2 uv = getUV0();
+        float4 t = texture(materialParams_albedo, float2(uv.x, 1.0 - uv.y));
+        if (materialParams.texPremul < 0.5) t.rgb *= t.a;
+        material.baseColor = c * t;
+    }
+}

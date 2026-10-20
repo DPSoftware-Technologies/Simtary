@@ -127,6 +127,12 @@ public:
     const wi::graphics::Texture* TemplatePreviewFrame() const {
         return templatePreviews_.empty() ? nullptr : templatePreviews_.back()->LastFrame();
     }
+    // For the bridge, which stays off the device: is there one, and write it to an image file.
+    bool HasTemplatePreviewFrame() const {
+        const wi::graphics::Texture* t = TemplatePreviewFrame();
+        return t != nullptr && t->IsValid();
+    }
+    bool SaveTemplatePreviewFrame(const std::string& path) const;
     wi::ecs::Entity PlaceTemplateForTool(wi::scene::Scene& scene, const std::string& path, const XMFLOAT3& position) {
         return PlaceTemplate(scene, path, position);
     }

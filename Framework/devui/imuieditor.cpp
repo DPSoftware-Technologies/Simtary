@@ -248,7 +248,7 @@ void UIEditorPanel::AcceptDrop (Scene& scene, Entity& selected, EditorHistory* h
 }
 
 void UIEditorPanel::Draw (Scene& scene, Entity& selected, EditorHistory* history,
-                          const wi::graphics::Texture* frame, bool* open) {
+                          const render::TextureObject* frame, bool* open) {
     ImGui::SetNextWindowSize(ImVec2(960, 600), ImGuiCond_FirstUseEver);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     const bool visible = ImGui::Begin(kWindowName, open, ImGuiWindowFlags_MenuBar);
@@ -300,7 +300,7 @@ void UIEditorPanel::Draw (Scene& scene, Entity& selected, EditorHistory* history
     const ImVec2 cursor = ImGui::GetCursorScreenPos();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(cursor, ImVec2(cursor.x + avail.x, cursor.y + avail.y), IM_COL32(30, 31, 34, 255));
-    if (frame == nullptr || !frame->IsValid() || avail.x < 16 || avail.y < 16) {
+    if (frame == nullptr || avail.x < 16 || avail.y < 16) {
         ImGui::Dummy(avail);
         ImGui::SetCursorScreenPos(ImVec2(cursor.x + 8, cursor.y + 8));
         ImGui::TextDisabled("waiting for the game image...");
@@ -308,14 +308,14 @@ void UIEditorPanel::Draw (Scene& scene, Entity& selected, EditorHistory* history
         return;
     }
 
-    const float W = (float)frame->desc.width, H = (float)frame->desc.height;
+    const float W = (float)frame->width, H = (float)frame->height;
     const float fit = std::min(avail.x / W, avail.y / H);
     scale_ = zoom_ > 0 ? zoom_ : fit;
     const ImVec2 imgSize(W * scale_, H * scale_);
     imagePos_ = ImVec2(cursor.x + (avail.x - imgSize.x) * 0.5f + pan_.x, cursor.y + (avail.y - imgSize.y) * 0.5f + pan_.y);
 
     dl->PushClipRect(cursor, ImVec2(cursor.x + avail.x, cursor.y + avail.y), true);
-    dl->AddImage((ImTextureID)(uintptr_t)frame, imagePos_, ImVec2(imagePos_.x + imgSize.x, imagePos_.y + imgSize.y));
+    dl->AddImage((ImTextureID)render::Get().ImGuiTexture(*frame), imagePos_, ImVec2(imagePos_.x + imgSize.x, imagePos_.y + imgSize.y));
     dl->AddRect(imagePos_, ImVec2(imagePos_.x + imgSize.x, imagePos_.y + imgSize.y), IM_COL32(255, 255, 255, 60));
 
     // The panel owns its mouse: one invisible button over everything, so a click is ours

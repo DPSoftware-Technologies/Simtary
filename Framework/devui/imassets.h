@@ -45,6 +45,7 @@
 #include <vector>
 
 #include "io/asset/AssetPack.h"
+#include "render/api/Renderer.h"
 #include "io/asset/AssetPackWriter.h"
 #include "wiResourceManager.h"
 #include "devui/imaudiopreview.h"
@@ -188,7 +189,7 @@ private:
     // package name unless the working set says otherwise; `bytes` is set for in-memory rows.
     void AudioSourceFor (uint64_t id, std::string& name, const std::vector<uint8_t>*& bytes) const;
     // A loaded thumbnail for an image row, or null while it is (or cannot be) loaded.
-    const wi::graphics::Texture* Thumbnail (const Row& row);
+    const render::TextureObject* Thumbnail (const Row& row);
 
     // panels
     void DrawToolbar ();
@@ -274,6 +275,7 @@ private:
     uint64_t    treeSignature_ = 0;    // rows the tree was built from; rebuilt when it moves
     struct Thumb {
         wi::Resource resource;
+        render::TextureRef texture;
         uint64_t     lastUsed = 0;
         bool         failed = false;
     };

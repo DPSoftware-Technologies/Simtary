@@ -24,7 +24,7 @@
 // Main thread, ImGui. No exceptions, no RTTI.
 
 #include "wiECS.h"
-#include "wiGraphicsDevice.h"
+#include "render/api/Renderer.h"
 #include "imgui.h"
 
 namespace wi::scene { struct Scene; }
@@ -37,7 +37,7 @@ class UIEditorPanel {
 public:
     // `frame` is the game's final image (UI included). `open` is the window close box.
     void Draw (wi::scene::Scene& scene, wi::ecs::Entity& selected, EditorHistory* history,
-               const wi::graphics::Texture* frame, bool* open);
+               const render::TextureObject* frame, bool* open);
 
     static constexpr const char* kWindowName = "UI Editor";
 

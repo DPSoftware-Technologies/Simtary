@@ -1,0 +1,26 @@
+// StLit - the Hurricanes renderer's opaque PBR material: what a wi::scene MaterialComponent
+// maps to (base colour x vertex colour x base colour map, roughness, metalness, emissive);
+// the vertex colour carries terrain layer blending, white everywhere else. Compiled by matc at
+// build time (cmake/SimtaryApp.cmake) to shaders/filament/StLit.filamat.
+material {
+    name : StLit,
+    shadingModel : lit,
+    requires : [ uv0, color ],
+    parameters : [
+        { type : float4,    name : baseColor },
+        { type : float,     name : roughness },
+        { type : float,     name : metallic },
+        { type : float3,    name : emissive },
+        { type : sampler2d, name : baseColorMap }
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = materialParams.baseColor * getColor() * texture(materialParams_baseColorMap, getUV0());
+        material.roughness = materialParams.roughness;
+        material.metallic = materialParams.metallic;
+        material.emissive = float4(materialParams.emissive, 0.0);
+    }
+}

@@ -48,19 +48,19 @@ void st::App::DevUIMenuBar() {
             }
             if (ImGui::BeginMenu("Render")) {
                 if (ImGui::BeginMenu("Debug")) {
-                    ImGui::MenuItem("BoneLines", NULL, &STDDBoneLines);
-                    ImGui::MenuItem("Cameras", NULL, &STDDCameras);
-                    ImGui::MenuItem("Colliders", NULL, &STDDColliders);
-                    ImGui::MenuItem("Emitters", NULL, &STDDEmitters);
-                    ImGui::MenuItem("EnvProbes", NULL, &STDDEnvProbes);
-                    ImGui::MenuItem("ForceFields", NULL, &STDDForceFields);
-                    ImGui::MenuItem("PartitionTree", NULL, &STDDPartitionTree);
-                    ImGui::MenuItem("Springs", NULL, &STDDSprings);
+                    ImGui::MenuItem("BoneLines", NULL, &debugOverlays_.boneLines);
+                    ImGui::MenuItem("Cameras", NULL, &debugOverlays_.cameras);
+                    ImGui::MenuItem("Colliders", NULL, &debugOverlays_.colliders);
+                    ImGui::MenuItem("Emitters", NULL, &debugOverlays_.emitters);
+                    ImGui::MenuItem("EnvProbes", NULL, &debugOverlays_.envProbes);
+                    ImGui::MenuItem("ForceFields", NULL, &debugOverlays_.forceFields);
+                    ImGui::MenuItem("PartitionTree", NULL, &debugOverlays_.partitionTree);
+                    ImGui::MenuItem("Springs", NULL, &debugOverlays_.springs);
                     ImGui::EndMenu();
                 }
-                ImGui::MenuItem("VoxelHelper", NULL, &STDVoxelHelper);
-                ImGui::InputInt("VoxelHelper clipmap_level", &STDGridHelper_clipmap_level, 0, 100);
-                ImGui::MenuItem("GridHelper", NULL, &STDGridHelper);
+                ImGui::MenuItem("VoxelHelper", NULL, &debugOverlays_.voxelHelper);
+                ImGui::InputInt("VoxelHelper clipmap_level", &debugOverlays_.voxelClipmapLevel, 0, 100);
+                ImGui::MenuItem("GridHelper", NULL, &debugOverlays_.gridHelper);
                 ImGui::EndMenu();
             }
             ImGui::Separator();
@@ -116,7 +116,8 @@ void st::App::DevUIMenuBar() {
             ImGui::EndMenu();
         }
 
-        wi::graphics::GraphicsDevice::MemoryUsage vram = wi::graphics::GetDevice()->GetMemoryUsage();
+        uint64_t vramUsed = 0, vramBudget = 0;
+        st::render::Get().VideoMemory(vramUsed, vramBudget);
 
         
         char fpsStr[32];
@@ -126,7 +127,7 @@ void st::App::DevUIMenuBar() {
         // next to the frame rate whenever it is not the ordinary case.
         if (st::PlayControl::Get().State() != st::PlayState::Playing)
             sceneStr += "  [" + std::string(st::ToString(st::PlayControl::Get().State())) + "]";
-        std::string vramStr = "VRAM: " + std::to_string(vram.usage / 1024 / 1024) + "/" + std::to_string(vram.budget / 1024 / 1024) + "MB";
+        std::string vramStr = "VRAM: " + std::to_string(vramUsed / 1024 / 1024) + "/" + std::to_string(vramBudget / 1024 / 1024) + "MB";
 
         float textWidth = ImGui::CalcTextSize(fpsStr).x 
                         + ImGui::CalcTextSize(vramStr.c_str()).x 
@@ -291,20 +292,18 @@ void st::App::DevUIAbout(bool *show) {
         }
 
         if (ImGui::BeginTabItem("Simtary")) {
-            if (aboutEngineIcon.IsValid()) {
-                const wi::graphics::Texture& tex = aboutEngineIcon.GetTexture();
-                if (tex.IsValid()) {
-                    const TextureDesc& d = tex.GetDesc();
-                    ImGui::Image((ImTextureID)(uintptr_t)&tex, ImVec2((float)d.width, (float)d.height));
-                }
-            }
+            if (st::render::TextureRef icon = st::render::Get().UI().FromResource(aboutEngineIcon))
+                ImGui::Image((ImTextureID)st::render::Get().ImGuiTexture(*icon), ImVec2((float)icon->width, (float)icon->height));
 
             ImGui::Text("Simtary (HMMWV4)");
             ImGui::Separator();
             ImGui::Text("Version      %s", wi::version::GetVersionString());
             ImGui::Text("Descriptor   %s", wi::version::GetDescriptorString());
-            ImGui::Text("Codename     %s", wi::version::GetCodename());
-            ImGui::Text("Architecture %s", wi::version::GetArchitecture());
+            // The edition is the RUNNING one: a build can carry more than one renderer.
+            const st::render::Caps caps = st::render::Get().GetCaps();
+            ImGui::Text("Codename     %s", caps.codename);
+            ImGui::Text("Architecture %s", caps.architecture);
+            ImGui::Text("Renderer     %s, %s on %s", caps.name, caps.api, caps.basedOn);
             ImGui::Text("Based on Wicked Engine %s", wi::version::GetOGVersionString());
             ImGui::Separator();
 
@@ -334,11 +333,11 @@ void st::App::DevUIRender() {
 
     // Editor mode owns the screen: the dock host plus its own Hierarchy/Properties. The
     // floating DevUI panels below still work and dock into it like any other window.
-    editor_.Draw(*this, renderPath, selectedEntity_);
+    editor_.Draw(*this, GamePath(), selectedEntity_);
 
     if (showBackLog) backlogViewer.render(&showBackLog);
     if (showImguiDemo) ImGui::ShowDemoWindow(&showImguiDemo);
-    if (showGraphicsSettings) graphicsSettings.render(&showGraphicsSettings, renderPath, *this, lensFlare, displaySettings_, projectors_, lasers_, optics_);
+    if (showGraphicsSettings) Graphics().render(&showGraphicsSettings, GamePath(), *this, LensFlare(), displaySettings_, Projectors(), Lasers(), optics_);
     if (showAbout) DevUIAbout(&showAbout);
     if (showSceneManager) DevUISceneManager();
     if (showDayNight) DevUIDayNight();

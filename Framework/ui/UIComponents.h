@@ -35,7 +35,7 @@
 
 #include "wiECS.h"
 #include "wiArchive.h"
-#include "wiResourceManager.h"
+#include "render/api/Renderer.h"
 #include "wiMath.h"
 
 #include <cstdint>
@@ -138,7 +138,7 @@ struct UIImageComponent {
     XMFLOAT4    gradientColor = XMFLOAT4(0, 0, 0, 1);
 
     // runtime
-    wi::Resource _texture;
+    render::TextureRef _texture;
     std::string  _loaded;                         // textureName _texture was loaded for
     XMFLOAT4     _tint = XMFLOAT4(1, 1, 1, 1);    // set by a UIButton driving this graphic
 
@@ -168,7 +168,7 @@ struct UITextComponent {
     XMFLOAT2    spacing = XMFLOAT2(0, 0);         // extra character / line spacing, canvas units
 
     // runtime
-    int         _style = 0;                       // wi::font style id
+    int         _style = 0;                       // render::Draw2D::LoadFont id
     std::string _loadedFont;
     bool        _fontLoaded = false;
     XMFLOAT4    _tint = XMFLOAT4(1, 1, 1, 1);

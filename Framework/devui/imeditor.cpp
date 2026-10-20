@@ -364,6 +364,19 @@ void st::EditorUI::SetEnabled(bool on)
 {
 	if (on == enabled_)
 		return;
+	// The editor's 3D panels are Detroit render paths, and editing is Detroit's job: the
+	//	Hurricanes edition is play-only (EDITIONS.md). Its DevUI windows still work.
+	if (on && st::render::Installed() && st::render::Get().GetCaps().backend != st::render::Backend::Detroit)
+	{
+		static bool said = false;
+		if (!said)
+		{
+			said = true;
+			wi::backlog::post("Editor: not available on " + std::string(st::render::Get().GetCaps().name) +
+			                  " - the editor runs on Detroit (Hurricanes is play-only)", wi::backlog::LogLevel::Warning);
+		}
+		return;
+	}
 	enabled_ = on;
 
 	if (enabled_)
@@ -2515,7 +2528,7 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	//	override. A project that activated a path of its own in OnRenderPathSetup still gets
 	//	the preview (that only needs wi::RenderPath3D), it just has no resolution control -
 	//	there is nowhere to put the override on a path the framework does not own.
-	gameRenderPath_ = (&app.renderPath == &gamePath) ? &app.renderPath : nullptr;
+	gameRenderPath_ = (&app.GamePath() == &gamePath) ? &app.GamePath() : nullptr;
 	ApplyGameViewResolution(true);
 
 	// The Hierarchy's "Save as Template..." and the Resource Explorer's template double-click
@@ -2617,7 +2630,7 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	}
 
 	if (showUIEditor_)
-		uiEditor_.Draw(scene, selected, &history_, gamePath.GetLastPostprocessRT(), &showUIEditor_);
+		uiEditor_.Draw(scene, selected, &history_, st::render::Get().GameImage(), &showUIEditor_);
 
 	DrawCameraViews(scene, selected);
 
@@ -3322,6 +3335,11 @@ void st::EditorUI::DrawTemplatePreviews() {
                 [](const std::unique_ptr<TemplatePreview>& p) { return !p; }),
             templatePreviews_.end());
     }
+}
+
+bool st::EditorUI::SaveTemplatePreviewFrame(const std::string& path) const {
+	const wi::graphics::Texture* t = TemplatePreviewFrame();
+	return t != nullptr && t->IsValid() && wi::helper::saveTextureToFile(*t, path);
 }
 
 void st::EditorUI::RenderTemplatePreviews(float dt) {

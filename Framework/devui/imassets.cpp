@@ -1299,14 +1299,13 @@ void AssetExplorer::DrawInspector () {
 
     RefreshPreview();
     if (previewResource_.IsValid()) {
-        const wi::graphics::Texture& tex = previewResource_.GetTexture();
-        if (tex.IsValid()) {
+        if (render::TextureRef tex = render::Get().UI().FromResource(previewResource_)) {
             const float avail  = ImGui::GetContentRegionAvail().x;
             const float side   = std::min(avail, 240.0f);
-            const float aspect = tex.desc.height ? float(tex.desc.width) / float(tex.desc.height) : 1.0f;
-            ImGui::Image((ImTextureID)&tex,
+            const float aspect = tex->height ? float(tex->width) / float(tex->height) : 1.0f;
+            ImGui::Image((ImTextureID)render::Get().ImGuiTexture(*tex),
                          aspect >= 1.0f ? ImVec2(side, side / aspect) : ImVec2(side * aspect, side));
-            ImGui::TextDisabled("%u x %u", tex.desc.width, tex.desc.height);
+            ImGui::TextDisabled("%u x %u", tex->width, tex->height);
         }
     } else if (previewIsText_) {
         ImGui::InputTextMultiline("##preview", previewText_.data(), previewText_.size(),

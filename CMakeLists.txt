@@ -460,6 +460,41 @@ else()
     message(STATUS "Simtary: BHS not built (bhs/tools/build_bhs.ps1) - --stream disabled.")
 endif()
 
+# Renderers compiled in (EDITIONS.md). Detroit is the engine's own (Wicked) and always there;
+# "Hurricanes" adds the Petrol renderer on Google Filament (libs/filament, submodule pinned to a
+# release tag), built ONCE by tools/build_filament.ps1 into deps/filament-install - its own
+# CMake run with its own flags, the way GNS and BHS are prepared. A run picks one with
+# --renderer=hurricanes (Framework/render/api/Backend.h).
+set(SIMTARY_RENDERERS "Detroit" CACHE STRING "Renderers compiled in: Detroit, optionally Hurricanes (e.g. \"Detroit;Hurricanes\")")
+set(SIMTARY_FILAMENT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/filament-install" CACHE PATH "Filament install (tools/build_filament.ps1)")
+if ("Hurricanes" IN_LIST SIMTARY_RENDERERS)
+    if (EXISTS "${SIMTARY_FILAMENT_DIR}/include/filament/Engine.h")
+        # The runtime libraries only - the tools' own libraries (matc's compiler, image codecs,
+        # gltfio, ...) are not needed to draw.
+        set(_filament_lib_dir "${SIMTARY_FILAMENT_DIR}/lib/x86_64")
+        set(_filament_libs filament backend bluegl bluevk filabridge filaflat utils geometry
+                           ibl-lite smol-v shaders uberarchive mikktspace abseil)
+        add_library(SimtaryFilament INTERFACE IMPORTED GLOBAL)
+        set(_filament_found "")
+        foreach(_lib IN LISTS _filament_libs)
+            if (EXISTS "${_filament_lib_dir}/${_lib}.lib")
+                list(APPEND _filament_found "${_filament_lib_dir}/${_lib}.lib")
+            endif()
+        endforeach()
+        target_link_libraries(SimtaryFilament INTERFACE ${_filament_found} opengl32 gdi32 user32 shlwapi)
+        target_include_directories(SimtaryFilament INTERFACE "${SIMTARY_FILAMENT_DIR}/include")
+        file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/libs/filament/README.md" _filament_ver_line REGEX "filament-android:[0-9]+\\.[0-9]+\\.[0-9]+" LIMIT_COUNT 1)
+        string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" _filament_ver "${_filament_ver_line}")
+        target_compile_definitions(SimtaryFilament INTERFACE SIMTARY_HAS_HURRICANES=1
+                                   ST_FILAMENT_VERSION="${_filament_ver}")
+        set(SIMTARY_FILAMENT_MATC "${SIMTARY_FILAMENT_DIR}/bin/matc.exe" CACHE INTERNAL "Filament material compiler")
+        message(STATUS "Simtary: renderers Detroit + Hurricanes (Filament ${_filament_ver}, ${SIMTARY_FILAMENT_DIR})")
+    else()
+        message(WARNING "SIMTARY_RENDERERS lists Hurricanes but Filament is not installed - run "
+                        "tools/build_filament.ps1 (from PowerShell, not Git Bash). Building Detroit only.")
+    endif()
+endif()
+
 # Model importers: tinygltf (glTF/GLB) + ufbx (FBX/OBJ/MTL)
 # Both are C, and that is why these two were picked over the obvious alternatives.
 # This workspace builds with /EHsc- /GR- and _HAS_EXCEPTIONS=0 (see the app flags

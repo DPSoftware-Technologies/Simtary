@@ -6,9 +6,6 @@
 #include "StTaipan.h"
 
 #include "wiScene.h"
-#include "wiImage.h"
-#include "wiFont.h"
-#include "wiRenderer.h"
 #include "wiBacklog.h"
 
 #include <algorithm>
@@ -18,7 +15,6 @@
 using wi::ecs::Entity;
 using wi::ecs::INVALID_ENTITY;
 using namespace wi::scene;
-using namespace wi::graphics;
 
 namespace tb = st::taipan;
 
@@ -37,16 +33,6 @@ XMFLOAT4 Intersect (const XMFLOAT4& a, const XMFLOAT4& b) {
 bool Inside (const XMFLOAT4& rect, const XMFLOAT4& clip, XMFLOAT2 p) {
     return p.x >= rect.x && p.y >= rect.y && p.x < rect.x + rect.z && p.y < rect.y + rect.w &&
            p.x >= clip.x && p.y >= clip.y && p.x < clip.z && p.y < clip.w;
-}
-
-wi::font::Alignment HAlign (UITextComponent::Align a) {
-    return a == UITextComponent::Align::Start ? wi::font::WIFALIGN_LEFT
-         : a == UITextComponent::Align::End ? wi::font::WIFALIGN_RIGHT : wi::font::WIFALIGN_CENTER;
-}
-
-wi::font::Alignment VAlign (UITextComponent::Align a) {
-    return a == UITextComponent::Align::Start ? wi::font::WIFALIGN_TOP
-         : a == UITextComponent::Align::End ? wi::font::WIFALIGN_BOTTOM : wi::font::WIFALIGN_CENTER;
 }
 
 float AlignFactor (UITextComponent::Align a) {
@@ -129,7 +115,8 @@ void UISystem::Resources (Scene& scene) {
         UIImageComponent& img = images[i];
         if (img._loaded == img.textureName) continue;
         img._loaded = img.textureName;
-        img._texture = img.textureName.empty() ? wi::Resource() : wi::resourcemanager::Load(img.textureName);
+        img._texture = img.textureName.empty() || !render::Installed() ? nullptr
+                     : render::Get().UI().LoadTexture(img.textureName);
     }
     auto& texts = Texts(scene);
     for (size_t i = 0; i < texts.GetCount(); ++i) {
@@ -137,7 +124,7 @@ void UISystem::Resources (Scene& scene) {
         if (t._fontLoaded && t._loadedFont == t.fontName) continue;
         t._fontLoaded = true;
         t._loadedFont = t.fontName;
-        t._style = t.fontName.empty() ? 0 : wi::font::AddFontStyle(t.fontName);
+        t._style = t.fontName.empty() || !render::Installed() ? 0 : render::Get().UI().LoadFont(t.fontName);
     }
 }
 
@@ -718,15 +705,15 @@ Entity UISystem::Pick (Scene& scene, XMFLOAT2 p) const {
 
 namespace {
 
-void DrawImage (const UIImageComponent& img, const UIRectComponent& r, CommandList cmd) {
+void DrawImage (render::Draw2D& d, const UIImageComponent& img, const UIRectComponent& r) {
     XMFLOAT4 col = Mul(img.color, img._tint);
     col.w *= r._opacity;
     if (col.w <= 0.001f || r._pixels.z <= 0 || r._pixels.w <= 0) return;
-    const Texture* tex = img._texture.IsValid() && img._texture.GetTexture().IsValid() ? &img._texture.GetTexture() : nullptr;
+    const render::TextureObject* tex = img._texture.get();
 
     XMFLOAT4 px = r._pixels;
-    const float texW = tex ? (float)tex->desc.width : 1.0f;
-    const float texH = tex ? (float)tex->desc.height : 1.0f;
+    const float texW = tex ? (float)tex->width : 1.0f;
+    const float texH = tex ? (float)tex->height : 1.0f;
     if (tex && (img._flags & UIImageComponent::PRESERVE_ASPECT)) {
         const float aspect = texW / texH;
         if (px.z / px.w > aspect) {
@@ -740,24 +727,20 @@ void DrawImage (const UIImageComponent& img, const UIRectComponent& r, CommandLi
         }
     }
 
-    wi::image::Params p;
+    render::ImageDraw p;
     p.color = col;
-    p.sampleFlag = wi::image::SAMPLEMODE_CLAMP;
-    p.quality = wi::image::QUALITY_LINEAR;
-    p.blendFlag = wi::enums::BLENDMODE_ALPHA;
+    p.texture = tex;
     if (img.gradient != UIImageComponent::Gradient::None) {
-        p.gradient = wi::image::Params::Gradient::Linear;
-        p.gradient_uv_start = XMFLOAT2(0, 0);
-        p.gradient_uv_end = img.gradient == UIImageComponent::Gradient::Horizontal ? XMFLOAT2(1, 0) : XMFLOAT2(0, 1);
+        p.gradient = true;
+        p.gradientFrom = XMFLOAT2(0, 0);
+        p.gradientTo = img.gradient == UIImageComponent::Gradient::Horizontal ? XMFLOAT2(1, 0) : XMFLOAT2(0, 1);
         XMFLOAT4 g = Mul(img.gradientColor, img._tint);
         g.w *= r._opacity;
-        p.gradient_color = g;
+        p.gradientColor = g;
     }
-    auto rounding = [&](wi::image::Params& q, float w, float h) {
+    auto rounding = [&](render::ImageDraw& q, float w, float h) {
         if (img.cornerRadius <= 0) return;
-        const float radius = std::min(img.cornerRadius * r._scale, std::min(w, h) * 0.5f);
-        for (auto& c : q.corners_rounding) c.radius = radius;
-        q.enableCornerRounding();
+        q.cornerRadius = std::min(img.cornerRadius * r._scale, std::min(w, h) * 0.5f);
     };
 
     if (img.type == UIImageComponent::Type::Sliced && tex &&
@@ -774,11 +757,11 @@ void DrawImage (const UIImageComponent& img, const UIRectComponent& r, CommandLi
             for (int i = 0; i < 3; ++i) {
                 const float w = xs[i + 1] - xs[i], h = ys[j + 1] - ys[j];
                 if (w <= 0 || h <= 0) continue;
-                wi::image::Params q = p;
-                q.pos = XMFLOAT3(xs[i], ys[j], 0);
-                q.siz = XMFLOAT2(w, h);
-                q.enableDrawRect(XMFLOAT4(us[i], vs[j], us[i + 1] - us[i], vs[j + 1] - vs[j]));
-                wi::image::Draw(tex, q, cmd);
+                render::ImageDraw q = p;
+                q.rect = XMFLOAT4(xs[i], ys[j], w, h);
+                q.useSource = true;
+                q.source = XMFLOAT4(us[i], vs[j], us[i + 1] - us[i], vs[j + 1] - vs[j]);
+                d.DrawImage(q);
             }
         }
         return;
@@ -801,138 +784,91 @@ void DrawImage (const UIImageComponent& img, const UIRectComponent& r, CommandLi
             px.w = h;
             rect.w = texH * f;
         }
-        p.pos = XMFLOAT3(px.x, px.y, 0);
-        p.siz = XMFLOAT2(px.z, px.w);
-        if (tex) p.enableDrawRect(rect);
+        p.rect = px;
+        if (tex) {
+            p.useSource = true;
+            p.source = rect;
+        }
         rounding(p, px.z, px.w);
-        wi::image::Draw(tex, p, cmd);
+        d.DrawImage(p);
         return;
     }
 
+    p.rect = px;
     p.pivot = r.pivot;
-    p.pos = XMFLOAT3(px.x + r.pivot.x * px.z, px.y + r.pivot.y * px.w, 0);
-    p.siz = XMFLOAT2(px.z, px.w);
     p.rotation = r.rotation;
     rounding(p, px.z, px.w);
-    wi::image::Draw(tex, p, cmd);
+    d.DrawImage(p);
 }
 
-void DrawLabel (const UITextComponent& t, const UIRectComponent& r, CommandList cmd) {
+void DrawLabel (render::Draw2D& d, const UITextComponent& t, const UIRectComponent& r) {
     if (t.text.empty()) return;
     XMFLOAT4 col = Mul(t.color, t._tint);
     col.w *= r._opacity;
     if (col.w <= 0.001f) return;
     const XMFLOAT4& px = r._pixels;
-    wi::font::Params fp;
-    fp.position = XMFLOAT3(px.x + px.z * AlignFactor(t.hAlign), px.y + px.w * AlignFactor(t.vAlign), 0);
+    render::TextDraw fp;
+    fp.text = t.text.c_str();
+    fp.position = XMFLOAT2(px.x + px.z * AlignFactor(t.hAlign), px.y + px.w * AlignFactor(t.vAlign));
     fp.size = std::max(1, (int)std::lround(t.size * r._scale));
-    fp.h_align = HAlign(t.hAlign);
-    fp.v_align = VAlign(t.vAlign);
-    fp.color = wi::Color::fromFloat4(col);
-    fp.style = t._style;
+    fp.hAlign = (render::Align)t.hAlign;
+    fp.vAlign = (render::Align)t.vAlign;
+    fp.color = col;
+    fp.font = t._style;
     fp.bolden = t.bolden;
     fp.softness = t.softness;
-    fp.spacingX = t.spacing.x * r._scale;
-    fp.spacingY = t.spacing.y * r._scale;
+    fp.spacing = XMFLOAT2(t.spacing.x * r._scale, t.spacing.y * r._scale);
     fp.rotation = r.rotation;
-    if (t._flags & UITextComponent::WRAP) fp.h_wrap = px.z;
+    if (t._flags & UITextComponent::WRAP) fp.wrapWidth = px.z;
     if (t._flags & UITextComponent::SHADOW) {
         XMFLOAT4 s = t.shadowColor;
         s.w *= r._opacity;
-        fp.shadowColor = wi::Color::fromFloat4(s);
-        fp.shadow_offset_x = t.shadowOffset.x * r._scale;
-        fp.shadow_offset_y = t.shadowOffset.y * r._scale;
-    } else {
-        fp.shadowColor = wi::Color(0, 0, 0, 0);
+        fp.shadowColor = s;
+        fp.shadowOffset = XMFLOAT2(t.shadowOffset.x * r._scale, t.shadowOffset.y * r._scale);
     }
-    wi::font::Draw(t.text.c_str(), fp, cmd);
-}
-
-void BindClip (const XMFLOAT4& clip, CommandList cmd) {
-    Rect s;
-    s.left = (int32_t)std::max(0.0f, std::floor(clip.x));
-    s.top = (int32_t)std::max(0.0f, std::floor(clip.y));
-    s.right = (int32_t)std::ceil(clip.z);
-    s.bottom = (int32_t)std::ceil(clip.w);
-    if (s.right <= s.left || s.bottom <= s.top) s.right = s.left, s.bottom = s.top;
-    GetDevice()->BindScissorRects(1, &s, cmd);
-}
-
-void BeginTarget (const Texture& target, CommandList cmd, bool clear) {
-    GraphicsDevice* device = GetDevice();
-    const RenderPassImage rp[] = { RenderPassImage::RenderTarget(&target,
-        clear ? RenderPassImage::LoadOp::CLEAR : RenderPassImage::LoadOp::LOAD,
-        RenderPassImage::StoreOp::STORE, target.desc.layout, target.desc.layout) };
-    device->RenderPassBegin(rp, 1, cmd);
-    Viewport vp;
-    vp.width = (float)target.desc.width;
-    vp.height = (float)target.desc.height;
-    device->BindViewports(1, &vp, cmd);
-    wi::Canvas canvas;
-    canvas.init(target.desc.width, target.desc.height, 96.0f);
-    wi::image::SetCanvas(canvas);
-    wi::font::SetCanvas(canvas);
+    d.DrawString(fp);
 }
 
 } // namespace
 
-void UISystem::DrawElement (Scene& scene, Entity e, CommandList cmd, XMUINT2 targetSize) {
+void UISystem::DrawElement (Scene& scene, Entity e, render::Draw2D& d) {
     const UIRectComponent* r = Rects(scene).GetComponent(e);
     if (r == nullptr || !r->_visible || r->_opacity <= 0.001f) return;
     if (r->_clip.z <= r->_clip.x || r->_clip.w <= r->_clip.y) return;
-    BindClip(r->_clip, cmd);
-    if (const UIImageComponent* img = Images(scene).GetComponent(e)) DrawImage(*img, *r, cmd);
+    d.SetScissor(r->_clip);
+    if (const UIImageComponent* img = Images(scene).GetComponent(e)) DrawImage(d, *img, *r);
     if (Documents(scene).Contains(e)) {
-        RmlHost::Get().Render(e, cmd, XMFLOAT2(r->_pixels.x, r->_pixels.y),
+        RmlHost::Get().Render(e, d, XMFLOAT2(r->_pixels.x, r->_pixels.y),
                               Intersect(r->_clip, XMFLOAT4(r->_pixels.x, r->_pixels.y,
-                                                           r->_pixels.x + r->_pixels.z, r->_pixels.y + r->_pixels.w)),
-                              targetSize);
-        BindClip(r->_clip, cmd);
-        Viewport vp;
-        vp.width = (float)targetSize.x;
-        vp.height = (float)targetSize.y;
-        GetDevice()->BindViewports(1, &vp, cmd);
+                                                           r->_pixels.x + r->_pixels.z, r->_pixels.y + r->_pixels.w)));
+        d.SetScissor(r->_clip);
     }
-    if (const UITextComponent* t = Texts(scene).GetComponent(e)) DrawLabel(*t, *r, cmd);
+    if (const UITextComponent* t = Texts(scene).GetComponent(e)) DrawLabel(d, *t, *r);
 }
 
-void UISystem::RenderWorldCanvases (Scene& scene, CommandList cmd) {
+void UISystem::RenderWorldCanvases (Scene& scene, render::Draw2D& d) {
     auto& canvases = Canvases(scene);
-    GraphicsDevice* device = GetDevice();
     std::unordered_set<Entity> live;
     for (Entity canvas : roots_) {
         const UICanvasComponent& c = *canvases.GetComponent(canvas);
         if (c.renderMode != UICanvasComponent::RenderMode::World || c.IsHidden()) continue;
         live.insert(canvas);
         const XMUINT2 size((uint32_t)std::max(1.0f, c.referenceResolution.x), (uint32_t)std::max(1.0f, c.referenceResolution.y));
-        Texture& rt = worldTargets_[canvas];
-        if (!rt.IsValid() || rt.desc.width != size.x || rt.desc.height != size.y) {
-            TextureDesc td;
-            td.width = size.x;
-            td.height = size.y;
-            td.format = Format::R8G8B8A8_UNORM;
-            td.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
-            td.layout = ResourceState::SHADER_RESOURCE;
-            td.clear.color[0] = td.clear.color[1] = td.clear.color[2] = 0;
-            td.clear.color[3] = 1;
-            device->CreateTexture(&td, nullptr, &rt);
-            device->SetName(&rt, "st::ui world canvas");
-        }
-        BeginTarget(rt, cmd, true);
+        render::TextureRef& rt = worldTargets_[canvas];
+        if (!rt || rt->width != size.x || rt->height != size.y) rt = d.CreateRenderTarget(size.x, size.y);
+        if (!rt || !d.Begin(*rt, true, "st::ui world canvas")) continue;
         for (Entity e : order_) {
             const UIRectComponent* r = Rects(scene).GetComponent(e);
-            if (r && r->_canvas == canvas) DrawElement(scene, e, cmd, size);
+            if (r && r->_canvas == canvas) DrawElement(scene, e, d);
         }
-        device->RenderPassEnd(cmd);
+        d.End();
 
         // Shown as the base colour of the canvas object's materials.
         if (const ObjectComponent* o = scene.objects.GetComponent(canvas)) {
             if (const MeshComponent* m = scene.meshes.GetComponent(o->meshID)) {
                 for (const auto& subset : m->subsets) {
                     if (MaterialComponent* mat = scene.materials.GetComponent(subset.materialID)) {
-                        wi::Resource res;
-                        res.SetTexture(rt);
-                        mat->textures[MaterialComponent::BASECOLORMAP].resource = res;
+                        mat->textures[MaterialComponent::BASECOLORMAP].resource = render::Get().ToResource(rt);
                         mat->SetDirty();
                     }
                 }
@@ -943,11 +879,10 @@ void UISystem::RenderWorldCanvases (Scene& scene, CommandList cmd) {
         it = live.count(it->first) ? std::next(it) : worldTargets_.erase(it);
 }
 
-void UISystem::Render (Scene& scene, const Texture* target, CommandList cmd) {
+void UISystem::Render (Scene& scene, render::Draw2D& d, const render::TextureObject* target) {
     if (order_.empty()) return;
-    RenderWorldCanvases(scene, cmd);
-    if (target == nullptr || !target->IsValid() || !has_flag(target->desc.bind_flags, BindFlag::RENDER_TARGET)) return;
-    const XMUINT2 size(target->desc.width, target->desc.height);
+    RenderWorldCanvases(scene, d);
+    if (target == nullptr) return;
     bool any = false;
     for (Entity e : order_) {
         if (!worldElement_.count(e)) {
@@ -955,14 +890,10 @@ void UISystem::Render (Scene& scene, const Texture* target, CommandList cmd) {
             break;
         }
     }
-    if (!any) return;
-    GraphicsDevice* device = GetDevice();
-    device->EventBegin("st::ui screen canvases", cmd);
-    BeginTarget(*target, cmd, false);
+    if (!any || !d.Begin(*target, false, "st::ui screen canvases")) return;
     for (Entity e : order_)
-        if (!worldElement_.count(e)) DrawElement(scene, e, cmd, size);
-    device->RenderPassEnd(cmd);
-    device->EventEnd(cmd);
+        if (!worldElement_.count(e)) DrawElement(scene, e, d);
+    d.End();
 }
 
 void UISystem::Shutdown () {

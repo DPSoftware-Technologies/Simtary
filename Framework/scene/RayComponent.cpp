@@ -1,7 +1,7 @@
 #include "scene/RayComponent.h"
 
 #include "wiScene.h"
-#include "wiRenderer.h"
+#include "render/api/Renderer.h"
 #include "imgui.h"
 
 namespace st {
@@ -59,18 +59,11 @@ void RayComponent::Update(float /*dt*/) {
 	if (everyFrame) Cast();
 
 	if (debugDraw) {
-		wi::renderer::RenderableLine line;
-		line.start = origin_;
-		line.end = hit_.position;
 		// Green when it found something, red when it ran to full range - the two
 		// states a ray you are placing needs to tell apart at a glance.
 		const XMFLOAT4 color = hit_.hit ? XMFLOAT4(0.2f, 1.0f, 0.3f, 1.0f) : XMFLOAT4(1.0f, 0.3f, 0.2f, 1.0f);
-		line.color_start = color;
-		line.color_end = color;
-		// wi::renderer keeps debug lines in a plain global vector with no lock, so the one
-		// unsafe line here is handed to the main thread rather than dropping the whole
-		// component out of the parallel pass. It still lands this frame.
-		RunOnMainThread([line] { wi::renderer::DrawLine(line); });
+		// Thread safe: the renderer queues it and draws it this frame.
+		st::render::DebugLine(origin_, hit_.position, color);
 	}
 }
 

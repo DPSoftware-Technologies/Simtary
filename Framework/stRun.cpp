@@ -6,6 +6,7 @@
 #include "Simtary.h"
 #include "sdl2.h"
 #include "stRun.h"
+#include "render/api/Backend.h"
 #include "crash/CrashHandler.h"
 #include "io/UserData.h"
 #include "io/LogFormat.h"
@@ -279,7 +280,10 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
 #ifdef __ANDROID__
     windowFlags |= SDL_WINDOW_FULLSCREEN; // the activity's surface is the whole screen
 #endif
-    if (graphicsAPI == st::GraphicsAPI::Vulkan)
+    // A Hurricanes run (--renderer=hurricanes) gives the window to Filament, not to Wicked's
+    // device, so it is a plain window whatever the saved backend says.
+    const bool hurricanes = st::render::ChosenBackend() == st::render::Backend::Hurricanes;
+    if (graphicsAPI == st::GraphicsAPI::Vulkan && !hurricanes)
         windowFlags |= SDL_WINDOW_VULKAN;
 
     sdl2::window_ptr_t window = g_headless ? sdl2::window_ptr_t(nullptr, SDL_DestroyWindow) : sdl2::make_window(
@@ -352,6 +356,12 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
         application.CreateHeadlessDevice();
         application.SetHeadless(1280, 720);
         printf("Headless: no window, null graphics device\n");
+    } else if (hurricanes) {
+        // Wicked runs everything but drawing on the null device, as the headless server does;
+        // the Hurricanes renderer (Filament) takes the real GPU on this window in App::Initialize.
+        application.CreateHeadlessDevice();
+        application.SetWindow(window.get());
+        printf("Hurricanes: Wicked on the null device, Filament draws\n");
     } else {
         application.CreateGraphicsDevice(graphicsAPI, window.get());
         application.SetWindow(window.get());

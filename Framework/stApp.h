@@ -40,6 +40,8 @@
 #include "render/Laser.h"
 #include "render/Optics.h"
 #include "render/GraphicsAPI.h"
+#include "render/detroit/DetroitRenderer.h"
+#include "render/hurricanes/HurricanesRenderer.h"
 #include "display/DisplaySettings.h"
 #include "io/SettingsManager.h"
 #include "io/asset/AssetSystem.h"
@@ -50,7 +52,6 @@
 #include <SDL_events.h>
 #include <string>
 
-using namespace wi::graphics;
 
 namespace st {
 
@@ -188,10 +189,13 @@ class App : public wi::Application {
 public:
     App();
 
-    st::ProjectorRenderPath renderPath;
     SceneManager     sceneManager;
     ZmqHandler       zmqHandler;
-    st::LensFlare    lensFlare;
+
+    // The game's render path (Detroit: a wi::RenderPath3D carrying the projector pass). The
+    //	editor's Game Viewport shows it; a project tunes it in OnRenderPathSetup.
+    st::ProjectorRenderPath& GamePath() { return renderer_->GamePath(); }
+    st::LensFlare& LensFlare() { return renderer_->LensFlare(); }
 
     // Square/rectangular image projection with projector optics. Not a LightComponent:
     // the engine's spot light is a cone by construction, so a mask texture on one
@@ -202,7 +206,7 @@ public:
     //
     //   ProjectorSystem::ID id = st::ProjectorSystem::Get().Add(projector);
     //   st::ProjectorSystem::Get().Find(id)->intensity = 12.0f;
-    st::ProjectorSystem& Projectors() { return projectors_; }
+    st::ProjectorSystem& Projectors() { return renderer_->Projectors(); }
 
     // Traced laser beams: millimetre-thin shafts that bounce off mirrors, bend
     // through lenses, stop on the first surface they meet, and leave a fading trail
@@ -214,7 +218,7 @@ public:
     //
     //   LaserSystem::ID id = st::LaserSystem::Get().Add(laser);
     //   st::LaserSystem::Get().Path(id)->hit.entity;   // what the beam is on
-    st::LaserSystem& Lasers() { return lasers_; }
+    st::LaserSystem& Lasers() { return renderer_->Lasers(); }
 
     // The mirrors and lenses those beams travel through. Separate from the lasers
     // because one mirror serves every beam in the scene. See Framework/render/Optics.h.
@@ -266,7 +270,7 @@ public:
     // The engine graphics options (AO, shadows, post processing, tonemapping,
     // upscaling). Editor mode reads these to render its extra viewports through the
     // same renderer the game uses - see GraphicsSettings::MirrorTo.
-    GraphicsSettings& Graphics() { return graphicsSettings; }
+    GraphicsSettings& Graphics() { return renderer_->Graphics(); }
 
     // assets
     // Mounted asset packages. Mount more at runtime (DLC, a patch pack), look an asset
@@ -387,12 +391,7 @@ protected:
     void RequestQuit() { isStop = true; }
 
 private:
-    Shader        imguiVS, imguiPS;
-    Sampler       sampler;
-    InputLayout   imguiInputLayout;
-    PipelineState imguiPSO;
     BacklogViewer backlogViewer;
-    GraphicsSettings graphicsSettings;
     DisplaySettings  displaySettings_;
     bool             xrVsyncOff_ = false;   // XR session forced the desktop v-sync off
 
@@ -412,25 +411,18 @@ private:
     // Loads/unloads AOT Faust processors, played through the engine OpenAL stream.
     st::audio::FaustManager faustManager;
 
-    // Reached through Projectors(); the framework drives Init/Bind/Update itself.
-    st::ProjectorSystem projectors_;
-
-    // Reached through Optics() and Lasers(). Declared in this order deliberately: the
-    // laser system traces through the optics, so the optics must outlive it, and
-    // members are destroyed in reverse declaration order.
+    // Reached through Optics(). CPU only (the beams and virtual projectors are the
+    //	renderer's), and declared before renderer_ on purpose: the laser system traces
+    //	through the optics, so the optics must outlive it - members are destroyed in
+    //	reverse declaration order.
     st::OpticsSystem optics_;
-    st::LaserSystem lasers_;
-
-    Texture fontTexture;
 
     // Lazily-loaded icon shown in the About window; held so its texture stays alive.
     wi::Resource aboutEngineIcon;
 
-    void ImGui_CreateDeviceObjects();
     ImGui_Impl_Data* ImGui_GetBackendData();
 
     void ImguiInit(SDL_Window *window);
-    void ImguiCompose(wi::graphics::CommandList cmd);
     void ImguiUpdate();
     void ImguiExit();
 
@@ -450,6 +442,14 @@ private:
     // Editor mode. Owns the second render path + free camera, so it has to outlive any
     // single frame; st::App::Exit() tears it down.
     EditorUI editor_;
+    // st::render on Wicked: made with the app (so the accessors above always have something
+    //	to return), installed as st::render::Get() in Initialize once the device exists. It
+    //	owns the game path, lens flare, projectors, lasers and the ImGui backend.
+    std::unique_ptr<st::render::detroit::DetroitRenderer> renderer_;
+    // --renderer=hurricanes (a build with SIMTARY_RENDERERS containing Hurricanes): Filament
+    //	draws and is st::render::Get(); renderer_ above keeps running on the null device, so the
+    //	Detroit-only accessors still have an object to hand out.
+    std::unique_ptr<st::render::hurricanes::HurricanesRenderer> hurricanes_;
 
     // Asset Explorer (DevUI). Holds the import tray across frames, so a dropped file
     // survives until the package is written.
@@ -471,24 +471,8 @@ private:
     bool showInputActions = false;
     bool showScriptConsole = false;
 
-    bool STDDBoneLines = false;
-    bool STDDCameras = false;
-    bool STDDColliders = false;
-    bool STDDEmitters = false;
-    bool STDDEnvProbes = false;
-    bool STDDForceFields = false;
-    bool STDDPartitionTree = false;
-    bool STDDSprings = false;
-
-    bool STDVoxelHelper = false;
-    bool STDGridHelper = false;
-    int STDGridHelper_clipmap_level = 1;
-
-    struct DevRenderFlagsState {
-        bool BoneLines, Cameras, Colliders, Emitters, EnvProbes, ForceFields, PartitionTree, Springs;
-    } lastState{};
-
-    bool flagsChangedThisFrame = false;
+    // DevUI > Render > Debug; handed to the renderer every frame (it applies changes only).
+    st::render::DebugOverlays debugOverlays_;
 
 
     // Entity selected in the Hierarchy window; the Properties window inspects it.

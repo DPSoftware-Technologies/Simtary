@@ -1,7 +1,6 @@
 #include "ui/UIRml.h"
 #include "ui/UIComponents.h"
 
-#include "wiRenderer.h"
 #include "wiResourceManager.h"
 #include "wiHelper.h"
 #include "wiBacklog.h"
@@ -20,7 +19,6 @@
 #include <vector>
 
 using wi::ecs::Entity;
-using namespace wi::graphics;
 
 namespace st::ui {
 
@@ -86,105 +84,35 @@ private:
     };
 };
 
-struct UiConstants {
-    XMFLOAT4X4 transform;
-    XMFLOAT4   flags;
-};
+// RmlUi's renderer is render::Draw2D: compiled triangle lists, textures, a scissor and a
+//	transform - nothing here touches the GPU itself.
+static_assert(sizeof(Rml::Vertex) == sizeof(render::Vertex2D), "Rml::Vertex and render::Vertex2D must match");
 
 class RenderInterface final : public Rml::RenderInterface {
 public:
-    bool Create () {
-        if (!wi::renderer::LoadShader(ShaderStage::VS, vs_, "StUiVS.cso") ||
-            !wi::renderer::LoadShader(ShaderStage::PS, ps_, "StUiPS.cso")) {
-            wi::backlog::post("[RmlUi] StUiVS.cso / StUiPS.cso missing from " + wi::renderer::GetShaderPath() +
-                              " - UI documents will not draw", wi::backlog::LogLevel::Error);
-            return false;
-        }
-        layout_.elements = {
-            { "POSITION", 0, Format::R32G32_FLOAT,   0, (uint32_t)offsetof(Rml::Vertex, position),  InputClassification::PER_VERTEX_DATA },
-            { "COLOR",    0, Format::R8G8B8A8_UNORM, 0, (uint32_t)offsetof(Rml::Vertex, colour),    InputClassification::PER_VERTEX_DATA },
-            { "TEXCOORD", 0, Format::R32G32_FLOAT,   0, (uint32_t)offsetof(Rml::Vertex, tex_coord), InputClassification::PER_VERTEX_DATA },
-        };
-        PipelineStateDesc psd;
-        psd.vs  = &vs_;
-        psd.ps  = &ps_;
-        psd.il  = &layout_;
-        psd.dss = wi::renderer::GetDepthStencilState(wi::enums::DSSTYPE_DEPTHDISABLED);
-        psd.rs  = wi::renderer::GetRasterizerState(wi::enums::RSTYPE_DOUBLESIDED);
-        psd.bs  = wi::renderer::GetBlendState(wi::enums::BSTYPE_PREMULTIPLIED);
-        psd.pt  = PrimitiveTopology::TRIANGLELIST;
-        GraphicsDevice* device = GetDevice();
-        device->CreatePipelineState(&psd, &pso_);
-
-        SamplerDesc samp;
-        samp.address_u = samp.address_v = samp.address_w = TextureAddressMode::CLAMP;
-        samp.filter = Filter::MIN_MAG_MIP_LINEAR;
-        device->CreateSampler(&samp, &sampler_);
-
-        const uint32_t white = 0xFFFFFFFFu;
-        TextureDesc td;
-        td.width = td.height = 1;
-        td.format = Format::R8G8B8A8_UNORM;
-        td.bind_flags = BindFlag::SHADER_RESOURCE;
-        SubresourceData sd;
-        sd.data_ptr = &white;
-        sd.row_pitch = 4;
-        device->CreateTexture(&td, &sd, &white_);
-        return pso_.IsValid();
-    }
+    bool Create () { return render::Installed() && render::Get().UI().GeometryReady(); }
 
     // What the draws of one document need, set by RmlHost::Render around ctx->Render().
-    void Begin (CommandList cmd, XMFLOAT2 offset, XMFLOAT4 clip, XMUINT2 target) {
-        cmd_ = cmd;
-        active_ = true;
+    void Begin (render::Draw2D& draw, XMFLOAT2 offset, XMFLOAT4 clip) {
+        draw_ = &draw;
         offset_ = offset;
         clip_ = clip;
         scissorOn_ = false;
         hasTransform_ = false;
-        proj_ = XMMatrixOrthographicOffCenterLH(0, (float)target.x, (float)target.y, 0, -1, 1);
-        GraphicsDevice* device = GetDevice();
-        Viewport vp;
-        vp.width = (float)target.x;
-        vp.height = (float)target.y;
-        device->BindViewports(1, &vp, cmd);
-        device->BindPipelineState(&pso_, cmd);
-        device->BindSampler(&sampler_, 0, cmd);
     }
 
     Rml::CompiledGeometryHandle CompileGeometry (Rml::Span<const Rml::Vertex> vertices,
                                                  Rml::Span<const int> indices) override {
-        if (vertices.empty() || indices.empty()) return 0;
-        auto geo = std::make_unique<Geometry>();
-        GraphicsDevice* device = GetDevice();
-        GPUBufferDesc vd;
-        vd.size = vertices.size() * sizeof(Rml::Vertex);
-        vd.bind_flags = BindFlag::VERTEX_BUFFER;
-        device->CreateBuffer(&vd, vertices.data(), &geo->vb);
-        GPUBufferDesc id;
-        id.size = indices.size() * sizeof(int);
-        id.bind_flags = BindFlag::INDEX_BUFFER;
-        device->CreateBuffer(&id, indices.data(), &geo->ib);
-        geo->count = (uint32_t)indices.size();
-        return (Rml::CompiledGeometryHandle)geo.release();
+        if (!render::Installed()) return 0;
+        render::GeometryRef geo = render::Get().UI().CompileGeometry(
+            reinterpret_cast<const render::Vertex2D*>(vertices.data()), vertices.size(), indices.data(), indices.size());
+        return geo ? (Rml::CompiledGeometryHandle) new render::GeometryRef(std::move(geo)) : 0;
     }
 
     void RenderGeometry (Rml::CompiledGeometryHandle handle, Rml::Vector2f translation,
                          Rml::TextureHandle texture) override {
-        const Geometry* geo = (const Geometry*)handle;
-        if (geo == nullptr || !active_) return;
-        GraphicsDevice* device = GetDevice();
-
-        // Row-vector order: vertex -> translation -> document transform -> its offset on the
-        //	target -> projection. RmlUi's matrices are column-major for column vectors,
-        //	which is the same memory as a row-major row-vector matrix (see StUiVS.hlsl).
-        XMMATRIX m = XMMatrixTranslation(translation.x, translation.y, 0);
-        if (hasTransform_) m = m * transform_;
-        m = m * XMMatrixTranslation(offset_.x, offset_.y, 0) * proj_;
-        UiConstants c;
-        XMStoreFloat4x4(&c.transform, m);
-        const Tex* tex = (const Tex*)texture;
-        c.flags = XMFLOAT4(tex && !tex->premultiplied ? 1.0f : 0.0f, 0, 0, 0);
-        device->BindDynamicConstantBuffer(c, 0, cmd_);
+        const render::GeometryRef* geo = (const render::GeometryRef*)handle;
+        if (geo == nullptr || draw_ == nullptr) return;
 
         // The scissor: the element's clip, cut further by RmlUi's own region.
         XMFLOAT4 s = clip_;
@@ -195,53 +123,38 @@ public:
             s.w = std::min(s.w, offset_.y + (float)scissor_.Bottom());
         }
         if (s.z <= s.x || s.w <= s.y) return;
-        Rect r;
-        r.left = (int32_t)std::floor(s.x);
-        r.top = (int32_t)std::floor(s.y);
-        r.right = (int32_t)std::ceil(s.z);
-        r.bottom = (int32_t)std::ceil(s.w);
-        device->BindScissorRects(1, &r, cmd_);
+        draw_->SetScissor(s);
 
-        const GPUBuffer* vbs[] = { &geo->vb };
-        const uint32_t strides[] = { sizeof(Rml::Vertex) };
-        const uint64_t offsets[] = { 0 };
-        device->BindVertexBuffers(vbs, 0, 1, strides, offsets, cmd_);
-        device->BindIndexBuffer(&geo->ib, IndexBufferFormat::UINT32, 0, cmd_);
-        device->BindResource(tex ? &tex->texture : &white_, 0, cmd_);
-        device->DrawIndexed(geo->count, 0, 0, cmd_);
+        // Row-vector order: vertex -> translation -> document transform -> its offset on the target.
+        XMMATRIX m = XMMatrixTranslation(translation.x, translation.y, 0);
+        if (hasTransform_) m = m * transform_;
+        m = m * XMMatrixTranslation(offset_.x, offset_.y, 0);
+        XMFLOAT4X4 toTarget;
+        XMStoreFloat4x4(&toTarget, m);
+        const render::TextureRef* tex = (const render::TextureRef*)texture;
+        draw_->DrawGeometry(**geo, tex ? tex->get() : nullptr, toTarget);
     }
 
-    // The GPU may still be reading a buffer released this frame; the device defers the
+    // The GPU may still be reading a buffer released this frame; the renderer defers the
     //	actual destruction until it is not.
-    void ReleaseGeometry (Rml::CompiledGeometryHandle handle) override { delete (Geometry*)handle; }
+    void ReleaseGeometry (Rml::CompiledGeometryHandle handle) override { delete (render::GeometryRef*)handle; }
 
     Rml::TextureHandle LoadTexture (Rml::Vector2i& dimensions, const Rml::String& source) override {
-        auto tex = std::make_unique<Tex>();
-        tex->resource = wi::resourcemanager::Load(source);
-        if (!tex->resource.IsValid() || !tex->resource.GetTexture().IsValid()) return 0;
-        tex->texture = tex->resource.GetTexture();
-        tex->premultiplied = false;
-        dimensions = Rml::Vector2i((int)tex->texture.desc.width, (int)tex->texture.desc.height);
-        return (Rml::TextureHandle)tex.release();
+        if (!render::Installed()) return 0;
+        render::TextureRef tex = render::Get().UI().LoadTexture(source);
+        if (!tex) return 0;
+        dimensions = Rml::Vector2i((int)tex->width, (int)tex->height);
+        return (Rml::TextureHandle) new render::TextureRef(std::move(tex));
     }
 
     Rml::TextureHandle GenerateTexture (Rml::Span<const Rml::byte> source, Rml::Vector2i dimensions) override {
-        auto tex = std::make_unique<Tex>();
-        TextureDesc td;
-        td.width = (uint32_t)dimensions.x;
-        td.height = (uint32_t)dimensions.y;
-        td.format = Format::R8G8B8A8_UNORM;
-        td.bind_flags = BindFlag::SHADER_RESOURCE;
-        SubresourceData sd;
-        sd.data_ptr = source.data();
-        sd.row_pitch = td.width * 4;
-        sd.slice_pitch = sd.row_pitch * td.height;
-        if (!GetDevice()->CreateTexture(&td, &sd, &tex->texture)) return 0;
-        tex->premultiplied = true;
-        return (Rml::TextureHandle)tex.release();
+        if (!render::Installed()) return 0;
+        render::TextureRef tex = render::Get().UI().CreateTexture(source.data(), (uint32_t)dimensions.x,
+                                                                  (uint32_t)dimensions.y, true);
+        return tex ? (Rml::TextureHandle) new render::TextureRef(std::move(tex)) : 0;
     }
 
-    void ReleaseTexture (Rml::TextureHandle handle) override { delete (Tex*)handle; }
+    void ReleaseTexture (Rml::TextureHandle handle) override { delete (render::TextureRef*)handle; }
 
     void EnableScissorRegion (bool enable) override { scissorOn_ = enable; }
     void SetScissorRegion (Rml::Rectanglei region) override { scissor_ = region; }
@@ -255,30 +168,12 @@ public:
         }
     }
 
-    void End () { active_ = false; }
+    void End () { draw_ = nullptr; }
 
 private:
-    struct Geometry {
-        GPUBuffer vb, ib;
-        uint32_t  count = 0;
-    };
-    struct Tex {
-        Texture      texture;
-        wi::Resource resource;
-        bool         premultiplied = true;
-    };
-
-    Shader vs_, ps_;
-    InputLayout layout_;
-    PipelineState pso_;
-    Sampler sampler_;
-    Texture white_;
-
-    CommandList cmd_;
-    bool active_ = false;
+    render::Draw2D* draw_ = nullptr;
     XMFLOAT2 offset_ = XMFLOAT2(0, 0);
     XMFLOAT4 clip_ = XMFLOAT4(0, 0, 0, 0);
-    XMMATRIX proj_ = XMMatrixIdentity();
     XMMATRIX transform_ = XMMatrixIdentity();
     bool hasTransform_ = false;
     bool scissorOn_ = false;
@@ -505,11 +400,11 @@ void RmlHost::Update () {
     for (auto& kv : impl_->docs) kv.second.context->Update();
 }
 
-void RmlHost::Render (Entity e, CommandList cmd, XMFLOAT2 offset, XMFLOAT4 clip, XMUINT2 target) {
+void RmlHost::Render (Entity e, render::Draw2D& draw, XMFLOAT2 offset, XMFLOAT4 clip) {
     if (!impl_) return;
     auto it = impl_->docs.find(e);
     if (it == impl_->docs.end() || it->second.document == nullptr) return;
-    impl_->render.Begin(cmd, offset, clip, target);
+    impl_->render.Begin(draw, offset, clip);
     it->second.context->Render();
     impl_->render.End();
 }

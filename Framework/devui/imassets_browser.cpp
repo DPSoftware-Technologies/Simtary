@@ -300,7 +300,7 @@ void AssetExplorer::RowContextMenu (const Row& row) {
     ImGui::EndPopup();
 }
 
-const wi::graphics::Texture* AssetExplorer::Thumbnail (const Row& row) {
+const render::TextureObject* AssetExplorer::Thumbnail (const Row& row) {
     if (row.type != asset::AssetType::Image && row.type != asset::AssetType::Texture) return nullptr;
     auto it = thumbs_.find(row.id);
     if (it == thumbs_.end()) {
@@ -317,7 +317,8 @@ const wi::graphics::Texture* AssetExplorer::Thumbnail (const Row& row) {
                                                        entry->bytes.data(), entry->bytes.size());
         else
             thumb.resource = wi::resourcemanager::Load(row.path); // resolves through the mounted package
-        thumb.failed = !thumb.resource.IsValid() || !thumb.resource.GetTexture().IsValid();
+        thumb.texture = render::Get().UI().FromResource(thumb.resource);
+        thumb.failed = !thumb.texture;
         it = thumbs_.emplace(row.id, std::move(thumb)).first;
 
         // Bounded: past this many, drop the one drawn least recently.
@@ -333,7 +334,7 @@ const wi::graphics::Texture* AssetExplorer::Thumbnail (const Row& row) {
     }
     it->second.lastUsed = frame_;
     if (it->second.failed) return nullptr;
-    return &it->second.resource.GetTexture();
+    return it->second.texture.get();
 }
 
 void AssetExplorer::RebuildTree (const std::vector<Row>& rows) {
@@ -477,13 +478,13 @@ void AssetExplorer::DrawTiles (const std::vector<Row>& rows) {
                 const float is = tile - pad * 2.0f;
                 if (isFolder) {
                     DrawFolderIcon(dl, ip, is);
-                } else if (const wi::graphics::Texture* tex = Thumbnail(*row)) {
-                    const float aspect = tex->desc.height ? float(tex->desc.width) / float(tex->desc.height) : 1.0f;
+                } else if (const render::TextureObject* tex = Thumbnail(*row)) {
+                    const float aspect = tex->height ? float(tex->width) / float(tex->height) : 1.0f;
                     const ImVec2 sz = aspect >= 1.0f ? ImVec2(is, is / aspect) : ImVec2(is * aspect, is);
                     const ImVec2 a(ip.x + (is - sz.x) * 0.5f, ip.y + (is - sz.y) * 0.5f);
                     dl->AddRectFilled(ImVec2(a.x - 1, a.y - 1), ImVec2(a.x + sz.x + 1, a.y + sz.y + 1),
                                       Col(0.1f, 0.1f, 0.1f), 2.0f);
-                    dl->AddImage((ImTextureID)tex, a, ImVec2(a.x + sz.x, a.y + sz.y));
+                    dl->AddImage((ImTextureID)render::Get().ImGuiTexture(*tex), a, ImVec2(a.x + sz.x, a.y + sz.y));
                 } else if (IsModelLike(row->type)) {
                     DrawModelIcon(dl, ip, is, row->type == asset::AssetType::Scene);
                 } else {

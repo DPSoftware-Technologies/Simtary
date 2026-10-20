@@ -39,7 +39,7 @@
 #include "wiBacklog.h"
 #include "wiInput.h"
 #include "wiPhysics.h"
-#include "wiRenderer.h"
+#include "render/api/Renderer.h"
 #include "wiScene.h"
 
 #include <algorithm>
@@ -1274,11 +1274,7 @@ void DrawLineImpl (tb::Call* call, const tb::Vec3& a, const tb::Vec3& b, int col
     const tb::Rgba c = (tb::ArgCount(call) > colorArg && tb::ArgType(call, colorArg) == tb::Type::Color)
                            ? tb::ArgColor(call, colorArg) : tb::Rgba{ 1, 1, 1, 1 };
     if (tb::Failed(call)) return;
-    wi::renderer::RenderableLine line;
-    line.start = X(a);
-    line.end = X(b);
-    line.color_start = line.color_end = XMFLOAT4(c.r, c.g, c.b, c.a);
-    wi::renderer::DrawLine(line);
+    st::render::DebugLine(X(a), X(b), XMFLOAT4(c.r, c.g, c.b, c.a));
 }
 
 void DebugDrawLine (tb::Call* call, void*) {

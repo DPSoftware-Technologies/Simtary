@@ -2,8 +2,8 @@
 // UIRml - RmlUi (libs/RmlUi) behind UIDocumentComponent.
 //
 // One Rml::Context per document entity, sized to the element's rect in pixels, drawn
-// inside that rect by a render interface on the engine's graphics device (shaders
-// assets/shaders/StUi{VS,PS}.hlsl). The canvas places the rect; everything inside it is
+// inside that rect through render::Draw2D (compiled geometry; the Detroit backend's shaders
+// are assets/shaders/StUi{VS,PS}.hlsl). The canvas places the rect; everything inside it is
 // RmlUi's: layout, RCSS styling, transitions, animations, data.
 //
 // What RmlUi sees of the engine:
@@ -26,7 +26,7 @@
 // never uses one. No exceptions, no RTTI.
 
 #include "wiECS.h"
-#include "wiGraphicsDevice.h"
+#include "render/api/Renderer.h"
 #include "wiMath.h"
 
 #include <functional>
@@ -60,9 +60,8 @@ public:
     // Per frame, after input: RmlUi layout, animation, data bindings.
     void Update ();
     // Draw the document of `e` with its top-left at `offset` (target pixels), cut to
-    //	`clip` (x0, y0, x1, y1). Call inside a render pass on a target of `targetSize`.
-    void Render (wi::ecs::Entity e, wi::graphics::CommandList cmd, XMFLOAT2 offset,
-                 XMFLOAT4 clip, XMUINT2 targetSize);
+    //	`clip` (x0, y0, x1, y1). Call between draw.Begin() and draw.End().
+    void Render (wi::ecs::Entity e, render::Draw2D& draw, XMFLOAT2 offset, XMFLOAT4 clip);
 
     // Input, in the document's own pixels. Each returns true when RmlUi used it.
     bool PointerMove (wi::ecs::Entity e, XMFLOAT2 local);

@@ -402,6 +402,54 @@ function(simtary_add_app)
         list(APPEND _compile_targets ${_framework_target} ${_gamecode_target})
     endif()
 
+    # The render boundary (EDITIONS.md, Phase 1): Framework code outside the Detroit-only
+    # list must not reach into Wicked's renderer - checked before the framework compiles,
+    # again whenever any of its sources changes. Game code is reported, never refused.
+    file(GLOB_RECURSE _boundary_inputs CONFIGURE_DEPENDS ${SIMTARY_FRAMEWORK_DIR}/*.inl)
+    set(_boundary_script "${SIMTARY_FRAMEWORK_DIR}/../cmake/SimtaryRenderBoundary.cmake")
+    set(_boundary_stamp "${CMAKE_CURRENT_BINARY_DIR}/${APP_NAME}_render_boundary.stamp")
+    add_custom_command(
+        OUTPUT "${_boundary_stamp}"
+        COMMAND ${CMAKE_COMMAND} -DFRAMEWORK_DIR=${SIMTARY_FRAMEWORK_DIR} -DAPP_DIR=${APP_SOURCE_DIR}
+                -DSTAMP=${_boundary_stamp} -P ${_boundary_script}
+        DEPENDS ${_framework_sources} ${_boundary_inputs} ${_app_sources} ${_boundary_script}
+        COMMENT "Checking the render boundary (Framework/render/api)"
+        VERBATIM)
+    add_custom_target(${APP_NAME}_RenderBoundary DEPENDS "${_boundary_stamp}")
+    add_dependencies(${_framework_target} ${APP_NAME}_RenderBoundary)
+
+    # Hurricanes (Filament) materials: Framework/render/hurricanes/materials/*.mat compiled by
+    # matc into <exe>/shaders/filament/*.filamat, which HurricanesRenderer loads at startup.
+    # Filament's public headers need C++20 (designated initializers); the workspace is C++17.
+    # Only the translation units that include them are built as C++20 - MSVC's C++17 and C++20
+    # objects link together, and nothing Filament-typed crosses the HurricanesRenderer.h boundary.
+    if (TARGET SimtaryFilament)
+        file(GLOB _filament_tus CONFIGURE_DEPENDS ${SIMTARY_FRAMEWORK_DIR}/render/hurricanes/*.cpp)
+        set_source_files_properties(${_filament_tus} TARGET_DIRECTORY ${_framework_target}
+            PROPERTIES COMPILE_OPTIONS "$<IF:$<CXX_COMPILER_ID:MSVC>,/std:c++20,-std=c++20>")
+    endif()
+    if (TARGET SimtaryFilament AND EXISTS "${SIMTARY_FILAMENT_MATC}")
+        file(GLOB _filament_mats CONFIGURE_DEPENDS ${SIMTARY_FRAMEWORK_DIR}/render/hurricanes/materials/*.mat)
+        set(_filamats "")
+        foreach(_mat IN LISTS _filament_mats)
+            get_filename_component(_mat_name "${_mat}" NAME_WE)
+            set(_out "${CMAKE_CURRENT_BINARY_DIR}/filament_materials/${_mat_name}.filamat")
+            add_custom_command(
+                OUTPUT "${_out}"
+                COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/filament_materials"
+                COMMAND "${SIMTARY_FILAMENT_MATC}" -p desktop -a opengl -o "${_out}" "${_mat}"
+                DEPENDS "${_mat}"
+                COMMENT "matc ${_mat_name}.mat"
+                VERBATIM)
+            list(APPEND _filamats "${_out}")
+        endforeach()
+        add_custom_target(${APP_NAME}_FilamentMaterials ALL DEPENDS ${_filamats}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${APP_NAME}>/shaders/filament"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_filamats} "$<TARGET_FILE_DIR:${APP_NAME}>/shaders/filament/"
+            VERBATIM)
+        add_dependencies(${APP_NAME} ${APP_NAME}_FilamentMaterials)
+    endif()
+
     # Where the editor writes a saved map's raw resources (Framework/devui/imeditor.cpp).
     # A SOURCE-tree path, and that is the point: the running game sits in the build
     # output, while the folder the packer merges from is beside the project's assets, so
@@ -540,6 +588,7 @@ function(simtary_add_app)
         OpenAL          # openal-soft; also linked PUBLIC by Simtary_common (stAudio.cpp)
         libgfx          # software 2D rasterizer (GFX.h); propagates its include dir + GFXSDL
         RmlUi::RmlUi    # game UI documents (Framework/ui); core + debugger, FreeType fonts
+        $<$<TARGET_EXISTS:SimtaryFilament>:SimtaryFilament>   # Hurricanes renderer (SIMTARY_RENDERERS)
         ${APP_EXTRA_LIBS}
     )
     if (TARGET SimtaryOpenXR)

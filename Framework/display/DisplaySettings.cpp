@@ -2,6 +2,7 @@
 
 #include "stRun.h"
 #include "stream/StreamHost.h"
+#include "render/api/Renderer.h"
 
 #include "Simtary.h"
 #include "imgui.h"
@@ -431,9 +432,9 @@ void DisplaySettings::GUI(wi::Application& app) {
             ImGui::EndCombo();
         }
 
-        if (const wi::graphics::GraphicsDevice* device = wi::graphics::GetDevice())
+        if (st::render::Installed() && !st::render::Get().AdapterName().empty())
             ImGui::TextDisabled("Running %s on %s", GraphicsAPIName(running),
-                                device->GetAdapterName().c_str());
+                                st::render::Get().AdapterName().c_str());
         else
             ImGui::TextDisabled("Running %s", GraphicsAPIName(running));
 

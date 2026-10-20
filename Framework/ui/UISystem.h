@@ -31,7 +31,7 @@
 // Main thread only. No exceptions, no RTTI.
 
 #include "ui/UIComponents.h"
-#include "wiGraphicsDevice.h"
+#include "render/api/Renderer.h"
 
 #include <cstdint>
 #include <functional>
@@ -65,8 +65,9 @@ public:
 
     void SetPointer (const Pointer& pointer) { pointer_ = pointer; }
     void Update (wi::scene::Scene& scene, float dt, XMUINT2 targetSize, bool interactive);
-    // `target` is the game's final image; its resting layout is kept.
-    void Render (wi::scene::Scene& scene, const wi::graphics::Texture* target, wi::graphics::CommandList cmd);
+    // World canvases into their own targets, then the screen canvases onto `target` (the
+    //	game's final image, render::Renderer::GameImage(); null skips them).
+    void Render (wi::scene::Scene& scene, render::Draw2D& draw, const render::TextureObject* target);
     void Shutdown ();
 
     // The pointer is over an element that takes it - the game should ignore this click.
@@ -136,9 +137,8 @@ private:
     void Notify (wi::scene::Scene& scene, UIEvent::Kind kind, wi::ecs::Entity sender,
                  const std::string& value, const void* args, int argc, bool toListeners);
     void PointerEvents (wi::scene::Scene& scene, bool pressedEdge, bool releasedEdge);
-    void DrawElement (wi::scene::Scene& scene, wi::ecs::Entity e, wi::graphics::CommandList cmd,
-                      XMUINT2 targetSize);
-    void RenderWorldCanvases (wi::scene::Scene& scene, wi::graphics::CommandList cmd);
+    void DrawElement (wi::scene::Scene& scene, wi::ecs::Entity e, render::Draw2D& draw);
+    void RenderWorldCanvases (wi::scene::Scene& scene, render::Draw2D& draw);
 
     Pointer  pointer_;
     bool     prevDown_ = false;
@@ -159,7 +159,7 @@ private:
     wi::ecs::Entity downElement_ = wi::ecs::INVALID_ENTITY;  // got "down", gets "up"
     std::vector<Sub> subs_;
 
-    std::unordered_map<wi::ecs::Entity, wi::graphics::Texture> worldTargets_;
+    std::unordered_map<wi::ecs::Entity, render::TextureRef> worldTargets_;
     std::vector<std::pair<int, std::function<void(const UIEvent&)>>> listeners_;
     int nextListener_ = 1;
     std::unordered_set<std::string> warned_;
