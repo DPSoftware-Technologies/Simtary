@@ -1,6 +1,6 @@
 <mxfile host="Electron">
   <diagram name="Page-1" id="ep05gKC2Wc3iRYgmiyIH">
-    <mxGraphModel dx="817" dy="486" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="982" dy="584" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -129,13 +129,13 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="WDuG_2rc_qCI_SFRrD5D-16" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Caterpillar" vertex="1">
+        <mxCell id="WDuG_2rc_qCI_SFRrD5D-16" parent="1" style="rounded=0;whiteSpace=wrap;html=1;strokeColor=light-dark(#000000,#575757);" value="Caterpillar" vertex="1">
           <mxGeometry height="35" width="80" x="280" y="420" as="geometry" />
         </mxCell>
         <mxCell id="WDuG_2rc_qCI_SFRrD5D-24" edge="1" parent="1" source="WDuG_2rc_qCI_SFRrD5D-17" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="WDuG_2rc_qCI_SFRrD5D-20">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="WDuG_2rc_qCI_SFRrD5D-17" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Gumin" vertex="1">
+        <mxCell id="WDuG_2rc_qCI_SFRrD5D-17" parent="1" style="rounded=0;whiteSpace=wrap;html=1;strokeColor=light-dark(#000000,#575757);" value="Gumin" vertex="1">
           <mxGeometry height="35" width="80" x="400" y="420" as="geometry" />
         </mxCell>
         <mxCell id="WDuG_2rc_qCI_SFRrD5D-23" edge="1" parent="1" source="WDuG_2rc_qCI_SFRrD5D-18" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="WDuG_2rc_qCI_SFRrD5D-20">
@@ -146,7 +146,7 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="WDuG_2rc_qCI_SFRrD5D-18" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="Guratra" vertex="1">
+        <mxCell id="WDuG_2rc_qCI_SFRrD5D-18" parent="1" style="rounded=0;whiteSpace=wrap;html=1;strokeColor=light-dark(#000000,#575757);" value="Guratra" vertex="1">
           <mxGeometry height="35" width="80" x="518" y="420" as="geometry" />
         </mxCell>
         <mxCell id="WDuG_2rc_qCI_SFRrD5D-21" edge="1" parent="1" source="WDuG_2rc_qCI_SFRrD5D-19" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="WDuG_2rc_qCI_SFRrD5D-20">
@@ -163,7 +163,7 @@
         <mxCell id="WDuG_2rc_qCI_SFRrD5D-37" edge="1" parent="1" source="WDuG_2rc_qCI_SFRrD5D-20" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="WDuG_2rc_qCI_SFRrD5D-32">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="WDuG_2rc_qCI_SFRrD5D-20" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="SDL2/3, OpenAL+SteamAudio, Faust, ImGui, CEF, LVGL, LinuxGFX, Vulkan, OpenGL, DirectX, Metal, Jolt, Project Chrono, JSBSim, Phymodizer, Lua, Python/uPy, Nodejs and more...." vertex="1">
+        <mxCell id="WDuG_2rc_qCI_SFRrD5D-20" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="SDL2/3, OpenAL+SteamAudio, Faust, ImGui, CEF, LVGL, LinuxGFX, Vulkan, OpenGL, DirectX, Metal, Jolt, Project Chrono, JSBSim, Phymodizer, Lua,&amp;nbsp; Python/uPy, Nodejs and more...." vertex="1">
           <mxGeometry height="60" width="560" x="160" y="495" as="geometry" />
         </mxCell>
         <mxCell id="WDuG_2rc_qCI_SFRrD5D-38" edge="1" parent="1" source="WDuG_2rc_qCI_SFRrD5D-32" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="WDuG_2rc_qCI_SFRrD5D-34">
@@ -189,7 +189,7 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="SC80WF_kExiq0ctvcJhb-3" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="GEPA" vertex="1">
+        <mxCell id="SC80WF_kExiq0ctvcJhb-3" parent="1" style="rounded=0;whiteSpace=wrap;html=1;strokeColor=light-dark(#000000,#575757);" value="GEPA" vertex="1">
           <mxGeometry height="35" width="80" x="40" y="420" as="geometry" />
         </mxCell>
         <mxCell id="SC80WF_kExiq0ctvcJhb-11" edge="1" parent="1" source="SC80WF_kExiq0ctvcJhb-7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;fillColor=#a20025;strokeColor=#6F0000;" target="WDuG_2rc_qCI_SFRrD5D-18">
