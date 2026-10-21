@@ -186,6 +186,7 @@ bool NetSession::StartHost () {
     localClientId_ = nextClientId_++;
     vehicles_ = std::make_unique<VehicleSync>(*this);
     Replication::Get().OnSessionStarted(*this);
+    NotifyPlayer(localClientId_, true);
     Log("integrated server \"" + config_.name + "\" started (local player #" + std::to_string(localClientId_) +
         ", not open to the network)");
     return true;
@@ -238,6 +239,7 @@ void NetSession::DropRemotePeers (const char* reason) {
     for (const Peer& p : peers_) {
         if (p.clientId != 0 && vehicles_) vehicles_->OnPlayerLeft(p.clientId);
         if (p.clientId != 0) Replication::Get().OnPlayerLeft(p.clientId);
+        if (p.clientId != 0) NotifyPlayer(p.clientId, false);
         if (transport_) transport_->Close(p.connection, reason);
     }
     peers_.clear();
@@ -402,6 +404,7 @@ void NetSession::Kick (uint32_t clientId, const char* reason) {
             transport_->Close(p.connection, reason);
             if (vehicles_) vehicles_->OnPlayerLeft(clientId);
             Replication::Get().OnPlayerLeft(clientId);
+            NotifyPlayer(clientId, false);
             peers_.erase(std::remove_if(peers_.begin(), peers_.end(),
                 [&](const Peer& x) { return x.clientId == clientId; }), peers_.end());
             return;
@@ -432,13 +435,40 @@ void NetSession::Broadcast (const Writer& w, Delivery d) {
     }
 }
 
+bool NetSession::SendToClient (uint32_t clientId, const Writer& w, Delivery d) {
+    if (!IsServer() || !transport_ || clientId == 0) return false;
+    for (const Peer& p : peers_) {
+        if (p.clientId != clientId) continue;
+        transport_->Send(p.connection, w.Bytes().data(), w.Bytes().size(), d);
+        return true;
+    }
+    return false;
+}
+
+int NetSession::AddPlayerListener (PlayerListener fn) {
+    playerListeners_.emplace_back(nextPlayerListener_, std::move(fn));
+    return nextPlayerListener_++;
+}
+
+void NetSession::RemovePlayerListener (int handle) {
+    playerListeners_.erase(std::remove_if(playerListeners_.begin(), playerListeners_.end(),
+                                          [handle](const auto& l) { return l.first == handle; }), playerListeners_.end());
+}
+
+void NetSession::NotifyPlayer (uint32_t clientId, bool joined) {
+    const auto listeners = playerListeners_;   // a listener may remove itself
+    for (const auto& l : listeners) l.second(clientId, joined);
+}
+
 void NetSession::Dispatch (const Event& e, Peer* from) {
     Reader r(e.data);
     const uint8_t type = r.U8();
     if (type >= 10 && type < 20) {
         if (vehicles_) vehicles_->OnMessage(e.connection, type, r);
-    } else if (type >= 20 && type < 40) {
+    } else if (type >= 20 && type < 30) {
         Replication::Get().OnMessage(from != nullptr ? from->clientId : 0, type, r);
+    } else if (type >= 30 && type < 40) {
+        if (scriptSink_) scriptSink_(from != nullptr ? from->clientId : 0, type, r);
     } else if (type >= kFirstGameMessage && handlers_[type]) {
         handlers_[type](from != nullptr ? from->clientId : 0, r);
     }
@@ -459,6 +489,7 @@ void NetSession::OnServerEvent (const Event& e) {
             Log((!p->name.empty() ? p->name : std::to_string(e.connection)) + " left (" + e.reason + ")");
             if (p->clientId != 0 && vehicles_) vehicles_->OnPlayerLeft(p->clientId);
             if (p->clientId != 0) Replication::Get().OnPlayerLeft(p->clientId);
+            if (p->clientId != 0) NotifyPlayer(p->clientId, false);
             peers_.erase(std::remove_if(peers_.begin(), peers_.end(),
                 [&](const Peer& x) { return x.connection == e.connection; }), peers_.end());
             break;
@@ -499,6 +530,7 @@ void NetSession::OnServerEvent (const Event& e) {
             Log(p->name + " joined as client " + std::to_string(p->clientId));
             if (vehicles_) vehicles_->OnPlayerJoined(p->clientId, e.connection);
             Replication::Get().OnPlayerJoined(p->clientId, e.connection);
+            NotifyPlayer(p->clientId, true);
             break;
         }
     }
@@ -655,6 +687,25 @@ void NetSession::RegisterBridge () {
         [](const st::json::Value& a, std::string& err) {
             if (!Replication::Get().Despawn(wi::ecs::Entity(a["id"].AsNumber()))) { err = "not a replicated object here, or not the server"; return st::json::Value(); }
             return st::json::Value(true);
+        });
+    st::dev::EditorBridge::Get().Register("net.var", "{id, name, value?} -> server: set a NetVar (number / bool / string); any: read it",
+        [](const st::json::Value& a, std::string& err) {
+            const wi::ecs::Entity e = wi::ecs::Entity(a["id"].AsNumber());
+            const std::string name = a["name"].AsString();
+            const st::json::Value& v = a["value"];
+            if (!v.IsNull()) {
+                NetValue nv;
+                if (v.IsBool()) { nv.type = NetValue::Type::Bool; nv.b = v.AsBool(); }
+                else if (v.IsNumber()) { nv.type = NetValue::Type::Float; nv.f = v.AsNumber(); }
+                else { nv.type = NetValue::Type::String; nv.s = v.AsString(); }
+                if (!Replication::Get().SetVar(e, name, nv)) { err = "not a replicated object here, or not the server"; return st::json::Value(); }
+            }
+            const NetValue* got = Replication::Get().GetVar(e, name);
+            if (got == nullptr) return st::json::Value();
+            if (got->type == NetValue::Type::Bool) return st::json::Value(got->b);
+            if (got->type == NetValue::Type::Float) return st::json::Value(got->f);
+            if (got->type == NetValue::Type::Int) return st::json::Value(double(got->i));
+            return st::json::Value(got->s);
         });
     st::dev::EditorBridge::Get().Register("net.owner", "{id, owner} -> server: give a replicated object to a client (0 = server)",
         [](const st::json::Value& a, std::string& err) {

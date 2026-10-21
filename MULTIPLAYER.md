@@ -206,6 +206,43 @@ whichever side registers first. Found on the way: the Windows headless server fa
 `setvbuf(stdout, nullptr, _IOLBF, 0)` (MSVC rejects it) - now unbuffered on Windows. A headless
 server only builds terrain around its camera/vehicles: objects elsewhere fall through.
 
+**Step 2 done**: state for layer / light / metadata / name components (archived at 10 Hz, re-sent
+when the bytes change; a placed object's first archive is not sent - the client's map already
+has it) and NetVars (`Replication::SetVar / GetVar / AddVarListener`, bridge `net.var`).
+State and vars that arrive before a client's copy of the object has started wait for it
+(`pendingNet_`). Verified: a metadata change and two NetVars reach a client, also when its
+object registers late. Note: metadata carries native components (`NCI_*`), so a component the
+server attaches at runtime appears on clients too.
+
+**Step 3 done**: `script/NetBindings.*` (Net.* in Taipan, see the header) and stScript
+`runOn` (Everywhere / Server only / Client only). Script events are message types 30/31
+(NetSession's script sink; replication keeps 20..29). Verified with `nettest.tp`: a client's
+`Net.FireServer("Ping", "hello", 3, Vector3, self)` reached the server handler with the sender
+id and name, the server's `Net.FireAllClients` reached the client, and `OnPlayerJoined` fired for
+a second client. Offline and on a host, events are delivered in place.
+
+**Step 4 done**: `dev/NetPlay.*` - editor toolbar "Net Play" (+ clients 1..4), bridge `net.play
+{clients, serverWindow} | {stop}`. Saves the open scene to `<exe>/netplay/netplay.stsd` through
+`EditorUI::SaveSceneCopy` (the editor keeps its own document path), starts this exe as a headless
+server (`--scene-file=... --server=27100 --devbridge-port=57240`) and N clients (`--connect=127.0.0.1:27100
+--name=PlayerN --devbridge-port=57240+N`); Stop / editor exit terminates them. New argument
+`--scene-file=<map>` starts in any map file. Verified: from vehicletest in the editor, two clients
+joined, each with a vehicle, and a client renders both. Windows only (CreateProcess).
+
+**Step 5 done**: `net/NetPlayerSpawnComponent.cpp` ("stNetPlayerSpawn": template, spacing,
+localOnly) - on the server every joining player (and a host's own) gets a copy of the template,
+owned by that player with transform authority, removed when the player leaves. `stNetObject` /
+`Replication::Options` gained `localOnly`: native components that run only on the owner's machine
+(input, cameras, HUD, controller), switched through the NCE_ enable flags - which are now each
+machine's own (metadata state replication keeps the local NCE_ keys). Spawn messages carry the
+options, so clients know them. Verified with two clients and Milistry's `Player.sttd`: one soldier
+per player, each client has authority over its own, all three machines agree on positions, and a
+`localOnly` component is on for the owner and off on the other client.
+
+Still open for players: a soldier template built on `stCharacter` (Player.sttd is the older
+`PlayerMovement` rig) and walking it with real input across the network; moving vehicles from
+VehicleSync onto replication.
+
 Goal: Roblox's "build it once and it is multiplayer". v1 synchronises vehicles only; anything
 else is a hand-written game message. v2 makes ANY entity replicable, gives Taipan scripts a
 networking API, and lets the editor start a server plus clients on one PC. Built on what v1

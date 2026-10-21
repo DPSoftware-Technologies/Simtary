@@ -24,6 +24,12 @@ public:
         Raw(s.data(), n);
     }
 
+    // u32 length, then the bytes (an archive, a file).
+    void Blob (const void* p, size_t n) {
+        U32(uint32_t(n));
+        Raw(p, n);
+    }
+
     const std::vector<uint8_t>& Bytes () const { return bytes_; }
 
 private:
@@ -51,6 +57,15 @@ public:
         std::string s(reinterpret_cast<const char*>(p_), n);
         p_ += n;
         return s;
+    }
+
+    // Counterpart of Writer::Blob. Points into the message: valid while it is.
+    const uint8_t* Blob (size_t& n) {
+        n = U32();
+        if (!ok_ || size_t(end_ - p_) < n) { ok_ = false; n = 0; return nullptr; }
+        const uint8_t* at = p_;
+        p_ += n;
+        return at;
     }
 
     bool ok () const { return ok_; }

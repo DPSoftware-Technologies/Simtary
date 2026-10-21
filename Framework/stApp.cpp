@@ -16,6 +16,7 @@
 #include "net/NetSession.h"
 #include "stream/StreamHost.h"
 #include "stRun.h"
+#include "scene/FileScene.h"
 #include "render/api/Backend.h"
 #include "wiEventHandler.h"
 #include "wiGraphicsDevice_Null.h"
@@ -430,9 +431,20 @@ void st::App::Initialize() {
 
     // Load the starting scene immediately so entities exist before the first
     // frame's scene->Update() runs.
-    if (!Config().startupScene.empty()) {
+    // --scene-file=<map>: start in a map file that is not in the scene folder (the editor's
+    // Net Play saves the open scene to one and starts servers / clients on it).
+    std::string startupScene = Config().startupScene;
+    {
+        std::string sceneFile;
+        if ((wi::arguments::GetArgumentValue("--scene-file=", sceneFile) || wi::arguments::GetArgumentValue("scene-file=", sceneFile)) &&
+            !sceneFile.empty()) {
+            sceneManager.Register("scene-file", std::make_unique<st::FileScene>(sceneFile));
+            startupScene = "scene-file";
+        }
+    }
+    if (!startupScene.empty()) {
         m_loadingScreen.SetStatusText("loading scene");
-        sceneManager.Load(Config().startupScene);
+        sceneManager.Load(startupScene);
         sceneManager.Update(0.0f); // flush pendingLoad_ now, not on the first Update
     }
 

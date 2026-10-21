@@ -22,6 +22,16 @@ constexpr float kKeyframeInterval = 1.0f;       // everything re-sent, unchanged
 constexpr double kInterpDelay = 0.1;            // clients play back this far behind the server
 constexpr size_t kMaxSamples = 32;
 constexpr size_t kMaxPerMessage = 256;
+constexpr float kStateInterval = 0.1f;          // component state, server -> clients
+
+// The components replicated as state: the ones that hold no entity references, so their bytes
+//	mean the same thing on every machine. Index = what MsgNetState carries.
+const char* const kStateComponents[4] = {
+    "wi::scene::Scene::layers",      // visibility
+    "wi::scene::Scene::lights",
+    "wi::scene::Scene::metadatas",   // native component parameters, EntityGUID
+    "wi::scene::Scene::names",
+};
 
 void Log (const std::string& s, wi::backlog::LogLevel level = wi::backlog::LogLevel::Default) {
     wi::backlog::post("[net] " + s, level);
@@ -110,6 +120,50 @@ bool NetTransform::Read (Reader& r) {
     return r.ok();
 }
 
+// ---------------------------------------------------------------------- values ---
+
+void NetValue::Write (Writer& w) const {
+    w.U8(uint8_t(type));
+    switch (type) {
+    case Type::Nil: break;
+    case Type::Bool: w.U8(b ? 1 : 0); break;
+    case Type::Int: w.U32(uint32_t(uint64_t(i) >> 32)); w.U32(uint32_t(i)); break;
+    case Type::Float: w.F64(f); break;
+    case Type::String: w.Str(s); break;
+    case Type::Vector2: w.F32(v[0]); w.F32(v[1]); break;
+    case Type::Vector3: w.F32(v[0]); w.F32(v[1]); w.F32(v[2]); break;
+    case Type::Quaternion:
+    case Type::Color: w.F32(v[0]); w.F32(v[1]); w.F32(v[2]); w.F32(v[3]); break;
+    }
+}
+
+bool NetValue::Read (Reader& r) {
+    *this = NetValue();
+    type = Type(r.U8());
+    switch (type) {
+    case Type::Nil: break;
+    case Type::Bool: b = r.U8() != 0; break;
+    case Type::Int: {
+        const uint64_t hi = r.U32(), lo = r.U32();
+        i = int64_t((hi << 32) | lo);
+        break;
+    }
+    case Type::Float: f = r.F64(); break;
+    case Type::String: s = r.Str(); break;
+    case Type::Vector2: v[0] = r.F32(); v[1] = r.F32(); break;
+    case Type::Vector3: v[0] = r.F32(); v[1] = r.F32(); v[2] = r.F32(); break;
+    case Type::Quaternion:
+    case Type::Color: v[0] = r.F32(); v[1] = r.F32(); v[2] = r.F32(); v[3] = r.F32(); break;
+    default: return false;
+    }
+    return r.ok();
+}
+
+bool NetValue::operator== (const NetValue& o) const {
+    return type == o.type && b == o.b && i == o.i && f == o.f && s == o.s &&
+           v[0] == o.v[0] && v[1] == o.v[1] && v[2] == o.v[2] && v[3] == o.v[3];
+}
+
 // ---------------------------------------------------------------------- basics ---
 
 Replication& Replication::Get () {
@@ -166,7 +220,30 @@ bool Replication::Drives (const Object& o) const {
 
 // Something this machine does not drive must not simulate either: its rigid body becomes
 //	kinematic (moved by the transform the network gives it) until that changes.
+// Components that belong to whoever owns the object (input, camera, HUD, controller): on on the
+//	owner's machine (and offline), off everywhere else. Written as the NCE_ enable flags, which
+//	state replication leaves to each machine.
+void Replication::UpdateLocalOnly (Object& o) {
+    if (o.options.localOnly.empty()) return;
+    const bool online = session_ != nullptr && session_->IsOnline();
+    const int want = (!online || (o.owner != 0 && o.owner == LocalPlayer())) ? 1 : 0;
+    if (want == o.localOnlyState) return;
+    wi::scene::Scene& scene = wi::scene::GetScene();
+    wi::scene::MetadataComponent* m = scene.metadatas.GetComponent(o.entity);
+    if (m == nullptr) return;   // its metadata may not be in yet - try again next frame
+    o.localOnlyState = want;
+    const std::string list = "," + o.options.localOnly + ",";
+    for (size_t i = 0; i < m->string_values.names.size(); ++i) {
+        const std::string& key = m->string_values.names[i];
+        if (key.rfind("NCI_", 0) != 0) continue;
+        const std::string name = m->string_values.get(i);
+        if (list.find("," + name + ",") == std::string::npos) continue;
+        m->bool_values.set("NCE_" + key.substr(4), want == 1);
+    }
+}
+
 void Replication::UpdateProxy (Object& o) {
+    UpdateLocalOnly(o);
     wi::scene::Scene& scene = wi::scene::GetScene();
     wi::scene::RigidBodyPhysicsComponent* rb = scene.rigidbodies.GetComponent(o.entity);
     const bool want = rb != nullptr && o.options.syncTransform && !Drives(o);
@@ -210,14 +287,19 @@ void Replication::WriteSpawn (Writer& w, const Object& o) const {
     w.U32(o.owner);
     const wi::scene::TransformComponent* t = wi::scene::GetScene().transforms.GetComponent(o.entity);
     (t ? NetTransform::From(*t) : NetTransform()).Write(w);
+    w.U8(uint8_t((o.options.syncTransform ? 1 : 0) | (o.options.ownerAuthority ? 2 : 0)));
+    w.Str(o.options.localOnly);
 }
 
 // ---------------------------------------------------------------------- objects ---
 
 void Replication::Register (Entity e, const Options& options) {
     if (e == INVALID_ENTITY) return;
-    if (Object* o = Find(e)) {   // spawned through the network: its stNetObject only adds options
-        o->options = options;
+    if (Object* o = Find(e)) {   // spawned through the network: its stNetObject adds to the spawn's options
+        o->options.syncTransform = options.syncTransform;
+        o->options.ownerAuthority = o->options.ownerAuthority || options.ownerAuthority;
+        if (!options.localOnly.empty()) o->options.localOnly = options.localOnly;
+        o->localOnlyState = -1;
         o->registered = true;
         UpdateProxy(*o);
         return;
@@ -242,7 +324,21 @@ void Replication::Register (Entity e, const Options& options) {
         }
     }
     objects_.push_back(o);
+    if (objects_.back().bound) Bound(objects_.back());
     UpdateProxy(objects_.back());
+}
+
+void Replication::Bound (Object& o) {
+    auto it = pendingNet_.find(o.netId);
+    if (it == pendingNet_.end()) return;
+    Pending p = std::move(it->second);
+    pendingNet_.erase(it);
+    for (uint8_t c = 0; c < 4; ++c)
+        if (!p.state[c].empty()) ApplyState(o, c, p.state[c].data(), p.state[c].size());
+    for (const auto& kv : p.vars) {
+        o.vars[kv.first] = kv.second;
+        FireVar(o.entity, kv.first, kv.second);
+    }
 }
 
 void Replication::Unregister (Entity e) {
@@ -278,7 +374,8 @@ Entity Replication::Instantiate (const std::string& path, const NetTransform& t)
     return root;
 }
 
-Entity Replication::Spawn (const std::string& templatePath, const XMFLOAT3& position, const XMFLOAT4& rotation, uint32_t owner) {
+Entity Replication::Spawn (const std::string& templatePath, const XMFLOAT3& position, const XMFLOAT4& rotation, uint32_t owner,
+                           const Options* options) {
     if (session_ != nullptr && session_->IsOnline() && !IsServer()) {
         Log("Spawn: only the server spawns network objects", wi::backlog::LogLevel::Warning);
         return INVALID_ENTITY;
@@ -294,6 +391,7 @@ Entity Replication::Spawn (const std::string& templatePath, const XMFLOAT3& posi
     o.owner = owner;
     o.templatePath = templatePath;
     o.registered = true;
+    if (options) o.options = *options;
     objects_.push_back(o);
     if (IsServer()) {
         Writer w(MsgNetSpawn);
@@ -322,6 +420,7 @@ bool Replication::SetOwner (Entity e, uint32_t owner) {
     Object* o = Find(e);
     if (o == nullptr || (session_ && session_->IsOnline() && !IsServer())) return false;
     o->owner = owner;
+    o->localOnlyState = -1;
     if (IsServer() && o->netId != 0) {
         Writer w(MsgNetOwner);
         w.U32(o->netId);
@@ -331,6 +430,46 @@ bool Replication::SetOwner (Entity e, uint32_t owner) {
     o->samples.clear();
     UpdateProxy(*o);
     return true;
+}
+
+bool Replication::SetVar (Entity e, const std::string& name, const NetValue& value) {
+    Object* o = Find(e);
+    if (o == nullptr || name.empty() || (session_ && session_->IsOnline() && !IsServer())) return false;
+    auto it = o->vars.find(name);
+    if (it != o->vars.end() && it->second == value) return true;
+    o->vars[name] = value;
+    if (IsServer() && o->netId != 0) {
+        Writer w(MsgNetVar);
+        w.U32(o->netId);
+        w.Str(name);
+        value.Write(w);
+        Broadcast(w, Delivery::Reliable);
+    }
+    FireVar(e, name, value);
+    return true;
+}
+
+const NetValue* Replication::GetVar (Entity e, const std::string& name) const {
+    const Object* o = Find(e);
+    if (o == nullptr) return nullptr;
+    auto it = o->vars.find(name);
+    return it != o->vars.end() ? &it->second : nullptr;
+}
+
+int Replication::AddVarListener (VarListener fn) {
+    varListeners_.emplace_back(nextListener_, std::move(fn));
+    return nextListener_++;
+}
+
+void Replication::RemoveVarListener (int handle) {
+    varListeners_.erase(std::remove_if(varListeners_.begin(), varListeners_.end(),
+                                       [handle](const auto& l) { return l.first == handle; }), varListeners_.end());
+}
+
+void Replication::FireVar (Entity e, const std::string& name, const NetValue& v) {
+    // A copy: a listener may add or remove listeners.
+    const auto listeners = varListeners_;
+    for (const auto& l : listeners) l.second(e, name, v);
 }
 
 uint32_t Replication::NetId (Entity e) const {
@@ -373,6 +512,7 @@ void Replication::OnSessionStarted (NetSession& session) {
     epoch_ = Now();
     haveOffset_ = false;
     pendingByKey_.clear();
+    pendingNet_.clear();
     if (IsServer()) {
         AssignServerIds();
     } else {
@@ -406,6 +546,7 @@ void Replication::OnSessionEnded () {
         scene.Entity_Remove(e);
     }
     pendingByKey_.clear();
+    pendingNet_.clear();
 }
 
 void Replication::OnPlayerJoined (uint32_t, ConnectionId connection) {
@@ -424,6 +565,25 @@ void Replication::OnPlayerJoined (uint32_t, ConnectionId connection) {
         }
     }
     keyframeTimer_ = kKeyframeInterval;   // next send is a full one
+    // Component state and NetVars as they are now.
+    for (const Object& o : objects_) {
+        if (o.netId == 0) continue;
+        for (uint8_t c = 0; c < 4; ++c) {
+            if (o.lastState[c].empty()) continue;
+            Writer w(MsgNetState);
+            w.U32(o.netId);
+            w.U8(c);
+            w.Blob(o.lastState[c].data(), o.lastState[c].size());
+            SendTo(connection, w, Delivery::Reliable);
+        }
+        for (const auto& kv : o.vars) {
+            Writer w(MsgNetVar);
+            w.U32(o.netId);
+            w.Str(kv.first);
+            kv.second.Write(w);
+            SendTo(connection, w, Delivery::Reliable);
+        }
+    }
 }
 
 void Replication::OnPlayerLeft (uint32_t clientId) {
@@ -456,6 +616,7 @@ void Replication::OnMessage (uint32_t from, uint8_t type, Reader& r) {
                     o.netId = netId;
                     o.owner = owner;
                     o.bound = true;
+                    Bound(o);
                     UpdateProxy(o);
                     return;
                 }
@@ -469,6 +630,12 @@ void Replication::OnMessage (uint32_t from, uint8_t type, Reader& r) {
             const uint32_t owner = r.U32();
             NetTransform t;
             if (!t.Read(r) || FindNet(netId) != nullptr) return;
+            Options options;
+            const uint8_t flags = r.U8();
+            options.syncTransform = flags & 1;
+            options.ownerAuthority = (flags & 2) != 0;
+            options.localOnly = r.Str();
+            if (!r.ok()) return;
             const Entity root = Instantiate(path, t);
             if (root == INVALID_ENTITY) return;
             Object* existing = Find(root);   // the template's own stNetObject may have registered already
@@ -481,13 +648,19 @@ void Replication::OnMessage (uint32_t from, uint8_t type, Reader& r) {
             existing->netId = netId;
             existing->owner = owner;
             existing->templatePath = path;
+            existing->options.syncTransform = options.syncTransform;
+            existing->options.ownerAuthority = existing->options.ownerAuthority || options.ownerAuthority;
+            if (!options.localOnly.empty()) existing->options.localOnly = options.localOnly;
+            existing->localOnlyState = -1;
             existing->bound = true;   // placed where the server had it; transforms follow
+            Bound(*existing);
             UpdateProxy(*existing);
             return;
         }
         case MsgNetDespawn: {
             const uint32_t netId = r.U32();
             if (!r.ok()) return;
+            pendingNet_.erase(netId);
             auto it = std::find_if(objects_.begin(), objects_.end(), [netId](const Object& o) { return o.netId == netId; });
             if (it == objects_.end()) return;
             const Entity e = it->entity;
@@ -523,8 +696,32 @@ void Replication::OnMessage (uint32_t from, uint8_t type, Reader& r) {
             if (!r.ok()) return;
             if (Object* o = FindNet(netId)) {
                 o->owner = owner;
+                o->localOnlyState = -1;
                 o->samples.clear();
                 UpdateProxy(*o);
+            }
+            return;
+        }
+        case MsgNetState: {
+            const uint32_t netId = r.U32();
+            const uint8_t component = r.U8();
+            size_t n = 0;
+            const uint8_t* bytes = r.Blob(n);
+            if (!r.ok() || component >= 4) return;
+            if (Object* o = FindNet(netId)) ApplyState(*o, component, bytes, n);
+            else pendingNet_[netId].state[component].assign(bytes, bytes + n);
+            return;
+        }
+        case MsgNetVar: {
+            const uint32_t netId = r.U32();
+            const std::string name = r.Str();
+            NetValue v;
+            if (!v.Read(r)) return;
+            if (Object* o = FindNet(netId)) {
+                o->vars[name] = v;
+                FireVar(o->entity, name, v);
+            } else {
+                pendingNet_[netId].vars[name] = v;
             }
             return;
         }
@@ -559,6 +756,11 @@ void Replication::Update (float dt) {
     if (send) sendTimer_ = 0;
 
     if (IsServer()) {
+        stateTimer_ += dt;
+        if (stateTimer_ >= kStateInterval) {
+            stateTimer_ = 0;
+            ServerSendState(false);
+        }
         if (send) {
             const bool keyframe = keyframeTimer_ >= kKeyframeInterval;
             if (keyframe) keyframeTimer_ = 0;
@@ -604,6 +806,61 @@ void Replication::ServerSendTransforms (bool keyframe) {
             }
             SendTo(p.connection, w, Delivery::Unreliable);
         }
+    }
+}
+
+void Replication::ServerSendState (bool force) {
+    wi::scene::Scene& scene = wi::scene::GetScene();
+    for (Object& o : objects_) {
+        if (o.netId == 0) continue;
+        for (uint8_t c = 0; c < 4; ++c) {
+            auto it = scene.componentLibrary.entries.find(kStateComponents[c]);
+            if (it == scene.componentLibrary.entries.end() || !it->second.component_manager) continue;
+            wi::Archive archive;
+            wi::ecs::EntitySerializer seri;
+            seri.allow_remap = false;
+            seri.version = it->second.version;
+            seri.library_versions[it->first] = it->second.version;
+            it->second.component_manager->Component_Serialize(o.entity, archive, seri);
+            std::vector<uint8_t> bytes(archive.GetData(), archive.GetData() + archive.GetPos());
+            if (!force && bytes == o.lastState[c]) continue;
+            const bool first = o.lastState[c].empty();
+            o.lastState[c] = std::move(bytes);
+            // A client that loaded the same map already has the placed object's components
+            //	as they were saved: the first archive of one only matters once it differs.
+            if (first && o.templatePath.empty() && !force) continue;
+            Writer w(MsgNetState);
+            w.U32(o.netId);
+            w.U8(c);
+            w.Blob(o.lastState[c].data(), o.lastState[c].size());
+            Broadcast(w, Delivery::Reliable);
+        }
+    }
+}
+
+void Replication::ApplyState (Object& o, uint8_t component, const uint8_t* data, size_t size) {
+    wi::scene::Scene& scene = wi::scene::GetScene();
+    auto it = scene.componentLibrary.entries.find(kStateComponents[component]);
+    if (it == scene.componentLibrary.entries.end() || !it->second.component_manager || data == nullptr) return;
+    wi::ecs::ComponentManager_Interface& manager = *it->second.component_manager;
+    // Enable flags (NCE_) are each machine's own - local-only components differ per machine.
+    std::vector<std::pair<std::string, bool>> enables;
+    if (component == 2)
+        if (const wi::scene::MetadataComponent* m = scene.metadatas.GetComponent(o.entity))
+            for (size_t i = 0; i < m->bool_values.names.size(); ++i)
+                if (m->bool_values.names[i].rfind("NCE_", 0) == 0) enables.push_back({ m->bool_values.names[i], m->bool_values.get(i) });
+    // Component_Serialize creates the component when reading: the old one goes first.
+    if (manager.Contains(o.entity)) manager.Remove(o.entity);
+    wi::Archive archive(data, size);
+    wi::ecs::EntitySerializer seri;
+    seri.allow_remap = false;
+    seri.version = it->second.version;
+    seri.library_versions[it->first] = it->second.version;
+    manager.Component_Serialize(o.entity, archive, seri);
+    if (component == 2) {
+        if (wi::scene::MetadataComponent* m = scene.metadatas.GetComponent(o.entity))
+            for (const auto& kv : enables) m->bool_values.set(kv.first, kv.second);
+        o.localOnlyState = -1;
     }
 }
 

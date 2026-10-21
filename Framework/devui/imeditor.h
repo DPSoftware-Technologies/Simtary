@@ -75,6 +75,10 @@ class App;
 
 class EditorUI {
 public:
+    // A copy somewhere else (NetPlay's temp map): the editor's own document path is kept.
+    //	False when nothing was written (Play mode refuses saves).
+    bool SaveSceneCopy(wi::scene::Scene& scene, const std::string& path);
+
     bool IsEnabled() const { return enabled_; }
     // The Game Viewport's game image this frame (screen pixels); false when the panel is
     // not showing it. `hovered`: the pointer is on the image.
@@ -236,6 +240,7 @@ private:
     // Dispatches on the extension: ".wiscene" writes a plain wi::Archive, anything
     // else (including no extension) writes the native .stsd.
     void SaveScene(wi::scene::Scene& scene, const std::string& path);
+
     bool SaveSceneArchive(wi::scene::Scene& scene, const std::string& path);
     // `project` (optional) becomes the descriptor's project tag - how a .sttd says it is a template.
     bool SaveSceneDescriptor(wi::scene::Scene& scene, const std::string& path,
@@ -451,6 +456,8 @@ private:
     // scene save
     std::string saveDefaultExt_ = "stsd";  // what Save As appends to a bare name
     std::string scenePath_;        // last saved/chosen path this scene; "" until the first save
+    int  netPlayClients_ = 2;      // toolbar "Net Play"
+    bool netPlayServerWindow_ = false;
     std::string mapSaveConfirmPath_;  // the confirm popup is up for this map ("" = closed)
     bool        mapSaveConfirmOpen_ = false; // open it on the next frame
     App*        app_ = nullptr;    // captured in Draw(): the scene manager is how a scene's map is found

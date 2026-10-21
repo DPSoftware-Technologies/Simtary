@@ -18,6 +18,7 @@
 
 #include "dev/EditorBridge.h"
 #include "dev/DevBuild.h"
+#include "dev/NetPlay.h"
 
 #include "stApp.h"
 #include "scene/PlayControl.h"
@@ -1166,6 +1167,14 @@ void EditorBridge::RegisterAll () {
         std::error_code ec;
         return Value(std::filesystem::absolute(path, ec).generic_u8string());
     });
+    Register("net.play", "{clients=2, serverWindow=false} | {stop: true} -> the open scene as a local server + clients (editor's Net Play)",
+        [&app](const Value& a, std::string& err) {
+            st::dev::NetPlay& np = st::dev::NetPlay::Get();
+            if (a["stop"].AsBool()) { np.Stop(); return Value(true); }
+            const int clients = a["clients"].IsNumber() ? int(a["clients"].AsNumber()) : 2;
+            if (!np.Start(app.Editor(), wi::scene::GetScene(), clients, a["serverWindow"].AsBool())) { err = np.LastError(); return Value(); }
+            return Value(true);
+        });
     Register("editor.mode", "{on} -> editor mode on/off", [&app](const Value& a, std::string&) {
         if (a.Has("on")) {
             if (a["on"].AsBool() && !app.IsDevUIVisible()) app.SetDevUIVisible(true);

@@ -27,6 +27,7 @@
 // catchable script error, never a dangling pointer. Components of C++ native classes
 // are their instance pointer, checked against the scene's instance table on each use.
 #include "script/ScriptSystem.h"
+#include "script/NetBindings.h"
 #include "scene/TemplatePool.h"
 #include "ui/UISystem.h"
 #include "ui/UIRml.h"
@@ -1425,6 +1426,7 @@ void SetFixedDeltaTime (tb::VM* vm, float fixedDt) {
 }
 
 void RegisterEngineBindings (tb::VM* vm) {
+    st::script::RegisterNetBindings(vm);   // Net.* (script/NetBindings.h)
     tb::RegisterUnityMath(vm, kGameObject);
 
     // statics: declared once with their kinds; UpdateEngineStatics refreshes them

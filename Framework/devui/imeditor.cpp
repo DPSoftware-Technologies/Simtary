@@ -28,6 +28,8 @@
 #include "wiHelper.h"
 #include "wiBacklog.h"
 #include <SDL.h>
+#include "dev/NetPlay.h"
+#include <filesystem>
 #include "wiEnums.h"
 #include "wiMath.h"
 
@@ -431,8 +433,20 @@ void st::EditorUI::ReleaseRetired()
 	retiredPreviews_.clear();
 }
 
+bool st::EditorUI::SaveSceneCopy(wi::scene::Scene& scene, const std::string& path)
+{
+	const std::string keep = scenePath_;
+	std::error_code ec;
+	const auto before = std::filesystem::exists(path, ec) ? std::filesystem::last_write_time(path, ec)
+	                                                      : std::filesystem::file_time_type::min();
+	SaveScene(scene, path);
+	scenePath_ = keep;
+	return std::filesystem::exists(path, ec) && std::filesystem::last_write_time(path, ec) != before;
+}
+
 void st::EditorUI::Shutdown()
 {
+	st::dev::NetPlay::Get().Stop();
 	ReleaseRetired();
 	ReleaseFreeCamLook();
 	ReleaseInputCapture();
@@ -887,6 +901,37 @@ void st::EditorUI::DrawToolbar()
 	// slider across it pushed Help and the fps readout off the end.
 	ImGui::Separator();
 	st::PlayControl::Get().GUI(/*compact*/ true);
+
+	// Multiplayer test: the open scene as a local server plus clients (dev/NetPlay.h).
+	if (st::dev::IsDevBuild())
+	{
+		ImGui::Separator();
+		st::dev::NetPlay& np = st::dev::NetPlay::Get();
+		const int running = np.Running();
+		if (running > 0)
+		{
+			ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.5f, 1), "Net: %d running", running);
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Stop##netplay"))
+				np.Stop();
+		}
+		else
+		{
+			if (ImGui::SmallButton("Net Play"))
+				np.Start(*this, wi::scene::GetScene(), netPlayClients_, netPlayServerWindow_);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Save this scene to a temp map and start a local server plus %d client(s) of it. "
+				                  "The editor stays in Edit mode. Stop closes them.", netPlayClients_);
+			ImGui::SameLine();
+			ImGui::SetNextItemWidth(60);
+			ImGui::SliderInt("##netclients", &netPlayClients_, 1, 4, "%d cl");
+			if (!np.LastError().empty())
+			{
+				ImGui::SameLine();
+				ImGui::TextColored(ImVec4(1, 0.5f, 0.4f, 1), "%s", np.LastError().c_str());
+			}
+		}
+	}
 
 	if (!lastSaveMessage_.empty())
 	{

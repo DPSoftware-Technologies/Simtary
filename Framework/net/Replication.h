@@ -97,6 +97,10 @@ public:
     struct Options {
         bool syncTransform = true;
         bool ownerAuthority = false;   // the owning client drives the transform
+        // Native components enabled only on the machine that owns the object - a player's
+        //	input, camera, HUD, character controller - comma separated. Everywhere else they
+        //	are switched off (each machine keeps its own NCE_ enable flags).
+        std::string localOnly;
     };
 
     // --- objects (any mode; from stNetObject's Start / Destroy)
@@ -107,7 +111,7 @@ public:
     // Instantiate `templatePath` on every machine. Returns the root here; INVALID_ENTITY when
     //	not the server or the template does not load (logged).
     wi::ecs::Entity Spawn (const std::string& templatePath, const XMFLOAT3& position,
-                           const XMFLOAT4& rotation, uint32_t owner);
+                           const XMFLOAT4& rotation, uint32_t owner, const Options* options = nullptr);
     // Remove a net object everywhere (the entity and its children).
     bool Despawn (wi::ecs::Entity e);
     bool SetOwner (wi::ecs::Entity e, uint32_t owner);
@@ -166,6 +170,7 @@ private:
         bool sentOnce = false;
         std::deque<Sample> samples;   // client: received transforms, oldest first
         bool proxy = false;           // its rigid body was made kinematic here
+        int localOnlyState = -1;      // last enable state applied to options.localOnly (-1 = never)
         bool wasKinematic = false;
         std::vector<uint8_t> lastState[4];   // server: last bytes sent per state component
         std::unordered_map<std::string, NetValue> vars;
@@ -180,6 +185,7 @@ private:
     uint32_t LocalPlayer () const;
     bool Drives (const Object& o) const;
     void UpdateProxy (Object& o);
+    void UpdateLocalOnly (Object& o);
     void ReleaseProxy (Object& o);
     void AssignServerIds ();
     void SendTo (ConnectionId c, const Writer& w, Delivery d);
@@ -199,6 +205,14 @@ private:
     std::vector<Object> objects_;
     // Client: placed objects the server named before their stNetObject started here.
     std::unordered_map<std::string, std::pair<uint32_t, uint32_t>> pendingByKey_;   // key -> (net id, owner)
+    // Client: state and NetVars that arrived for a net id not bound here yet (a joiner gets the
+    //	whole world before its own copies of the placed objects have started).
+    struct Pending {
+        std::vector<uint8_t> state[4];
+        std::unordered_map<std::string, NetValue> vars;
+    };
+    std::unordered_map<uint32_t, Pending> pendingNet_;
+    void Bound (Object& o);   // client: o just got its net id - apply what waited for it
     std::unordered_map<std::string, std::unique_ptr<ObjectTemplate>> templates_;
     uint32_t nextNetId_ = 1;
     double epoch_ = 0;

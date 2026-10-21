@@ -2,6 +2,8 @@
 #include "script/ScriptSystem.h"
 #include "devui/imscripteditor.h"
 #include "ui/UISystem.h"
+#include "net/NetSession.h"
+#include "script/NetBindings.h"
 
 #include "imgui.h"
 #include "wiBacklog.h"
@@ -238,6 +240,7 @@ void ScriptComponent::ResolveCallbacks () {
 
 void ScriptComponent::Start () {
     Bind(file, "file");
+    Bind(runOn, "runOn");
     seenReload_ = ScriptSystem::Get().ReloadSerial();
     Load();
 }
@@ -269,6 +272,16 @@ void ScriptComponent::Load () {
     if (file.empty()) {
         status_ = "no file";
         return;
+    }
+    {
+        const st::net::NetSession& net = st::net::NetSession::Get();
+        const bool here = runOn == 0 || !net.IsOnline() ||
+                          (runOn == 1 && net.IsServer()) ||
+                          (runOn == 2 && (net.IsClient() || net.HasLocalPlayer()));
+        if (!here) {
+            status_ = runOn == 1 ? "server only - not running on this client" : "client only - not running on this server";
+            return;
+        }
     }
     tb::VM* vm = ScriptSystem::Get().VM();
     if (!vm) {
@@ -361,6 +374,7 @@ void ScriptComponent::OnDisable () {
 void ScriptComponent::Destroy () {
     Unload(true);
     st::ui::UISystem::Get().UnsubscribeTarget(entity);   // its UI.On handlers
+    st::script::ForgetNetSubscriptions(entity);           // its Net.OnServer / OnClient / OnVar handlers
 }
 
 void ScriptComponent::Reload () {
@@ -384,6 +398,9 @@ void ScriptComponent::Reload () {
 void ScriptComponent::DescribeParams (wi::vector<NativeParam>& out) {
     out.push_back(NativeParam::Asset("file", &file,
         "Taipan script, e.g. assets/scripts/spinner.tp. Drop one from the Resource Explorer."));
+    out.push_back(NativeParam::Enum("runOn", &runOn, "Everywhere Server only Client only  ",
+        "In a network game: where this script runs. Server only = dedicated server or host; "
+        "client only = where there is a player. Offline every script runs."));
     out.push_back(NativeParam::Action("Edit", [](NativeComponent& c) {
         const std::string& f = static_cast<ScriptComponent&>(c).file;
         if (!f.empty()) st::devui::OpenScriptEditor(f);

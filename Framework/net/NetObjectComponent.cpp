@@ -16,16 +16,20 @@
 #include "wiScene.h"
 #include "imgui.h"
 
+#include <cstdio>
+
 namespace st::net {
 
 struct NetObjectComponent : wi::scene::NativeComponent {
     bool syncTransform = true;
     bool ownerAuthority = false;
+    std::string localOnly;   // components only the owner runs, comma separated
 
     void Start () override {
         Bind(syncTransform, "syncTransform");
         Bind(ownerAuthority, "ownerAuthority");
-        Replication::Get().Register(entity, { syncTransform, ownerAuthority });
+        Bind(localOnly, "localOnly");
+        Replication::Get().Register(entity, { syncTransform, ownerAuthority, localOnly });
     }
 
     void Destroy () override { Replication::Get().Unregister(entity); }
@@ -41,11 +45,20 @@ struct NetObjectComponent : wi::scene::NativeComponent {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("The owning client moves this object itself (a player's character or vehicle);\n"
                               "the server applies what it sends and passes it on.");
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), "%s", localOnly.c_str());
+        if (ImGui::InputText("Owner-only components", buf, sizeof(buf))) {
+            localOnly = buf;
+            dirty = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Native components that run only on the owner's machine, comma separated\n"
+                              "(e.g. stInput,stChaseCamera,stCharacter). Off everywhere else.");
         if (dirty) {
             SaveBoundParams();
             Replication& r = Replication::Get();
             if (r.NetId(entity) != 0 || NetSession::Get().IsOnline())
-                r.Register(entity, { syncTransform, ownerAuthority });   // updates the options
+                r.Register(entity, { syncTransform, ownerAuthority, localOnly });   // updates the options
         }
 
         const NetSession& net = NetSession::Get();

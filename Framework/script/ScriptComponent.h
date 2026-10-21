@@ -50,6 +50,10 @@ struct ScriptComponent : wi::scene::NativeComponent {
     ST_NATIVE_COMPONENT_MAIN_THREAD()
 
     std::string file; // bound from NCA_<localID>_file
+    // Where it runs in a network game (MULTIPLAYER.md v2): 0 everywhere, 1 only on the server
+    //	(dedicated or host), 2 only where there is a player (client, or the host). Offline
+    //	every script runs. Bound from NCA_<localID>_runOn.
+    int runOn = 0;
 
     // What the inspector shows: "running", "faulted in onUpdate", "compile error", ...
     const std::string& Status () const { return status_; }

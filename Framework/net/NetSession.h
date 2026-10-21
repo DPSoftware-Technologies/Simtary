@@ -104,6 +104,16 @@ public:
     void SetHandler (uint8_t type, Handler fn);
     void SendToServer (const Writer& w, Delivery d);
     void Broadcast (const Writer& w, Delivery d);
+    // Server: one client. False when there is no such (remote) client.
+    bool SendToClient (uint32_t clientId, const Writer& w, Delivery d);
+
+    // Players arriving and leaving (server / host; the host's own player "joins" when it starts).
+    using PlayerListener = std::function<void(uint32_t clientId, bool joined)>;
+    int AddPlayerListener (PlayerListener fn);
+    void RemovePlayerListener (int handle);
+    // Script-level messages (types 30..39: Taipan remote events), routed to whoever set this.
+    using RawHandler = std::function<void(uint32_t fromClientId, uint8_t type, Reader& r)>;
+    void SetScriptSink (RawHandler fn) { scriptSink_ = std::move(fn); }
     void Kick (uint32_t clientId, const char* reason);
 
     // Integrated host only. Open the world to other machines / close it again (remote players
@@ -130,6 +140,10 @@ private:
     std::vector<Peer> peers_;            // server: every connection; client: the server
     std::vector<Event> events_;
     Handler handlers_[256];
+    RawHandler scriptSink_;
+    std::vector<std::pair<int, PlayerListener>> playerListeners_;
+    int nextPlayerListener_ = 1;
+    void NotifyPlayer (uint32_t clientId, bool joined);
     std::string appName_;
     std::string playerName_ = "Player";
     std::string connectTo_;
