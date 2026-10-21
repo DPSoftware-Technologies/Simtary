@@ -39,6 +39,7 @@ struct Outputs {
 class Controller {
 public:
     bool assist = true;
+    bool hoverHold = true;       // with assist: a centred stick holds the hover (off = holds level attitude)
     bool engineOn = true;
 
     void Reset ();

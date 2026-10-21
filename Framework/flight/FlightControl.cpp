@@ -9,8 +9,10 @@ namespace {
 
 constexpr double kPi = 3.14159265358979;
 // Lever and stick travel in rotor angles, radians.
-constexpr double kCollectiveMax = 0.40;
-constexpr double kCyclicMax = 0.12;
+constexpr double kCollectiveMin = -0.05;  // at 3/4 radius
+constexpr double kCollectiveMax = 0.30;
+constexpr double kCyclicMax = 0.12;     // direct mode: full stick
+constexpr double kCyclicLimit = 0.25;   // swashplate travel (UH-60: about +-14 deg) - what the SAS may use
 constexpr double kPedalMax = 0.30;
 // Stability augmentation (assist).
 constexpr double kMaxBank = 0.50;        // rad at full stick
@@ -18,10 +20,11 @@ constexpr double kMaxPitch = 0.35;
 constexpr double kHoldAngle = 0.20;      // most the hover hold asks for
 constexpr double kVelocityGain = 0.03;   // rad of attitude per m/s of drift
 constexpr double kVelocityIntegral = 0.01;
+constexpr double kIntegrateBelow = 2.0;   // m/s
 constexpr double kAttitudeGain = 0.50;   // cyclic rad per rad of attitude error
 constexpr double kRateGain = 0.15;       // cyclic rad per rad/s of body rate
 constexpr double kTrimRate = 0.30;
-constexpr double kTrimMax = 0.08;
+constexpr double kTrimMax = kCyclicLimit;   // the trim may need all of the swashplate (fast flight)
 
 double Clamp (double v, double lo, double hi) { return std::min(hi, std::max(lo, v)); }
 
@@ -53,7 +56,10 @@ Outputs Controller::Update (const HelicopterSpec& spec, const Pilot& pilot, cons
         throttleI_ = 0.0;
     }
 
-    out.collective = Clamp(pilot.collective, 0.0, 1.0) * kCollectiveMax;
+    // The lever sets the blade pitch at 3/4 radius; JSBSim takes it at the root, which a
+    //	twisted blade (twist is negative, tip down) needs more of for the same lift.
+    const double twistRad = spec.mainRotor.twistDeg * kPi / 180.0;
+    out.collective = kCollectiveMin + Clamp(pilot.collective, 0.0, 1.0) * (kCollectiveMax - kCollectiveMin) - 0.75 * twistRad;
     const bool stickCentred = std::fabs(pilot.cyclicX) < 0.05 && std::fabs(pilot.cyclicY) < 0.05;
     const bool pedalsCentred = std::fabs(pilot.pedals) < 0.05;
     const bool airborne = !s.onGround;
@@ -66,13 +72,18 @@ Outputs Controller::Update (const HelicopterSpec& spec, const Pilot& pilot, cons
         //	drift). The integrated trim is the cyclic that holds an attitude - a real hover
         //	is not wings-level: the tail rotor pushes sideways and the hub moment wants the
         //	nose down.
+        if (!stickCentred || !hoverHold) driftU_ = driftV_ = 0.0;
         double phiWant = pilot.cyclicX * kMaxBank;
         double thetaWant = -pilot.cyclicY * kMaxPitch;
-        if (stickCentred) {
+        if (stickCentred && hoverHold) {
             // The integral is what removes the last metre per second: the tail rotor's
             //	side force alone holds a P-only loop at a steady drift.
-            driftV_ = Clamp(driftV_ + s.v * kVelocityIntegral * dt, -kHoldAngle, kHoldAngle);
-            driftU_ = Clamp(driftU_ + s.u * kVelocityIntegral * dt, -kHoldAngle, kHoldAngle);
+            //	Only near the hover: integrating while slowing down from cruise winds it up
+            //	and the aircraft overshoots into a backwards drift.
+            if (std::fabs(s.u) < kIntegrateBelow && std::fabs(s.v) < kIntegrateBelow) {
+                driftV_ = Clamp(driftV_ + s.v * kVelocityIntegral * dt, -kHoldAngle, kHoldAngle);
+                driftU_ = Clamp(driftU_ + s.u * kVelocityIntegral * dt, -kHoldAngle, kHoldAngle);
+            }
             phiWant = Clamp(-s.v * kVelocityGain - driftV_, -kHoldAngle, kHoldAngle);
             thetaWant = Clamp(s.u * kVelocityGain + driftU_, -kHoldAngle, kHoldAngle);
         }
@@ -87,8 +98,8 @@ Outputs Controller::Update (const HelicopterSpec& spec, const Pilot& pilot, cons
         longitudinal = pilot.cyclicY * kCyclicMax + s.q * kRateGain;
         if (!airborne) lateralTrim_ = longitudinalTrim_ = driftU_ = driftV_ = 0.0;
     }
-    out.lateral = Clamp(lateral, -kCyclicMax * 1.5, kCyclicMax * 1.5);
-    out.longitudinal = Clamp(longitudinal, -kCyclicMax * 1.5, kCyclicMax * 1.5);
+    out.lateral = Clamp(lateral, -kCyclicLimit, kCyclicLimit);
+    out.longitudinal = Clamp(longitudinal, -kCyclicLimit, kCyclicLimit);
 
     // Tail rotor: torque compensation follows the collective, yaw rate damped.
     double antitorque = out.collective * 0.5 - pilot.pedals * kPedalMax + s.r * 0.4;

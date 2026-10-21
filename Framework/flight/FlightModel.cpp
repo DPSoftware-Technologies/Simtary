@@ -18,6 +18,12 @@ constexpr double kSlugPerKg = 0.0685217659;
 constexpr double kHpPerKW = 1.34102209;
 constexpr double kFt2PerM2 = 10.7639104;
 constexpr double kPi = 3.14159265358979;
+// Which way JSBSim's pitch of the tail rotor's shaft tilts its thrust UP (found by flight_test:
+//	with +1 the UH-60's 20 degree cant lowers the hover collective and levels its aft-CG hover).
+constexpr double kTailCantSign = 1.0;
+// Which way a smaller JSBSim pitch tilts the main rotor shaft FORWARD (found by flight_test: the
+//	UH-60's 3 degree tilt must fly its fuselage less nose-down at speed).
+constexpr double kShaftTiltSign = 1.0;
 
 // Structural frame: X aft, Y right, Z up, inches. The +400 in keeps every station positive.
 struct Station { double x, y, z; };
@@ -86,7 +92,7 @@ std::string Term (const std::string& name, double areaFt2, const std::string& in
 
 } // namespace
 
-std::vector<std::string> PresetNames () { return { "light", "utility", "attack" }; }
+std::vector<std::string> PresetNames () { return { "light", "utility", "attack", "uh60", "ah64" }; }
 
 bool Preset (const std::string& name, HelicopterSpec& s) {
     s = HelicopterSpec();
@@ -142,6 +148,46 @@ bool Preset (const std::string& name, HelicopterSpec& s) {
         s.tailRotor.hub[0] = 0.41; s.tailRotor.hub[1] = 3.0; s.tailRotor.hub[2] = -8.15;
         s.engine.maxPowerKW = 1119; s.engine.engineRpm = 6600;
         s.skidHalfWidth = 1.07; s.skidFront = 1.5; s.skidBack = -1.5;
+        return true;
+    }
+    if (name == "uh60") {
+        // UH-60A-class, from NASA CR-166309 (GenHel) and published specs: 16.36 m four-blade
+        //	rotor at 258 rpm, two T700-GE-700 (2 x 1151 kW), tail rotor canted 20 degrees.
+        //	Wheels are approximated by the skid contacts; the stabilator is fixed.
+        s.emptyMass = 8000;
+        s.length = 15.3; s.width = 2.4; s.height = 3.8;
+        s.cg[0] = 0; s.cg[1] = 1.9; s.cg[2] = -0.2;
+        // 35.14 ft^2 flat-plate area: Yeo et al., NASA/AHS 2002, the Airloads Program aircraft.
+        s.dragAreaFront = 3.26; s.dragAreaSide = 15.0; s.dragAreaTop = 20.0;
+        s.finArea = 3.0; s.stabilizerArea = 4.2; s.tailArm = 9.0;
+        s.mainRotor.diameter = 16.36; s.mainRotor.blades = 4; s.mainRotor.chord = 0.527;
+        s.mainRotor.nominalRpm = 258; s.mainRotor.twistDeg = -16; s.mainRotor.bladeMass = 116;
+        s.mainRotor.hingeOffset = 0.047; s.mainRotor.groundEffectExp = 0.1; s.mainRotor.hub[1] = 3.6;
+        s.tailRotor.diameter = 3.35; s.tailRotor.blades = 4; s.tailRotor.chord = 0.247;
+        s.tailRotor.nominalRpm = 1190; s.tailRotor.twistDeg = -18; s.tailRotor.bladeMass = 6;   // estimated
+        s.tailRotor.cantDeg = 20;
+        s.mainRotor.shaftTiltDeg = 3;
+        s.tailRotor.hub[0] = 0.45; s.tailRotor.hub[1] = 3.1; s.tailRotor.hub[2] = -9.9;
+        s.engine.maxPowerKW = 2302; s.engine.engineRpm = 20900;
+        s.skidHalfWidth = 1.35; s.skidFront = 1.6; s.skidBack = -1.4;
+        return true;
+    }
+    if (name == "ah64") {
+        // AH-64A-class, published specs (detailed aero data is not public - handling is
+        //	estimated): 14.63 m four-blade rotor at 289 rpm, two T700-GE-701 (2 x 1265 kW).
+        s.emptyMass = 8000;
+        s.length = 15.0; s.width = 1.9; s.height = 3.9;
+        s.cg[0] = 0; s.cg[1] = 1.8; s.cg[2] = 0.1;
+        s.dragAreaFront = 3.2; s.dragAreaSide = 13.0; s.dragAreaTop = 18.0;
+        s.finArea = 2.3; s.stabilizerArea = 3.2; s.tailArm = 8.2;
+        s.mainRotor.diameter = 14.63; s.mainRotor.blades = 4; s.mainRotor.chord = 0.533;
+        s.mainRotor.nominalRpm = 289; s.mainRotor.twistDeg = -9; s.mainRotor.bladeMass = 85;    // estimated
+        s.mainRotor.hingeOffset = 0.04; s.mainRotor.groundEffectExp = 0.1; s.mainRotor.hub[1] = 3.6;
+        s.tailRotor.diameter = 2.79; s.tailRotor.blades = 4; s.tailRotor.chord = 0.254;
+        s.tailRotor.nominalRpm = 1403; s.tailRotor.twistDeg = -9; s.tailRotor.bladeMass = 4;    // estimated
+        s.tailRotor.hub[0] = -0.4; s.tailRotor.hub[1] = 3.4; s.tailRotor.hub[2] = -8.9;
+        s.engine.maxPowerKW = 2530; s.engine.engineRpm = 20900;
+        s.skidHalfWidth = 1.0; s.skidFront = 1.6; s.skidBack = -1.4;
         return true;
     }
     return false;
@@ -241,11 +287,13 @@ bool WriteJSBSimModel (const HelicopterSpec& s, const std::string& root, const s
     o << "  <propulsion>\n"
       << "    <engine file=\"" << mainMotor << "\">\n"
       << "      <thruster file=\"" << mainRotor << "\">\n" << Location(nullptr, hub, "        ")
-      << "        <orient unit=\"DEG\"><roll>0</roll><pitch>90</pitch><yaw>0</yaw></orient>\n"
+      << "        <orient unit=\"DEG\"><roll>0</roll><pitch>" << Num(90.0 - s.mainRotor.shaftTiltDeg * kShaftTiltSign)
+      << "</pitch><yaw>0</yaw></orient>\n"
       << "        <sense>" << s.mainRotor.sense << "</sense>\n      </thruster>\n    </engine>\n"
       << "    <engine file=\"" << tailMotor << "\">\n"
       << "      <thruster file=\"" << tailRotor << "\">\n" << Location(nullptr, tailHub, "        ")
-      << "        <orient unit=\"DEG\"><roll>0</roll><pitch>0</pitch><yaw>90</yaw></orient>\n"
+      << "        <orient unit=\"DEG\"><roll>0</roll><pitch>" << Num(s.tailRotor.cantDeg * kTailCantSign)
+      << "</pitch><yaw>90</yaw></orient>\n"
       << "        <sense>" << s.tailRotor.sense << "</sense>\n      </thruster>\n    </engine>\n"
       << "  </propulsion>\n\n";
 

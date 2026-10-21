@@ -31,6 +31,8 @@ struct RotorSpec {
     double tipLoss = 0.97;
     double groundEffectExp = 0.1;    // 0 = no ground effect
     int    sense = 1;                // 1 = counter-clockwise seen from above, -1 = clockwise
+    double shaftTiltDeg = 0.0;       // main rotor: shaft tilted forward (UH-60: 3)
+    double cantDeg = 0.0;            // tail rotor: shaft tilted so the thrust has this much lift (UH-60: 20)
     double hub[3] = { 0, 2.6, 0 };   // m, body frame (main rotor); tail rotor: its hub
 };
 
@@ -65,7 +67,8 @@ struct HelicopterSpec {
 
 // Built-in helicopters (SI, from published figures where they exist, estimates marked in the
 // source): "light" (a Bell 206-class utility helicopter), "utility" (UH-1-class),
-// "attack" (AH-1S-class, close to JSBSim's own ah1s numbers).
+// "attack" (AH-1S-class, close to JSBSim's own ah1s numbers), "uh60" (UH-60A-class, NASA
+// GenHel figures) and "ah64" (AH-64A-class, published specs - its handling is estimated).
 std::vector<std::string> PresetNames ();
 bool Preset (const std::string& name, HelicopterSpec& out);
 
