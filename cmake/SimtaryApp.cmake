@@ -589,6 +589,7 @@ function(simtary_add_app)
         libgfx          # software 2D rasterizer (GFX.h); propagates its include dir + GFXSDL
         RmlUi::RmlUi    # game UI documents (Framework/ui); core + debugger, FreeType fonts
         $<$<TARGET_EXISTS:SimtaryFilament>:SimtaryFilament>   # Hurricanes renderer (SIMTARY_RENDERERS)
+        $<$<TARGET_EXISTS:SimtaryJSBSim>:SimtaryJSBSim>       # JSBSim flight dynamics (jsbsim.dll, C interface)
         ${APP_EXTRA_LIBS}
     )
     if (TARGET SimtaryOpenXR)
@@ -599,6 +600,9 @@ function(simtary_add_app)
     endif()
     if (TARGET SimtaryBHS)
         list(APPEND _app_link_libraries SimtaryBHS)      # Framework/stream (SIMTARY_HAS_BHS)
+    endif()
+    if (TARGET SimtaryEOS)
+        list(APPEND _app_link_libraries SimtaryEOS)      # Framework/online (SIMTARY_HAS_EOS)
     endif()
 
     foreach (_target IN LISTS _compile_targets)
@@ -935,6 +939,15 @@ function(simtary_add_app)
             VERBATIM
         )
     endif()
+    # JSBSim (flight dynamics) is its own shared library - LGPL, replaceable - next to the exe.
+    if (TARGET SimtaryJSBSim)
+        add_custom_command(TARGET ${APP_NAME} PRE_LINK
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:SimtaryJSBSim> $<TARGET_FILE_DIR:${APP_NAME}>
+            COMMENT "Copying JSBSim runtime library to output directory"
+            VERBATIM
+        )
+    endif()
     if (TARGET SimtaryOpenXR)
         add_custom_command(TARGET ${APP_NAME} PRE_LINK
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -958,6 +971,14 @@ function(simtary_add_app)
                 "${SIMTARY_BHS_BIN}/bhs.dll" "${SIMTARY_BHS_BIN}/libssl-3-x64.dll" "${SIMTARY_BHS_BIN}/libcrypto-3-x64.dll"
                 $<TARGET_FILE_DIR:${APP_NAME}>
             COMMENT "Copying BHS to output directory"
+            VERBATIM
+        )
+    endif()
+    if (TARGET SimtaryEOS)
+        add_custom_command(TARGET ${APP_NAME} PRE_LINK
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${SIMTARY_EOS_RUNTIME}" $<TARGET_FILE_DIR:${APP_NAME}>
+            COMMENT "Copying EOS SDK to output directory"
             VERBATIM
         )
     endif()

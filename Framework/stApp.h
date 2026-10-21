@@ -47,6 +47,7 @@
 #include "io/asset/AssetSystem.h"
 #include "audio/faust/FaustManager.h"
 #include "input/InputActions.h"
+#include "online/EosConfig.h"
 
 #include <SDL_scancode.h>
 #include <SDL_events.h>
@@ -175,6 +176,10 @@ struct AppConfig {
     // somewhere else; the export is editor-only either way, and a build with no editor
     // never writes anything.
     std::string editorResourceDir;
+
+    // Epic Online Services (Framework/online, Simtary/ONLINE.md). The project's ids from the
+    // Epic Developer Portal; empty productId = EOS off. Needs the SDK in deps/eos-sdk.
+    st::online::EosConfig eos;
 
     // Developer tooling. Ship a game with Hidden (or Disabled); Visible is the
     // development default.
