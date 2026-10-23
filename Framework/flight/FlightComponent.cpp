@@ -302,9 +302,19 @@ void FlightComponent::Update (float dt) {
     }
     // A crash hard enough leaves JSBSim's state non-finite, and it never recovers from that.
     if (!std::isfinite(Get(fdm_, "position/h-sl-ft")) || !std::isfinite(Get(fdm_, "attitude/psi-rad"))) {
-        wi::backlog::post("stFlight: the simulation broke (crash?) - back to where it was placed",
+        // RunIC does not clear the rotor's own state (rpm, inflow, transmission), so a reset
+        //	of the same FDM breaks again next frame: build a new one. Give up after a few.
+        stj_destroy(fdm_);
+        fdm_ = nullptr;
+        ready = false;
+        if (++rebuilds_ > 3) {
+            status = "the simulation keeps breaking - stopped (check the ground under the spawn point)";
+            wi::backlog::post("stFlight: " + status, wi::backlog::LogLevel::Error);
+            return;
+        }
+        wi::backlog::post("stFlight: the simulation broke (crash?) - rebuilt it where it was placed",
                           wi::backlog::LogLevel::Warning);
-        InitAt(placedPos_, placedYaw_);
+        ready = Create();
         return;
     }
     WriteTransform();

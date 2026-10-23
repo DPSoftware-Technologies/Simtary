@@ -158,8 +158,12 @@ void HydraulicErosion (Grid& g, std::vector<float>& deposit, size_t droplets, ui
         return float(state & 0xFFFFFF) / float(0x1000000);
     };
 
+    // A droplet erodes with a brush around the cell it STARTS the step in, so it has to start a
+    //	brush radius inside the edge; the bounds test below only guards where it moves to.
+    const float spanX = float(g.w - 1 - 2 * radius), spanY = float(g.h_ - 1 - 2 * radius);
+    if (spanX <= 1.0f || spanY <= 1.0f) return;
     for (size_t n = 0; n < droplets; ++n) {
-        float x = rnd() * float(g.w - 1), y = rnd() * float(g.h_ - 1);
+        float x = float(radius) + rnd() * spanX, y = float(radius) + rnd() * spanY;
         float dx = 0, dy = 0, speed = 1, water = 1, sediment = 0;
         for (int life = 0; life < lifetime; ++life) {
             const int cx = int(x), cy = int(y);

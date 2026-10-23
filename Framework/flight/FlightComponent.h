@@ -110,6 +110,7 @@ private:
     wi::ecs::Entity mainRotor_ = wi::ecs::INVALID_ENTITY, tailRotor_ = wi::ecs::INVALID_ENTITY;
     XMFLOAT4 mainRest_ = XMFLOAT4(0, 0, 0, 1), tailRest_ = XMFLOAT4(0, 0, 0, 1);
     bool engineOn_ = true;
+    int rebuilds_ = 0;              // simulations rebuilt after breaking; stops after a few
 };
 
 } // namespace st
