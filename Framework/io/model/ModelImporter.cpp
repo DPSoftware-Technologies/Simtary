@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 
 using wi::ecs::Entity;
 using wi::ecs::INVALID_ENTITY;
@@ -203,10 +204,20 @@ std::string RegisterEmbeddedTexture (ImportContext& ctx, const uint8_t* data, si
 	//	"texture0" each do not collide.
 	char suffix[32];
 	std::snprintf(suffix, sizeof(suffix), "%016llx", (unsigned long long)hash);
+	// The resource manager decides what a resource IS from its name's extension, and an
+	//	exporter's image name rarely has one ("tree_diff_2k"): without it the image loads
+	//	as nothing and the model renders white. Take it from the bytes.
+	const char* ext = ".png";
+	if (size >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF) ext = ".jpg";
+	else if (size >= 4 && std::memcmp(data, "DDS ", 4) == 0) ext = ".dds";
+	else if (size >= 2 && data[0] == 'B' && data[1] == 'M') ext = ".bmp";
 	std::string name = "embedded/" + ctx.stem + "/" +
-		(hint.empty() ? std::string("texture") : hint) + "_" + suffix;
+		(hint.empty() ? std::string("texture") : hint) + "_" + suffix + ext;
 
-	wi::resourcemanager::Load(name, wi::resourcemanager::Flags::NONE, data, size);
+	// Kept (see ImportContext::embeddedResources), and with its bytes: there is no file
+	//	behind the name, so a scene save can only embed the image from what is retained here.
+	ctx.embeddedResources.push_back(
+		wi::resourcemanager::Load(name, wi::resourcemanager::Flags::IMPORT_RETAIN_FILEDATA, data, size));
 	ctx.embeddedTextures[hash] = name;
 	ctx.result.textures++;
 	return name;

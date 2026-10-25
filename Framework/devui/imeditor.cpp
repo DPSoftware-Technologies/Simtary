@@ -1030,6 +1030,8 @@ void st::EditorUI::DrawViewport(const char* title, bool* p_open, wi::RenderPath3
 		ImGui::End();
 		return;
 	}
+	if (!exactFit)
+		gameShownFrame_ = drawFrame_;
 
 	// exactFit is what tells the two viewports apart everywhere in this function: true is
 	//	the Editor Viewport, false is the Game Viewport. Their menu bars differ for the same
@@ -1896,7 +1898,8 @@ bool st::EditorUI::SaveSceneDescriptor(wi::scene::Scene& scene, const std::strin
 	if (!resourceDir.empty())
 	{
 		std::string exportError;
-		if (!st::asset::ExportSceneResources(split, resourceDir, &exported, &exportError))
+		if (!st::asset::ExportSceneResources(split, resourceDir, &exported, &exportError,
+		                                       st::dev::SourceContentDir()))
 		{
 			wi::backlog::post("Editor: resource export to " + resourceDir + " failed: " +
 			                  exportError, wi::backlog::LogLevel::Error);
@@ -2674,6 +2677,7 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	gameViewHovered_   = false;
 	gameImageValid_    = false;
 	gameImageHovered_  = false;
+	drawFrame_         = ImGui::GetFrameCount();
 
 	if (showEditorViewport_ && editorPath_)
 		DrawViewport(kEditorViewport, &showEditorViewport_, *editorPath_, editorCamera_, true, scene, selected);
@@ -2685,7 +2689,11 @@ void st::EditorUI::Draw(App& app, wi::RenderPath3D& gamePath, Entity& selected)
 	}
 
 	if (showUIEditor_)
+	{
 		uiEditor_.Draw(scene, selected, &history_, st::render::Get().GameImage(), &showUIEditor_);
+		if (uiEditor_.Visible())
+			gameShownFrame_ = drawFrame_;
+	}
 
 	DrawCameraViews(scene, selected);
 
@@ -2836,6 +2844,18 @@ void st::EditorUI::ReleaseFreeCamLook()
 }
 
 // ------------------------------------------------------------- editor viewport ---
+
+bool st::EditorUI::GameImageWanted() const
+{
+	if (!enabled_)
+		return true;
+	// The editor draws during the frame and the game path is updated at the top of the next,
+	//	so "drew last frame" is the freshest answer there is. Not drawing at all (DevUI hidden)
+	//	means nothing is in front of the game - render it.
+	if (drawFrame_ < ImGui::GetFrameCount() - 1)
+		return true;
+	return gameShownFrame_ >= drawFrame_;
+}
 
 void st::EditorUI::RenderEditorView(float dt)
 {

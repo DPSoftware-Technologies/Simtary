@@ -50,6 +50,7 @@ struct FlightComponent : wi::scene::NativeComponent {
     float collectiveRate = 0.5f;    // lever travel per second at full input
     std::string mainRotorNode = "MainRotor";   // descendants spun at rotor rpm (optional)
     std::string tailRotorNode = "TailRotor";
+    bool  weatherWind = true;       // fly in the scene weather's wind and turbulence
 
     // the pilot's controls this frame (after rate limits), and what JSBSim reports back
     struct Controls {
@@ -94,6 +95,7 @@ private:
     void InitAt (const XMFLOAT3& origin, float yaw);
     void ReadInput (float dt);
     void Step ();
+    void ApplyWind ();
     void WriteTransform ();
     void SpinRotors (float dt);
 

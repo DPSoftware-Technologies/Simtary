@@ -68,6 +68,7 @@ void FlightComponent::Start () {
     Bind(collectiveRate, "collectiveRate");
     Bind(mainRotorNode, "mainRotorNode");
     Bind(tailRotorNode, "tailRotorNode");
+    Bind(weatherWind, "weatherWind");
     engineOn_ = engineRunning;
 
     // Other bodies collide with the helicopter; JSBSim moves it.
@@ -255,6 +256,33 @@ void FlightComponent::Step () {
     telemetry.throttle = out.throttle;
 }
 
+void FlightComponent::ApplyWind () {
+    // The scene's weather is the one wind everything sees: grass and trees sway in it, and
+    // the rotor flies in it. Its direction vector points where the air GOES (east = +X,
+    // north = +Z), which is JSBSim's convention too. JSBSim keeps the hover hold honest:
+    // velocities/u,v are over the ground, so a centred stick holds position into the wind.
+    double north = 0.0, east = 0.0, speed = 0.0, turbulence = 0.0;
+    if (weatherWind) {
+        const wi::scene::WeatherComponent& w = scene->weather;
+        const double len = std::sqrt(double(w.windDirection.x) * w.windDirection.x +
+                                     double(w.windDirection.z) * w.windDirection.z);
+        if (len > 1e-6 && w.windSpeed > 0.0f) {
+            speed = w.windSpeed;
+            north = w.windDirection.z / len * speed;
+            east = w.windDirection.x / len * speed;
+            turbulence = w.windRandomness;
+        }
+    }
+    stj_set(fdm_, "atmosphere/wind-north-fps", north * kFtPerM);
+    stj_set(fdm_, "atmosphere/wind-east-fps", east * kFtPerM);
+    // Dryden (MIL-F-8785C) gusts. The weather's turbulence (0..20, what makes grass flutter)
+    // becomes the spec's severity index 0..7: 0 none, 1 light, 3 moderate, 5 severe.
+    const double severity = std::clamp(std::round(turbulence * 0.5), 0.0, 7.0);
+    stj_set(fdm_, "atmosphere/turb-type", severity > 0.0 ? 3.0 : 0.0);
+    stj_set(fdm_, "atmosphere/turbulence/milspec/windspeed_at_20ft_AGL-fps", speed * kFtPerM);
+    stj_set(fdm_, "atmosphere/turbulence/milspec/severity", severity);
+}
+
 void FlightComponent::WriteTransform () {
     TransformComponent* t = GetComponent<TransformComponent>();
     if (t == nullptr || fdm_ == nullptr) return;
@@ -294,6 +322,7 @@ void FlightComponent::SpinRotors (float dt) {
 void FlightComponent::Update (float dt) {
     if (!ready || fdm_ == nullptr || dt <= 0.0f) return;
     ReadInput(dt);
+    ApplyWind();
 
     accumulator_ = std::min(accumulator_ + dt, kStep * kMaxStepsPerFrame);
     while (accumulator_ >= kStep && ready) {

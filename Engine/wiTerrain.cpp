@@ -870,6 +870,10 @@ namespace wi::terrain
 					grass->billboardCount = grass_properties.billboardCount;
 					grass->drag = grass_properties.drag;
 					grass->gravityPower = grass_properties.gravityPower;
+					// SIMTARY: full density out to a quarter of the view distance, thinning beyond.
+					grass->thinDistance = grass_properties.viewDistance * 0.25f;
+					grass->SetCameraBendEnabled(grass_properties.IsCameraBendEnabled()); // SIMTARY: was never carried over
+
 				}
 
 				MaterialComponent* chunkGrassMaterial = scene->materials.GetComponent(chunk_data.grass_entity);
@@ -1079,6 +1083,7 @@ namespace wi::terrain
 					chunk_data.heightmap_data.resize(vertexCount);
 
 					wi::HairParticleSystem grass = grass_properties;
+					grass.thinDistance = grass_properties.viewDistance * 0.25f; // SIMTARY, see the property update
 					grass.vertex_lengths.resize(vertexCount);
 					std::atomic<uint32_t> grass_valid_vertex_count{ 0 };
 
@@ -1397,7 +1402,20 @@ namespace wi::terrain
 									const float spline_factor = spline_factor0 + f * (spline_factor1 - spline_factor0) + g * (spline_factor2 - spline_factor0);
 
 									const float noise = std::pow(perlin_noise.compute((vertex_pos.x + chunk_data.position.x) * prop.noise_frequency, vertex_pos.y * prop.noise_frequency, (vertex_pos.z + chunk_data.position.z) * prop.noise_frequency) * 0.5f + 0.5f, prop.noise_power);
-									const float chance = std::pow(((float*)&region)[clamp(prop.region, 0, 3)], prop.region_power) * noise * (1 - saturate(spline_factor));
+									// SIMTARY EXTENSION: an authored terrain says how much of the prop's paint
+									//	layer is here. The chunk's blend weights are stacked like decals (the
+									//	bottom layer reads 1 wherever it has any paint), so they would put a
+									//	forest on every square metre that has a trace of grass.
+									float region_weight = ((float*)&region)[clamp(prop.region, 0, 3)];
+									if (source != nullptr)
+									{
+										const float painted = source->Paint(XMFLOAT2(vertex_pos.x + chunk_data.position.x, vertex_pos.z + chunk_data.position.z), uint32_t(std::max(0, prop.region)));
+										if (painted >= 0)
+										{
+											region_weight = painted;
+										}
+									}
+									const float chance = std::pow(region_weight, prop.region_power) * noise * (1 - saturate(spline_factor));
 									if (chance > prop.threshold)
 									{
 										wi::Archive archive = wi::Archive(prop.data.data(), prop.data.size());
@@ -1419,6 +1437,11 @@ namespace wi::terrain
 										{
 											transform = &generator->scene.transforms.Create(entity);
 										}
+										// SIMTARY: a transform read from an archive comes back as a large-world
+										//	one carrying the absolute position it was saved with, and UpdateTransform
+										//	would put that back over the placement below. A prop is a child of its
+										//	chunk, positioned in the chunk's local space.
+										transform->SetLargeWorld(false);
 										transform->translation_local = vertex_pos;
 										transform->translation_local.y += wi::math::Lerp(prop.min_y_offset, prop.max_y_offset, rng.next_float());
 										const float scaling = wi::math::Lerp(prop.min_size, prop.max_size, rng.next_float());
@@ -1748,6 +1771,8 @@ namespace wi::terrain
 				chunk_data.vt = wi::allocator::make_shared<VirtualTexture>();
 			}
 			VirtualTexture& vt = *chunk_data.vt;
+			vt.chunk_x = chunk.x;
+			vt.chunk_z = chunk.z;
 
 			const uint32_t min_resolution = SVT_TILE_SIZE;
 			const uint32_t max_resolution = 65536u;
@@ -1998,6 +2023,7 @@ namespace wi::terrain
 			for (uint32_t map_type = 0; map_type < arraysize(atlas.maps); map_type++)
 			{
 				TerrainVirtualTexturePush push = {};
+				push.chunk_xz = int((uint32_t(vt->chunk_x) & 0xFFFFu) | (uint32_t(vt->chunk_z) << 16u));
 
 				switch (map_type)
 				{

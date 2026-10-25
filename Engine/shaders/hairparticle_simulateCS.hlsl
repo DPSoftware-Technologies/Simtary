@@ -92,8 +92,26 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 Gid : SV_GroupID, uint groupIn
 	
 	float3 diff = GetCamera().position - base;
 	const float distsq = dot(diff, diff);
-	const bool distance_culled = distsq > sqr(xHairViewDistance);
-	
+	// SIMTARY: distance thinning. Past xHairThinDistance only (thin / d)^2 of the strands are
+	//	kept - the visible count per distance ring stops growing with the ring's area - and a
+	//	strand close to its cut shrinks first, so the thinning reads as fade, not popping.
+	//	Its own RNG stream, so the rest of the strand's randomness is unchanged.
+	half thin_scale = 1;
+	bool thinned = false;
+	if (xHairThinDistance > 0 && distsq > sqr(xHairThinDistance))
+	{
+		RNG thin_rng;
+		thin_rng.init(uint2(xHairRandomSeed ^ 0x9e3779b9u, DTid.x), 1);
+		const float key = thin_rng.next_float();
+		const float keep = sqr(xHairThinDistance) / distsq;
+		thinned = key > keep;
+		// Never 0: the tail below is normalised against this length, and a zero-length strand
+		//	stores a NaN tail that survives in the simulation buffer and later draws as a long
+		//	smeared card. A culled strand simply keeps its full length (it is not drawn).
+		thin_scale = thinned ? 1 : (half)max(0.1, saturate((keep - key) / (0.25 * keep)));
+	}
+	const bool distance_culled = distsq > sqr(xHairViewDistance) || thinned;
+
 	// Frustum culling the whole strand at once:
 	//	intentionally overestimated, to not disappear as soon in different views (shadow map, etc)
 	ShaderSphere sphere;
@@ -133,6 +151,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 Gid : SV_GroupID, uint groupIn
 	
 	half len = lerp(1, rng.next_float(), saturate(xHairRandomness)) * strand_length;
 	len *= xHairLength;
+	len *= thin_scale;
 	len *= atlas_rect.size;
 	len /= (half)xHairSegmentCount;
 	const float2 frame = float2(atlas_rect.aspect * xHairAspect * xHairSegmentCount, 1) * len * 0.5;
@@ -225,6 +244,13 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 Gid : SV_GroupID, uint groupIn
 		
 		float3 tail_current = simulationBuffer[particleID].currentTail;
 		float3 tail_prev = simulationBuffer[particleID].prevTail;
+		// SIMTARY: a tail that went NaN (a zero-length strand normalised) would stay NaN forever
+		//	and draw as a smeared card - start it over upright.
+		if (any(isnan(tail_current)) || any(isnan(tail_prev)) || any(isinf(tail_current)) || any(isinf(tail_prev)))
+		{
+			tail_current = base + boneAxis * boneLength;
+			tail_prev = tail_current;
+		}
 		half3 inertia = (tail_current - tail_prev) * (1 - dragForce);
 		half3 stiffness = boneAxis * stiffnessForce;
 		half3 external = gravityPower * float3(0, -1, 0);
@@ -232,7 +258,8 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 Gid : SV_GroupID, uint groupIn
 		external += wind;
 		
 		float3 tail_next = tail_current + inertia + dt * (stiffness + external);
-		half3 to_tail = normalize(tail_next - base);
+		const float3 to_tail_raw = tail_next - base;
+		half3 to_tail = dot(to_tail_raw, to_tail_raw) > 1e-10 ? (half3)normalize(to_tail_raw) : boneAxis; // SIMTARY: no normalize(0)
 		tail_next = base + to_tail * boneLength;
 
 		//draw_sphere(tail_next, len);

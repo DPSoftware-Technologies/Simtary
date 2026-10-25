@@ -174,6 +174,8 @@ namespace wi::terrain
 		wi::vector<VirtualTextureAtlas::Tile> tiles;
 		uint32_t lod_count = 0;
 		uint32_t resolution = 0;
+		int32_t chunk_x = 0; // SIMTARY: the chunk it textures, for world-space anti-tiling
+		int32_t chunk_z = 0;
 
 		void init(VirtualTextureAtlas& atlas, uint resolution);
 
@@ -250,7 +252,7 @@ namespace wi::terrain
 		wi::ecs::Entity source_entity = wi::ecs::INVALID_ENTITY; // the original entity that this prop was serialized from
 		int min_count_per_chunk = 0; // a chunk will try to generate min this many props of this type
 		int max_count_per_chunk = 10; // a chunk will try to generate max this many props of this type
-		int region = 0; // region selection in range [0,3] (0: base/grass, 1: slopes, 2: low altitude (bottom level-0), 3: high altitude (0-top level))
+		int region = 0; // region selection in range [0,3] (0: base/grass, 1: slopes, 2: low altitude (bottom level-0), 3: high altitude (0-top level)); SIMTARY: with a Source, the paint layer 0..15
 		float region_power = 1; // region weight affection power factor
 		float noise_frequency = 1; // perlin noise's frequency for placement factor
 		float noise_power = 1; // perlin noise's power
@@ -289,6 +291,11 @@ namespace wi::terrain
 		//	(stacked top-down like decals: layer N covers layers below it by its weight).
 		//	Returns the grass amount at this position, 0..1.
 		virtual float Surface(const XMFLOAT2& world_pos, float* weights, uint32_t layer_count) const = 0;
+		// How much of one paint layer is at a world XZ position, 0..1 (layers summing to 1,
+		//	not stacked). Prop placement reads it, so Prop::region names a paint layer
+		//	(0..15) on an authored terrain. Negative = not supported: placement falls back to
+		//	the chunk's blend weights.
+		virtual float Paint(const XMFLOAT2& world_pos, uint32_t layer) const { return -1.0f; }
 	};
 
 	struct Terrain

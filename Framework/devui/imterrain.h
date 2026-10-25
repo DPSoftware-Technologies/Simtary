@@ -105,6 +105,15 @@ private:
     std::mutex  dialogMutex_;
     std::string dialogPath_;
     bool     regionFromImport_ = false; // the region box shows the import rectangle
+
+    // layers
+    std::vector<terrain::TextureSet> textureSets_;
+    float    tileEdit_ = 2.0f;          // tile size while its slider is held (applied on release)
+    int      tileEditLayer_ = -1;
+    terrain::GrassSettings grassEdit_;  // what the Grass section shows while a control is held
+    bool     grassEditing_ = false;
+    std::vector<std::string> propModels_;   // models in the packages, for the prop picker
+    std::string propModel_;
 };
 
 } // namespace st

@@ -406,6 +406,36 @@ int st::Run(int argc, char* argv[], AppConfig& config, App& application) {
             SDL_SetWindowTitle(window.get(), ((config.name + " - ") + application.infowatermark_str).c_str());
         }
         while (SDL_PollEvent(&event)) {
+            // Startup splash (st::App::SplashBlocksInput): the world under it is not ready
+            // to be played, so input reaches neither ImGui nor the game. A press ends a
+            // skippable video; the wait for the world after it is never skipped.
+            if (application.SplashBlocksInput()) {
+                bool isInput = false, isPress = false;
+                switch (event.type) {
+                    case SDL_KEYDOWN:
+                        isInput = true;
+                        isPress = event.key.repeat == 0;
+                        break;
+                    case SDL_MOUSEBUTTONDOWN: case SDL_CONTROLLERBUTTONDOWN:
+                    case SDL_JOYBUTTONDOWN: case SDL_FINGERDOWN:
+                        isInput = isPress = true;
+                        break;
+                    case SDL_KEYUP: case SDL_TEXTINPUT: case SDL_TEXTEDITING:
+                    case SDL_MOUSEMOTION: case SDL_MOUSEBUTTONUP: case SDL_MOUSEWHEEL:
+                    case SDL_CONTROLLERBUTTONUP: case SDL_CONTROLLERAXISMOTION:
+                    case SDL_JOYBUTTONUP: case SDL_JOYAXISMOTION:
+                    case SDL_FINGERUP: case SDL_FINGERMOTION:
+                        isInput = true;
+                        break;
+                    default:
+                        break;
+                }
+                if (isInput) {
+                    if (isPress && application.SplashSkippable()) application.SkipSplashVideo();
+                    continue;
+                }
+            }
+
             if (!g_headless) ImGui_ImplSDL2_ProcessEvent(&event);
             const ImGuiIO& io = ImGui::GetIO();
 

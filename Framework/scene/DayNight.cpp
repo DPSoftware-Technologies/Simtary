@@ -663,8 +663,11 @@ void DayNight::DevGUI (bool* open) {
 
             ImGui::SeparatorText("Wind");
             ImGui::SliderFloat("Speed", &settings.weather.windSpeed, 0.0f, 40.0f, "%.1f m/s");
+            ImGui::SetItemTooltip("Physics too: helicopters (stFlight) fly in this wind.");
             ImGui::SliderFloat("Heading", &settings.weather.windDegrees, 0.0f, 360.0f, "%.0f deg");
+            ImGui::SetItemTooltip("Compass heading the wind blows TOWARDS (90 = towards east).");
             ImGui::SliderFloat("Turbulence", &settings.weather.windTurbulence, 0.0f, 20.0f, "%.1f");
+            ImGui::SetItemTooltip("Sway, and gusts on helicopters: 2 light, 6 moderate, 10 severe, 14+ extreme.");
             ImGui::SliderFloat("Wave size", &settings.weather.windWaveSize, 0.0f, 4.0f, "%.2f");
 
             ImGui::SeparatorText("Rain");

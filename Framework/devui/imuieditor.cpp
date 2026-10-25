@@ -252,6 +252,7 @@ void UIEditorPanel::Draw (Scene& scene, Entity& selected, EditorHistory* history
     ImGui::SetNextWindowSize(ImVec2(960, 600), ImGuiCond_FirstUseEver);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     const bool visible = ImGui::Begin(kWindowName, open, ImGuiWindowFlags_MenuBar);
+    visible_ = visible;
     ImGui::PopStyleVar();
     if (!visible) {
         ImGui::End();

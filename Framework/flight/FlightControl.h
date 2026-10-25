@@ -33,7 +33,7 @@ struct Outputs {
     double collective = 0.0;    // propulsion/engine[0]/collective-ctrl-rad
     double lateral = 0.0;       // propulsion/engine[0]/lateral-ctrl-rad      (+ rolls right)
     double longitudinal = 0.0;  // propulsion/engine[0]/longitudinal-ctrl-rad (+ nose down)
-    double antitorque = 0.0;    // propulsion/engine[1]/antitorque-ctrl-rad   (+ nose left)
+    double antitorque = 0.0;    // propulsion/engine[1]/antitorque-ctrl-rad   (+ nose left), at the blade root
 };
 
 class Controller {
@@ -51,10 +51,12 @@ public:
 
 private:
     double throttleI_ = 0.2;
+    double throttle_ = 0.0;          // last throttle out (spool-up limit)
     double lateralTrim_ = 0.0, longitudinalTrim_ = 0.0;   // cyclic that holds the attitude
     double driftU_ = 0.0, driftV_ = 0.0;                  // attitude that cancels a steady drift
     double headingHold_ = 0.0;
     bool headingHeld_ = false;
+    double yawTrim_ = 0.0;           // learned pedal (assist)
 };
 
 } // namespace st::flight

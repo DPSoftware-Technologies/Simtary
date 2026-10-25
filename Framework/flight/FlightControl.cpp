@@ -14,6 +14,10 @@ constexpr double kCollectiveMax = 0.30;
 constexpr double kCyclicMax = 0.12;     // direct mode: full stick
 constexpr double kCyclicLimit = 0.25;   // swashplate travel (UH-60: about +-14 deg) - what the SAS may use
 constexpr double kPedalMax = 0.30;
+constexpr double kSpoolRate = 0.25;      // throttle per second, rising (turbine spool-up)
+constexpr double kYawGain = 0.5;         // tail pitch rad per rad of heading error
+constexpr double kYawIntegral = 0.4;     // per second: learns the pedal this aircraft needs
+constexpr double kYawTrimMax = 0.30;
 // Stability augmentation (assist).
 constexpr double kMaxBank = 0.50;        // rad at full stick
 constexpr double kMaxPitch = 0.35;
@@ -41,6 +45,8 @@ void Controller::Reset () {
     lateralTrim_ = longitudinalTrim_ = 0.0;
     driftU_ = driftV_ = 0.0;
     headingHeld_ = false;
+    yawTrim_ = 0.0;
+    throttle_ = 0.0;
 }
 
 Outputs Controller::Update (const HelicopterSpec& spec, const Pilot& pilot, const Sensors& s, double dt) {
@@ -50,10 +56,17 @@ Outputs Controller::Update (const HelicopterSpec& spec, const Pilot& pilot, cons
     if (engineOn) {
         const double nominal = spec.mainRotor.nominalRpm;
         const double err = (nominal - s.rotorRpm) / nominal;
-        throttleI_ = Clamp(throttleI_ + err * 2.0 * dt, 0.0, 1.0);
-        out.throttle = Clamp(throttleI_ + err * 4.0, 0.0, 1.0);
+        const double want = Clamp(throttleI_ + err * 4.0, 0.0, 1.0);
+        // A turbine spools up over seconds; the stand-in engine would hand the rotor full
+        //	power at once, and on the ground that torque turned the whole aircraft on its
+        //	skids during the start. Power may rise only so fast; it may always fall.
+        out.throttle = std::min(want, throttle_ + kSpoolRate * dt);
+        // no integrating while held back by the spool, or it winds up and overspeeds the rotor
+        if (out.throttle >= want) throttleI_ = Clamp(throttleI_ + err * 2.0 * dt, 0.0, 1.0);
+        throttle_ = out.throttle;
     } else {
         throttleI_ = 0.0;
+        throttle_ = 0.0;
     }
 
     // The lever sets the blade pitch at 3/4 radius; JSBSim takes it at the root, which a
@@ -101,18 +114,31 @@ Outputs Controller::Update (const HelicopterSpec& spec, const Pilot& pilot, cons
     out.lateral = Clamp(lateral, -kCyclicLimit, kCyclicLimit);
     out.longitudinal = Clamp(longitudinal, -kCyclicLimit, kCyclicLimit);
 
-    // Tail rotor: torque compensation follows the collective, yaw rate damped.
+    // Tail rotor: torque compensation follows the collective, yaw rate damped. That feed-
+    //	forward is a guess that fits the small presets; the UH-60 and AH-64 need a different
+    //	amount, so the heading hold integrates the rest (yawTrim_ - what a pilot's feet learn).
+    //	The hold starts on the ground: a lift-off is when the torque changes most, and
+    //	nothing held the heading while the skids were still light. It only LEARNS in the air,
+    //	where a heading error means pedal, not skid friction.
     double antitorque = out.collective * 0.5 - pilot.pedals * kPedalMax + s.r * 0.4;
-    if (assist && pedalsCentred && airborne) {
+    if (assist && pedalsCentred) {
         if (!headingHeld_) {
             headingHold_ = s.psi;
             headingHeld_ = true;
         }
-        antitorque += WrapPi(s.psi - headingHold_) * 0.5;
+        const double err = WrapPi(s.psi - headingHold_);
+        if (airborne) yawTrim_ = Clamp(yawTrim_ + err * kYawIntegral * dt, -kYawTrimMax, kYawTrimMax);
+        antitorque += err * kYawGain;
     } else {
         headingHeld_ = false;
     }
-    out.antitorque = Clamp(antitorque, -0.45, 0.45);
+    if (assist) antitorque += yawTrim_;
+    else yawTrim_ = 0.0;
+    // Everything above is tail blade pitch at 3/4 radius, like the lever; JSBSim takes it at
+    //	the root. Without this a twisted tail (UH-60 -18 deg, AH-64 -9 deg) lost a quarter
+    //	radian of its travel and hovered almost against the pedal stop.
+    const double tailTwistRad = spec.tailRotor.twistDeg * kPi / 180.0;
+    out.antitorque = Clamp(antitorque, -0.45, 0.45) - 0.75 * tailTwistRad;
     return out;
 }
 

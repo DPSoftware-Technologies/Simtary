@@ -463,6 +463,7 @@ namespace wi
 			}
 			hcb.xHairAspect = hair.width * (float)std::max(1u, desc.width) / (float)std::max(1u, desc.height);
 			hcb.xHairLength = hair.length;
+			hcb.xHairThinDistance = hair.thinDistance;
 			hcb.xHairStiffness = hair.stiffness;
 			hcb.xHairDrag = hair.drag;
 			hcb.xHairGravityPower = hair.gravityPower;

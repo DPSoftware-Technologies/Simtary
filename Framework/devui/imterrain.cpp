@@ -1,6 +1,9 @@
 #include "imterrain.h"
 
 #include "terrain/TerrainSystem.h"
+#include "io/asset/AssetPack.h"
+#include "io/asset/AssetSystem.h"
+#include "io/model/ModelImporter.h"
 
 #include "wiScene.h"
 #include "wiTerrain.h"
@@ -488,8 +491,8 @@ void TerrainEditor::DrawLayersTab (wi::scene::Scene& scene, Entity terrain, Enti
     tr::TerrainSystem& sys = tr::TerrainSystem::Get();
     tr::TerrainData* data = sys.Data(terrain);
 
-    ImGui::TextWrapped("Each layer is a paint channel and a material. Give a layer textures by "
-                       "selecting its material and editing it in Properties.");
+    ImGui::TextWrapped("Each layer is a paint channel and a material. Open a layer to give it a "
+                       "texture set.");
 
     static uint32_t open = 0;
     for (uint32_t l = 0; l < data->LayerCount(); ++l) {
@@ -522,6 +525,58 @@ void TerrainEditor::DrawLayersTab (wi::scene::Scene& scene, Entity terrain, Enti
                     return tr::SampleRect();
                 });
                 sys.MarkDirty(terrain);
+            }
+
+            ImGui::SeparatorText("Textures");
+            tr::LayerTextures tex = sys.GetLayerTextures(scene, terrain, l);
+            std::string current = "None (plain colour)";
+            if (!tex.baseColor.empty()) {
+                const size_t slash = tex.baseColor.find_last_of('/');
+                current = tex.baseColor.substr(slash == std::string::npos ? 0 : slash + 1);
+                const size_t diff = current.rfind("_diff.");
+                if (diff != std::string::npos) current.resize(diff);
+            }
+            if (ImGui::BeginCombo("Texture set", current.c_str(), ImGuiComboFlags_HeightLarge)) {
+                // Scanned when the list opens: the packages only change between launches.
+                if (ImGui::IsWindowAppearing()) textureSets_ = tr::TerrainSystem::FindTextureSets();
+                if (ImGui::Selectable("None (plain colour)", tex.baseColor.empty())) {
+                    tex.baseColor.clear();
+                    tex.normal.clear();
+                    tex.surface.clear();
+                    sys.SetLayerTextures(scene, terrain, l, tex);
+                }
+                for (const tr::TextureSet& set : textureSets_) {
+                    if (ImGui::Selectable(set.name.c_str(), set.textures.baseColor == tex.baseColor)) {
+                        tr::LayerTextures pick = set.textures;
+                        pick.tileSize = tex.tileSize > 0.0f ? tex.tileSize : 2.0f;
+                        sys.SetLayerTextures(scene, terrain, l, pick);
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s\n%s\n%s", set.textures.baseColor.c_str(),
+                                          set.textures.normal.empty() ? "(no normal map)" : set.textures.normal.c_str(),
+                                          set.textures.surface.empty() ? "(no ARM map)" : set.textures.surface.c_str());
+                }
+                if (textureSets_.empty())
+                    ImGui::TextDisabled("No <name>_diff.jpg/.png in the packages.");
+                ImGui::EndCombo();
+            }
+            ImGui::SetItemTooltip("Any texture named <name>_diff (Poly Haven's naming), with its "
+                                  "<name>_nor_gl normal map and <name>_arm occlusion/roughness/metal "
+                                  "map when they are beside it.");
+            if (!tex.baseColor.empty()) {
+                float tile = tileEditLayer_ == int(l) ? tileEdit_ : (tex.tileSize > 0.0f ? tex.tileSize : 2.0f);
+                if (ImGui::SliderFloat("Tile size", &tile, 0.5f, 16.0f, "%.2f m", ImGuiSliderFlags_Logarithmic)) {
+                    tileEdit_ = tile;
+                    tileEditLayer_ = int(l);
+                }
+                // Retiling re-renders every chunk's texture, so only on release.
+                if (ImGui::IsItemDeactivatedAfterEdit() && tileEditLayer_ == int(l)) {
+                    tex.tileSize = tileEdit_;
+                    sys.SetLayerTextures(scene, terrain, l, tex);
+                    tileEditLayer_ = -1;
+                }
+                ImGui::SetItemTooltip("How many metres one repeat of the texture covers. Snapped so "
+                                      "every chunk holds a whole number of repeats.");
             }
 
             const Entity material = sys.LayerMaterial(scene, terrain, l);
@@ -569,6 +624,109 @@ void TerrainEditor::DrawLayersTab (wi::scene::Scene& scene, Entity terrain, Enti
             ImGui::TreePop();
         }
         ImGui::PopID();
+    }
+
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("Grass")) {
+        // Edited on a copy and applied on release: every change rebuilds every chunk's grass.
+        if (!grassEditing_) grassEdit_ = sys.GetGrass(scene, terrain);
+        tr::GrassSettings& g = grassEdit_;
+        bool apply = false;
+        apply |= ImGui::Checkbox("Grass on", &g.enabled);
+        ImGui::SetItemTooltip("Grows on every layer with 'Grass grows here' ticked.");
+        char texture[256];
+        std::snprintf(texture, sizeof(texture), "%s", g.texture.c_str());
+        if (ImGui::InputText("Card texture", texture, sizeof(texture))) { g.texture = texture; grassEditing_ = true; }
+        apply |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SetItemTooltip("Logical path of the card atlas: grass on a transparent background, "
+                              "root at the bottom edge of each frame.");
+        int atlas[2] = { g.columns, g.rows };
+        if (ImGui::SliderInt2("Frames (columns, rows)", atlas, 1, 4)) { g.columns = atlas[0]; g.rows = atlas[1]; grassEditing_ = true; }
+        apply |= ImGui::IsItemDeactivatedAfterEdit();
+        if (ImGui::SliderFloat("Height", &g.height, 0.05f, 2.0f, "%.2f m")) grassEditing_ = true;
+        apply |= ImGui::IsItemDeactivatedAfterEdit();
+        if (ImGui::SliderFloat("Height variation", &g.randomness, 0.0f, 1.0f)) grassEditing_ = true;
+        apply |= ImGui::IsItemDeactivatedAfterEdit();
+        if (ImGui::SliderFloat("Density", &g.density, 0.0f, 4.0f)) grassEditing_ = true;
+        apply |= ImGui::IsItemDeactivatedAfterEdit();
+        if (ImGui::SliderFloat("View distance", &g.viewDistance, 10.0f, 300.0f, "%.0f m")) grassEditing_ = true;
+        apply |= ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::SetItemTooltip("Grass costs GPU time per card: keep this short in VR or on a weak GPU.");
+        if (ImGui::SliderInt("Crossed cards", &g.crossCards, 1, 4)) grassEditing_ = true;
+        if (ImGui::SliderFloat("Stiffness", &g.stiffness, 0.0f, 10.0f, "%.1f")) grassEditing_ = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How hard the grass springs back against the weather wind. Low = lies flat in gusts.");
+        apply |= ImGui::IsItemDeactivatedAfterEdit();
+        if (apply) {
+            sys.SetGrass(scene, terrain, g);
+            grassEditing_ = false;
+        }
+    }
+
+    ImGui::Spacing();
+    if (ImGui::CollapsingHeader("Trees and props")) {
+        ImGui::TextWrapped("Models scattered where a layer is painted, built around the camera "
+                           "like the grass. Every copy shares one mesh.");
+        std::vector<tr::PropSettings> props = sys.GetProps(scene, terrain);
+        for (uint32_t i = 0; i < props.size(); ++i) {
+            tr::PropSettings& p = props[i];
+            ImGui::PushID(int(1000 + i));
+            ImGui::SeparatorText(p.name.empty() ? "(prop)" : p.name.c_str());
+            bool apply = false;
+            int layer = int(p.layer);
+            if (ImGui::SliderInt("On layer", &layer, 0, int(data->LayerCount()) - 1,
+                                 layer < int(data->LayerCount()) ? data->layers[layer].name.c_str() : "?")) {
+                p.layer = uint32_t(layer);
+                apply = true;
+            }
+            int count[2] = { p.minPerChunk, p.maxPerChunk };
+            if (ImGui::SliderInt2("Per chunk (min, max)", count, 0, 64)) { p.minPerChunk = count[0]; p.maxPerChunk = count[1]; }
+            apply |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::SliderFloat("Threshold", &p.threshold, 0.0f, 1.0f);
+            apply |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::SetItemTooltip("Higher = fewer: only where the layer is painted strongest and the noise is high.");
+            ImGui::SliderFloat("Clumping", &p.clumping, 0.002f, 0.5f, "%.3f", ImGuiSliderFlags_Logarithmic);
+            apply |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::SetItemTooltip("Low = big groves and clearings, high = spread evenly.");
+            float size[2] = { p.minSize, p.maxSize };
+            if (ImGui::SliderFloat2("Size (min, max)", size, 0.1f, 3.0f)) { p.minSize = size[0]; p.maxSize = size[1]; }
+            apply |= ImGui::IsItemDeactivatedAfterEdit();
+            ImGui::SliderFloat("Sink", &p.sink, 0.0f, 2.0f, "%.2f m");
+            apply |= ImGui::IsItemDeactivatedAfterEdit();
+            if (apply) sys.UpdateProp(scene, terrain, i, p);
+            if (ImGui::SmallButton("Remove")) sys.DeleteProp(scene, terrain, i);
+            ImGui::PopID();
+        }
+
+        ImGui::SeparatorText("Add");
+        if (ImGui::BeginCombo("Model", propModel_.empty() ? "Choose a model..." : propModel_.c_str(), ImGuiComboFlags_HeightLarge)) {
+            if (ImGui::IsWindowAppearing()) {
+                propModels_.clear();
+                const st::AssetSystem& assets = st::AssetSystem::Get();
+                for (uint32_t m = 0; m < assets.MountCount(); ++m) {
+                    const st::asset::AssetPack* pack = assets.PackAt(m);
+                    if (pack == nullptr) continue;
+                    for (uint32_t k = 0; k < pack->AssetCount(); ++k) {
+                        std::string path = pack->NameString(*pack->AssetAt(k));
+                        if (st::model::CanImport(path) &&
+                            std::find(propModels_.begin(), propModels_.end(), path) == propModels_.end())
+                            propModels_.push_back(std::move(path));
+                    }
+                }
+                std::sort(propModels_.begin(), propModels_.end());
+            }
+            for (const std::string& path : propModels_)
+                if (ImGui::Selectable(path.c_str(), path == propModel_)) propModel_ = path;
+            ImGui::EndCombo();
+        }
+        ImGui::BeginDisabled(propModel_.empty());
+        if (ImGui::Button("Scatter it", ImVec2(-1, 0))) {
+            tr::PropSettings p;
+            std::string why;
+            if (sys.AddProp(scene, terrain, propModel_, p, &why)) status_ = "Scattering " + propModel_ + " on layer 0.";
+            else status_ = "Could not add " + propModel_ + ": " + why;
+        }
+        ImGui::EndDisabled();
     }
 
     ImGui::Spacing();

@@ -1,9 +1,15 @@
 #include "terrain/TerrainSystem.h"
 
+#include "io/asset/AssetPack.h"
+#include "io/asset/AssetSystem.h"
+#include "io/model/ModelImporter.h"
+#include "render/MeshLOD.h"
+
 #include "wiScene.h"
 #include "wiTerrain.h"
 #include "wiHelper.h"
 #include "wiBacklog.h"
+#include "wiArchive.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -20,6 +26,13 @@ public:
 
     float Height (const XMFLOAT2& p) const override {
         return data_->SampleHeight(p.x, p.y);
+    }
+
+    float Paint (const XMFLOAT2& p, uint32_t layer) const override {
+        if (layer >= data_->LayerCount()) return 0.0f;
+        float normalised[kMaxLayers];
+        data_->SampleWeights(p.x, p.y, normalised);
+        return normalised[layer];
     }
 
     float Surface (const XMFLOAT2& p, float* weights, uint32_t count) const override {
@@ -362,6 +375,338 @@ void TerrainSystem::SyncLayerMaterial (wi::scene::Scene& scene, wi::ecs::Entity 
     if (wi::scene::NameComponent* name = scene.names.GetComponent(m))
         name->name = "terrain_" + b->data->layers[layer].name;
     b->dirty = true;
+}
+
+float TerrainSystem::TilingFor (float tileSize, float spacing) {
+    // A chunk's texture coordinates run 0..1 across (chunk_width - 1) quads. A whole number of
+    // repeats per chunk keeps neighbouring chunks seamless; at least two, because exactly one
+    // is the value that tells the shader "no tiling set, use the engine's rule".
+    const float chunk = float(wi::terrain::chunk_width - 1) * spacing;
+    return std::max(2.0f, std::round(chunk / std::max(tileSize, 0.01f)));
+}
+
+LayerTextures TerrainSystem::GetLayerTextures (const wi::scene::Scene& scene, wi::ecs::Entity entity,
+                                               uint32_t layer) const {
+    LayerTextures out;
+    const Binding* b = Find(entity);
+    const wi::scene::MaterialComponent* mat = scene.materials.GetComponent(LayerMaterial(scene, entity, layer));
+    if (b == nullptr || mat == nullptr) return out;
+    using M = wi::scene::MaterialComponent;
+    out.baseColor = mat->textures[M::BASECOLORMAP].name;
+    out.normal = mat->textures[M::NORMALMAP].name;
+    out.surface = mat->textures[M::SURFACEMAP].name;
+    const float repeats = mat->texMulAdd.x;
+    out.tileSize = repeats == 1.0f ? 0.0f
+                 : float(wi::terrain::chunk_width - 1) * b->data->spacing / std::max(repeats, 1e-3f);
+    return out;
+}
+
+void TerrainSystem::SetLayerTextures (wi::scene::Scene& scene, wi::ecs::Entity entity, uint32_t layer,
+                                      const LayerTextures& textures) {
+    Binding* b = Find(entity);
+    wi::scene::MaterialComponent* mat = scene.materials.GetComponent(LayerMaterial(scene, entity, layer));
+    if (b == nullptr || mat == nullptr || layer >= b->data->LayerCount()) return;
+    using M = wi::scene::MaterialComponent;
+    const std::pair<int, const std::string*> slots[] = {
+        { M::BASECOLORMAP, &textures.baseColor },
+        { M::NORMALMAP, &textures.normal },
+        { M::SURFACEMAP, &textures.surface },
+    };
+    for (const auto& [slot, path] : slots) {
+        mat->textures[slot].name = *path;
+        mat->textures[slot].resource = {};
+    }
+    if (textures.tileSize > 0.0f) {
+        const float repeats = TilingFor(textures.tileSize, b->data->spacing);
+        mat->texMulAdd = XMFLOAT4(repeats, repeats, 0, 0);
+    } else {
+        mat->texMulAdd = XMFLOAT4(1, 1, 0, 0);
+    }
+    if (!textures.baseColor.empty()) {
+        b->data->layers[layer].color = XMFLOAT4(1, 1, 1, 1);
+        mat->SetBaseColor(b->data->layers[layer].color);
+    }
+    mat->CreateRenderData(true);
+    mat->SetDirty();   // the engine re-renders every chunk's texture from a dirty layer material
+    b->dirty = true;
+}
+
+GrassSettings TerrainSystem::GetGrass (const wi::scene::Scene& scene, wi::ecs::Entity entity) const {
+    GrassSettings out;
+    const wi::terrain::Terrain* terrain = scene.terrains.GetComponent(entity);
+    if (terrain == nullptr) return out;
+    // The scene's grass entity is what the engine reads back on every restart, so it wins.
+    const wi::HairParticleSystem* hair = scene.hairs.GetComponent(terrain->grassEntity);
+    const wi::scene::MaterialComponent* mat = scene.materials.GetComponent(terrain->grassEntity);
+    const wi::HairParticleSystem& h = hair ? *hair : terrain->grass_properties;
+    const wi::scene::MaterialComponent& m = mat ? *mat : terrain->grass_material;
+    out.enabled = terrain->IsGrassEnabled();
+    out.texture = m.textures[wi::scene::MaterialComponent::BASECOLORMAP].name;
+    if (!h.atlas_rects.empty() && h.atlas_rects[0].texMulAdd.x > 0 && h.atlas_rects[0].texMulAdd.y > 0) {
+        out.columns = std::max(1, int(std::round(1.0f / h.atlas_rects[0].texMulAdd.x)));
+        out.rows = std::max(1, int(std::round(1.0f / h.atlas_rects[0].texMulAdd.y)));
+    } else {
+        out.columns = out.rows = 1;
+    }
+    out.height = h.length;
+    out.randomness = h.randomness;
+    out.density = terrain->grass_density;
+    out.viewDistance = h.viewDistance;
+    out.crossCards = int(h.billboardCount);
+    out.stiffness = h.stiffness;
+    return out;
+}
+
+void TerrainSystem::SetGrass (wi::scene::Scene& scene, wi::ecs::Entity entity, const GrassSettings& grass) {
+    if (Find(entity) == nullptr) return;
+    wi::scene::Scene* s = &scene;
+    // The generator copies the grass parameters from its threads, so this waits for it like
+    // any edit. Grass is decided when a chunk is built, so every chunk rebuilds.
+    Edit(entity, [s, entity, grass](TerrainData&) {
+        wi::terrain::Terrain* terrain = s->terrains.GetComponent(entity);
+        if (terrain == nullptr) return SampleRect();
+
+        wi::HairParticleSystem& h = terrain->grass_properties;
+        h.length = std::max(0.01f, grass.height);
+        h.randomness = std::clamp(grass.randomness, 0.0f, 1.0f);
+        h.viewDistance = std::max(1.0f, grass.viewDistance);
+        h.billboardCount = uint32_t(std::clamp(grass.crossCards, 1, 4));
+        h.stiffness = std::max(0.0f, grass.stiffness);
+        h.segmentCount = 1;
+        h.width = 1.0f;
+        // The engine bends every card towards the camera's up vector so it never shows edge-on
+        // from above. With wide clump cards that lays the whole field down in one direction -
+        // parallel stripes like roof tiles when you look down. Upright cards look right.
+        h.SetCameraBendEnabled(false);
+        h.atlas_rects.clear();
+        const int cols = std::max(1, grass.columns), rows = std::max(1, grass.rows);
+        for (int r = 0; r < rows; ++r) {
+            for (int c = 0; c < cols; ++c) {
+                wi::HairParticleSystem::AtlasRect rect;
+                rect.texMulAdd = XMFLOAT4(1.0f / cols, 1.0f / rows, float(c) / cols, float(r) / rows);
+                h.atlas_rects.push_back(rect);
+            }
+        }
+        h.SetDirty();
+
+        using M = wi::scene::MaterialComponent;
+        M& m = terrain->grass_material;
+        m.textures[M::BASECOLORMAP].name = grass.texture;
+        m.textures[M::BASECOLORMAP].resource = {};
+        m.SetBaseColor(XMFLOAT4(1, 1, 1, 1));
+        m.SetRoughness(1.0f);
+        m.SetMetalness(0.0f);
+        m.SetReflectance(0.02f);
+        m.SetAlphaRef(0.5f);   // cut-out cards, not blended
+        m.SetDoubleSided(true);
+        m.CreateRenderData(true);
+        m.SetDirty();
+
+        terrain->grass_density = std::max(0.0f, grass.density);
+        terrain->SetGrassEnabled(grass.enabled);
+        // Generation_Restart reads the grass entity back into the fields above, so it must
+        // carry them first.
+        if (wi::HairParticleSystem* sh = s->hairs.GetComponent(terrain->grassEntity)) *sh = h;
+        if (M* sm = s->materials.GetComponent(terrain->grassEntity)) *sm = m;
+        terrain->Generation_Restart();
+        return SampleRect();
+    });
+    MarkDirty(entity);
+}
+
+std::vector<TextureSet> TerrainSystem::FindTextureSets () {
+    std::vector<TextureSet> sets;
+    const AssetSystem& assets = AssetSystem::Get();
+    auto sibling = [&](const std::string& diff, const char* suffix) {
+        // "<dir>/<name>_diff.<ext>" -> "<dir>/<name><suffix>.<ext>", if the packages hold it
+        const size_t at = diff.rfind("_diff.");
+        std::string path = diff.substr(0, at) + suffix + diff.substr(at + 5);
+        return assets.Exists(path) ? path : std::string();
+    };
+    for (uint32_t m = 0; m < assets.MountCount(); ++m) {
+        const asset::AssetPack* pack = assets.PackAt(m);
+        if (pack == nullptr) continue;
+        for (uint32_t i = 0; i < pack->AssetCount(); ++i) {
+            const std::string path = pack->NameString(*pack->AssetAt(i));
+            const size_t at = path.rfind("_diff.");
+            if (at == std::string::npos) continue;
+            const std::string ext = path.substr(at + 6);
+            if (ext != "jpg" && ext != "png" && ext != "dds" && ext != "ktx2") continue;
+            TextureSet set;
+            const size_t slash = path.find_last_of('/');
+            set.name = path.substr(slash == std::string::npos ? 0 : slash + 1, at - (slash == std::string::npos ? 0 : slash + 1));
+            set.textures.baseColor = path;
+            set.textures.normal = sibling(path, "_nor_gl");
+            set.textures.surface = sibling(path, "_arm");
+            if (std::none_of(sets.begin(), sets.end(), [&](const TextureSet& s) { return s.name == set.name; }))
+                sets.push_back(std::move(set));
+        }
+    }
+    std::sort(sets.begin(), sets.end(), [](const TextureSet& a, const TextureSet& b) { return a.name < b.name; });
+    return sets;
+}
+
+// ---------------------------------------------------------------------- props ---
+
+namespace {
+
+PropSettings FromEngine (const wi::terrain::Prop& p) {
+    PropSettings out;
+    out.layer = uint32_t(std::max(0, p.region));
+    out.minPerChunk = p.min_count_per_chunk;
+    out.maxPerChunk = p.max_count_per_chunk;
+    out.threshold = p.threshold;
+    out.clumping = p.noise_frequency;
+    out.minSize = p.min_size;
+    out.maxSize = p.max_size;
+    out.sink = -p.min_y_offset;
+    // The name lives in the serialized entity: read it back the way the generator would.
+    if (!p.data.empty()) {
+        wi::scene::Scene tmp;
+        wi::Archive archive(p.data.data(), p.data.size());
+        wi::ecs::EntitySerializer seri;
+        const wi::ecs::Entity e = tmp.Entity_Serialize(archive, seri, wi::ecs::INVALID_ENTITY,
+            wi::scene::Scene::EntitySerializeFlags::KEEP_INTERNAL_ENTITY_REFERENCES);
+        if (const wi::scene::NameComponent* n = tmp.names.GetComponent(e)) out.name = n->name;
+    }
+    return out;
+}
+
+void ToEngine (const PropSettings& s, wi::terrain::Prop& p) {
+    p.region = int(std::min(s.layer, kMaxLayers - 1));
+    p.region_power = 1.0f;
+    p.min_count_per_chunk = std::max(0, s.minPerChunk);
+    p.max_count_per_chunk = std::max(p.min_count_per_chunk, s.maxPerChunk);
+    p.threshold = std::clamp(s.threshold, 0.0f, 1.0f);
+    p.noise_frequency = std::max(0.0001f, s.clumping);
+    p.noise_power = 1.0f;
+    p.min_size = std::max(0.01f, std::min(s.minSize, s.maxSize));
+    p.max_size = std::max(p.min_size, s.maxSize);
+    p.min_y_offset = -std::max(0.0f, s.sink);
+    p.max_y_offset = 0.0f;
+}
+
+} // namespace
+
+std::vector<PropSettings> TerrainSystem::GetProps (const wi::scene::Scene& scene, wi::ecs::Entity entity) const {
+    std::vector<PropSettings> out;
+    if (const wi::terrain::Terrain* terrain = scene.terrains.GetComponent(entity))
+        for (const wi::terrain::Prop& p : terrain->props) out.push_back(FromEngine(p));
+    return out;
+}
+
+bool TerrainSystem::AddProp (wi::scene::Scene& scene, wi::ecs::Entity entity, const std::string& modelPath,
+                             const PropSettings& settings, std::string* error) {
+    using namespace wi::scene;
+    auto fail = [&](const std::string& why) { if (error) *error = why; return false; };
+    if (Find(entity) == nullptr || !scene.terrains.Contains(entity)) return fail("not an authored terrain");
+
+    st::model::ImportOptions options;
+    options.importAnimations = options.importSkins = false;
+    const st::model::ImportResult imported = st::model::Import(scene, modelPath, options);
+    if (!imported.ok()) return fail(imported.error.empty() ? "import failed" : imported.error);
+
+    // The biggest object under the import is the prop.
+    wi::ecs::Entity best = wi::ecs::INVALID_ENTITY;
+    size_t bestIndices = 0;
+    for (size_t i = 0; i < scene.objects.GetCount(); ++i) {
+        const wi::ecs::Entity e = scene.objects.GetEntity(i);
+        if (e != imported.root && !scene.Entity_IsDescendant(e, imported.root)) continue;
+        const MeshComponent* mesh = scene.meshes.GetComponent(scene.objects[i].meshID);
+        if (mesh != nullptr && mesh->indices.size() > bestIndices) {
+            best = e;
+            bestIndices = mesh->indices.size();
+        }
+    }
+    if (best == wi::ecs::INVALID_ENTITY) {
+        scene.Entity_Remove(imported.root);
+        return fail("the model has no mesh");
+    }
+    const wi::ecs::Entity meshEntity = scene.objects.GetComponent(best)->meshID;
+    if (MeshComponent* mesh = scene.meshes.GetComponent(meshEntity)) {
+        if (mesh->indices.size() >= 300 * 3) st::render::GenerateMeshLODs(*mesh);
+    }
+
+    // One entity: the object with the node's rotation and scale, no position (the generator
+    //	places it). Copies reference the mesh by id, so the mesh and its materials stay in
+    //	the scene, parked under the terrain; the imported node tree goes.
+    const wi::ecs::Entity propEntity = wi::ecs::CreateEntity();
+    std::string name = modelPath;
+    const size_t slash = name.find_last_of("/\\");
+    if (slash != std::string::npos) name = name.substr(slash + 1);
+    const size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos) name.resize(dot);
+    scene.names.Create(propEntity) = name;
+    scene.objects.Create(propEntity) = *scene.objects.GetComponent(best);
+    // Rotation and scale only, and NOT a large-world transform: the generator writes the
+    //	position into translation_local, and a large-world UpdateTransform would replace it
+    //	with the absolute position the copy was serialized with (every tree at its chunk's
+    //	origin).
+    TransformComponent& t = scene.transforms.Create(propEntity);
+    XMVECTOR scale, rotation, translation;
+    XMMatrixDecompose(&scale, &rotation, &translation, scene.ComputeEntityMatrixRecursive(best));
+    XMStoreFloat3(&t.scale_local, scale);
+    XMStoreFloat4(&t.rotation_local, rotation);
+    t.translation_local = XMFLOAT3(0, 0, 0);
+    t.SetLargeWorld(false);
+    t.SetDirty();
+
+    wi::terrain::Prop prop;
+    {
+        wi::Archive archive;
+        archive.SetReadModeAndResetPos(false);
+        wi::ecs::EntitySerializer seri;
+        scene.Entity_Serialize(archive, seri, propEntity, Scene::EntitySerializeFlags::NONE);
+        archive.WriteData(prop.data);
+    }
+    ToEngine(settings, prop);
+
+    scene.Entity_Remove(propEntity);
+    scene.Entity_Remove(imported.root);   // the node tree; meshes and materials are not in it
+    scene.Component_Attach(meshEntity, entity);
+    if (const MeshComponent* mesh = scene.meshes.GetComponent(meshEntity))
+        for (const MeshComponent::MeshSubset& subset : mesh->subsets)
+            if (scene.materials.Contains(subset.materialID)) scene.Component_Attach(subset.materialID, entity);
+
+    wi::scene::Scene* s = &scene;
+    // The generator reads the prop list from its threads: change it while it is idle.
+    Edit(entity, [s, entity, prop](TerrainData&) {
+        if (wi::terrain::Terrain* terrain = s->terrains.GetComponent(entity)) {
+            terrain->props.push_back(prop);
+            terrain->InvalidateProps();
+        }
+        return SampleRect();
+    });
+    MarkDirty(entity);
+    return true;
+}
+
+void TerrainSystem::UpdateProp (wi::scene::Scene& scene, wi::ecs::Entity entity, uint32_t index,
+                             const PropSettings& settings) {
+    wi::scene::Scene* s = &scene;
+    Edit(entity, [s, entity, index, settings](TerrainData&) {
+        wi::terrain::Terrain* terrain = s->terrains.GetComponent(entity);
+        if (terrain != nullptr && index < terrain->props.size()) {
+            ToEngine(settings, terrain->props[index]);
+            terrain->InvalidateProps();
+        }
+        return SampleRect();
+    });
+    MarkDirty(entity);
+}
+
+void TerrainSystem::DeleteProp (wi::scene::Scene& scene, wi::ecs::Entity entity, uint32_t index) {
+    wi::scene::Scene* s = &scene;
+    // The mesh stays in the scene (another prop or a placed copy may use it).
+    Edit(entity, [s, entity, index](TerrainData&) {
+        wi::terrain::Terrain* terrain = s->terrains.GetComponent(entity);
+        if (terrain != nullptr && index < terrain->props.size()) {
+            terrain->props.erase(terrain->props.begin() + index);
+            terrain->InvalidateProps();
+        }
+        return SampleRect();
+    });
+    MarkDirty(entity);
 }
 
 // ---------------------------------------------------------------------- flush ---

@@ -455,8 +455,79 @@ void st::App::Initialize() {
 
     OnInitialize();
 
+    // The in-engine splash, over the first frames until the world is ready. Opened here,
+    // under the native loading window, so the video's parse pass costs no visible time.
+    // Not without a window, and not on Hurricanes: it draws through Detroit's device.
+    if (!st::IsHeadless() && st::render::ChosenBackend() == st::render::Backend::Detroit &&
+        !wi::arguments::HasArgument("--no-splash") && !wi::arguments::HasArgument("no-splash")) {
+        st::render::detroit::SplashSettings splash;
+        splash.image = Config().splashImage;
+        splash.video = Config().splashVideo;
+        splash.background = Config().splashBackground;
+        splash.skippable = Config().splashSkippable;
+        splash.minSeconds = Config().splashMinSeconds;
+        splash.maxWaitSeconds = Config().splashWaitForWorld ? Config().splashMaxWaitSeconds : 0.0f;
+        splash.fadeSeconds = Config().splashFadeSeconds;
+        splash.volume = Config().splashVolume;
+        const char* env = std::getenv("SIMTARY_SPLASH_VIDEO");
+        const std::string envValue = env ? env : "";
+        if (envValue == "0" || envValue == "off" || envValue == "false" ||
+            wi::arguments::HasArgument("--no-splash-video") || wi::arguments::HasArgument("no-splash-video"))
+            splash.video.clear();
+        m_loadingScreen.SetStatusText("opening splash");
+        splash_.Start(splash);
+    }
+
     m_loadingScreen.Hide(); // engine ready → tear the loading window down
     loading_ = LoadingState{};   // nothing is loading any more
+}
+
+bool st::App::SplashWorldReady(std::string& status) {
+    ++splashFrames_;
+    if (sceneManager.HasPendingLoad()) {
+        status = "Loading " + sceneManager.PendingName();
+        splashWarmFrames_ = 0;
+        return false;
+    }
+
+    // RenderMeshes skips every draw whose pipeline is not built yet, so until the jobs
+    // drain, objects are simply missing from the frame. The count can dip to zero
+    // between batches, hence the debounce; a project whose cache has everything never
+    // sees a job at all, hence the frame floor.
+    const int pipelines = st::render::Get().PipelinesCompiling();
+    if (pipelines > 0) {
+        splashSawPipelines_ = true;
+        splashPipelineIdle_ = 0;
+    } else {
+        ++splashPipelineIdle_;
+    }
+    const bool pipelinesDone = splashPipelineIdle_ > 10 && (splashSawPipelines_ || splashFrames_ > 30);
+
+    // Terrain chunks are generated on job threads around the camera; a chunk not built
+    // yet is a hole in the ground.
+    bool terrainBusy = false;
+    const wi::scene::Scene& scene = wi::scene::GetScene();
+    for (size_t i = 0; i < scene.terrains.GetCount(); ++i)
+        terrainBusy = terrainBusy || scene.terrains[i].IsGenerationBusy();
+    splashTerrainIdle_ = terrainBusy ? 0 : splashTerrainIdle_ + 1;
+
+    if (!pipelinesDone) {
+        status = pipelines > 0 ? "Preparing shaders (" + std::to_string(pipelines) + " left)" : "Preparing shaders";
+        splashWarmFrames_ = 0;
+        return false;
+    }
+    if (splashTerrainIdle_ <= 10) {
+        status = "Generating terrain";
+        splashWarmFrames_ = 0;
+        return false;
+    }
+    // A few frames drawn with everything in place, still under the splash: first-use
+    // driver work and the first texture uploads land where nobody sees them.
+    if (++splashWarmFrames_ < 8) {
+        status = "Almost ready";
+        return false;
+    }
+    return true;
 }
 
 void st::App::ApplyPlayModeTransition() {
@@ -513,7 +584,12 @@ void st::App::Update(float dt) {
     st::xr::XRSystem::Get().SetEyesOwnScene(xrDesktopOff_);
     // A headless server draws nothing either: the path's culling and render-data upkeep would
     // be CPU spent for a device that executes none of it.
-    pathOff_ = xrDesktopOff_ || st::IsHeadless();
+    // And with the editor open but every panel that shows the game image hidden behind a tab,
+    // rendering the game path would only double the frame: the Editor Viewport is a second
+    // full render of the same scene.
+    gamePathHold_ = std::max(0.0f, gamePathHold_ - dt);
+    const bool hiddenByEditor = !editor_.GameImageWanted() && gamePathHold_ <= 0.0f;
+    pathOff_ = xrDesktopOff_ || st::IsHeadless() || hiddenByEditor;
     {
         wi::RenderPath* path = activePath;
         if (pathOff_) activePath = nullptr;   // the one call that would update it
@@ -620,6 +696,12 @@ void st::App::Update(float dt) {
     renderer_->Update(dt);
     renderer_->SetDebugOverlays(debugOverlays_);
 
+    // Last: the verdict reads this frame's scene, terrain and pipeline state.
+    if (splash_.IsActive()) {
+        std::string status;
+        const bool ready = SplashWorldReady(status) || !Config().splashWaitForWorld;
+        splash_.Update(dt, ready, status);
+    }
 }
 
 void st::App::UpdateGameUI(float dt, bool editing) {
@@ -682,6 +764,10 @@ void st::App::Render() {
 
     OnRender();
 
+    // Its own command list, opened before the frame's compose list, so the new video
+    // frame is on the GPU by the time Compose draws it.
+    splash_.Upload();
+
     // Hurricanes: Filament draws the frame and presents it itself (Wicked's device is the null one).
     if (hurricanes_ && hurricanes_->Ready())
         hurricanes_->RenderFrame(canvas.GetPhysicalWidth(), canvas.GetPhysicalHeight());
@@ -690,6 +776,9 @@ void st::App::Render() {
 void st::App::Compose(wi::graphics::CommandList cmd) {
     using Mode = st::render::detroit::DetroitRenderer::ComposeMode;
     renderer_->Compose(cmd, editor_.IsEnabled() ? Mode::EditorOnly : xrDesktopOff_ ? Mode::XRMirror : Mode::Game);
+    // Over everything, the DevUI included: nothing under it is ready to be looked at.
+    if (splash_.IsActive())
+        splash_.Draw(canvas, graphicsDevice->GetSwapChainColorSpace(&swapChain), cmd);
 }
 
 void st::App::Exit() {
@@ -702,6 +791,9 @@ void st::App::Exit() {
     st::net::NetSession::Get().Shutdown();
     st::online::EosPlatform::Get().Shutdown();
     st::stream::StreamHost::Get().Shutdown();
+
+    // The splash's textures and audio stream, if the game is closed while it is still up.
+    splash_.Shutdown();
 
     // Frees the editor's render path (and waits for the GPU) before the device goes away.
     editor_.Shutdown();

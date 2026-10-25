@@ -15,6 +15,48 @@ static const uint2 block_offsets[16] = {
 	uint2(0, 3), uint2(1, 3), uint2(2, 3), uint2(3, 3),
 };
 
+// Where a layer's texture is sampled. A layer material with texMulAdd.xy other than 1 (SIMTARY:
+//	authored terrain sets it from the layer's tile size) repeats its textures that many times per
+//	chunk at every distance, so the pattern keeps its size from near to far. Otherwise the engine's
+//	own rule: one texel per virtual-texture pixel up close, once per chunk when the chunk's texture
+//	is smaller than the material's - which changes the pattern's size with distance.
+inline float2 LayerUV(ShaderMaterial material, Texture2D tex, float2 uv2, out float lod)
+{
+	float2 dim = 0;
+	tex.GetDimensions(dim.x, dim.y);
+	const float2 tiling = material.texMulAdd.xy;
+	if (any(tiling != 1))
+	{
+		const float2 diff = dim * tiling * push.resolution_rcp;
+		lod = log2(max(diff.x, diff.y));
+		return uv2 * tiling + material.texMulAdd.zw;
+	}
+	const float2 diff = dim * push.resolution_rcp;
+	lod = log2(max(diff.x, diff.y));
+	const float2 overscale = lod < 0 ? diff : 1;
+	return uv2 / overscale;
+}
+
+// SIMTARY: anti-tiling. `world` is the position in chunk units, continuous across chunks and
+//	oriented like uv2 (so a mirrored normal map never appears). A second sample of the same
+//	texture at an unrelated scale and offset is blended in where low-frequency world noise says
+//	so - the repeat of either alone is broken up by the other. Only for authored layers (tile
+//	size set); the engine's own rule keeps one sample.
+static const float ANTITILE_SCALE = 0.43;
+static const float ANTITILE_FREQUENCY = 3.0; // blend patches per chunk
+inline half4 SampleLayer(ShaderMaterial material, Texture2D tex, float2 uv2, float2 world)
+{
+	float lod;
+	const float2 layer_uv = LayerUV(material, tex, uv2, lod);
+	const half4 a = tex.SampleLevel(sampler_linear_wrap, layer_uv, lod);
+	if (all(material.texMulAdd.xy == 1))
+		return a;
+	const float2 uv_b = world * material.texMulAdd.xy * ANTITILE_SCALE + float2(0.37, 0.71);
+	const half4 b = tex.SampleLevel(sampler_linear_wrap, uv_b, lod + log2(ANTITILE_SCALE));
+	const float n = noise_gradient_3D(float3(world * ANTITILE_FREQUENCY, 0.5)) * 0.5 + 0.5;
+	return lerp(a, b, (half)smoothstep(0.35, 0.65, n));
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
@@ -48,12 +90,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	float block_a[16];
 #endif // UPDATE_SURFACEMAP
 
+	const int2 chunk = int2((push.chunk_xz << 16) >> 16, push.chunk_xz >> 16);
+
 	for(uint idx = 0; idx < 16; ++idx)
 	{
 		const uint2 block_offset = block_offsets[idx];
 		const int2 pixel = push.offset + DTid.xy * 4 + block_offset;
 		const float2 uv = (pixel.xy + 0.5f) * push.resolution_rcp;
 		const float2 uv2 = float2(uv.x, 1 - uv.y);
+		// uv runs along world +X / +Z inside the chunk, so chunk + uv is continuous across
+		//	chunks; z is negated to match uv2's orientation.
+		const float2 world = float2(chunk.x + uv.x, -(chunk.y + uv.y));
 		
 		half4 total_color = 0;
 		half accumulation = 0;
@@ -74,12 +121,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			if (material.textures[BASECOLORMAP].IsValid())
 			{
 				Texture2D tex = bindless_textures[descriptor_index(material.textures[BASECOLORMAP].texture_descriptor)];
-				float2 dim = 0;
-				tex.GetDimensions(dim.x, dim.y);
-				float2 diff = dim * push.resolution_rcp;
-				float lod = log2(max(diff.x, diff.y));
-				float2 overscale = lod < 0 ? diff : 1;
-				half4 baseColorMap = tex.SampleLevel(sampler_linear_wrap, uv2 / overscale, lod);
+				half4 baseColorMap = SampleLayer(material, tex, uv2, world);
 				baseColor *= baseColorMap;
 			}
 			total_color = mad(1 - accumulation, weight * baseColor, total_color);
@@ -93,12 +135,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			if (material.textures[NORMALMAP].IsValid())
 			{
 				Texture2D tex = bindless_textures[descriptor_index(material.textures[NORMALMAP].texture_descriptor)];
-				float2 dim = 0;
-				tex.GetDimensions(dim.x, dim.y);
-				float2 diff = dim * push.resolution_rcp;
-				float lod = log2(max(diff.x, diff.y));
-				float2 overscale = lod < 0 ? diff : 1;
-				half2 normalMap = tex.SampleLevel(sampler_linear_wrap, uv2 / overscale, lod).rg;
+				half2 normalMap = SampleLayer(material, tex, uv2, world).rg;
 				total_color.rg = mad(1 - accumulation, weight * normalMap, total_color.rg);
 				accumulation = mad(1 - weight, accumulation, weight);
 				if(accumulation >= 1)
@@ -112,12 +149,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			if (material.textures[SURFACEMAP].IsValid())
 			{
 				Texture2D tex = bindless_textures[descriptor_index(material.textures[SURFACEMAP].texture_descriptor)];
-				float2 dim = 0;
-				tex.GetDimensions(dim.x, dim.y);
-				float2 diff = dim * push.resolution_rcp;
-				float lod = log2(max(diff.x, diff.y));
-				float2 overscale = lod < 0 ? diff : 1;
-				half4 surfaceMap = tex.SampleLevel(sampler_linear_wrap, uv2 / overscale, lod);
+				half4 surfaceMap = SampleLayer(material, tex, uv2, world);
 				surface *= surfaceMap;
 			}
 			total_color = mad(1 - accumulation, weight * surface, total_color);
@@ -132,12 +164,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			if (material.textures[EMISSIVEMAP].IsValid())
 			{
 				Texture2D tex = bindless_textures[descriptor_index(material.textures[EMISSIVEMAP].texture_descriptor)];
-				float2 dim = 0;
-				tex.GetDimensions(dim.x, dim.y);
-				float2 diff = dim * push.resolution_rcp;
-				float lod = log2(max(diff.x, diff.y));
-				float2 overscale = lod < 0 ? diff : 1;
-				half4 emissiveMap = tex.SampleLevel(sampler_linear_wrap, uv2 / overscale, lod);
+				half4 emissiveMap = SampleLayer(material, tex, uv2, world);
 				emissiveColor.rgb = emissiveMap.rgb * emissiveMap.a;
 				emissiveColor.a = emissiveMap.a;
 			}
@@ -149,6 +176,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		}
 
 #ifdef UPDATE_BASECOLORMAP
+		// SIMTARY: macro variation - slow light/dark patches (two octaves, ~1 and ~3 per chunk)
+		//	so a hillside is not one even repeat even where the anti-tiling blend agrees.
+		const float macro = noise_gradient_3D(float3(world * 1.1, 2.5)) * 0.65 + noise_gradient_3D(float3(world * 3.3, 7.5)) * 0.35;
+		total_color.rgb *= (half)lerp(0.85, 1.12, saturate(macro * 0.5 + 0.5));
 		block_rgb[idx] = ApplySRGBCurve_Fast(total_color.rgb);
 #endif // UPDATE_BASECOLORMAP
 

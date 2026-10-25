@@ -38,6 +38,8 @@ public:
     // `frame` is the game's final image (UI included). `open` is the window close box.
     void Draw (wi::scene::Scene& scene, wi::ecs::Entity& selected, EditorHistory* history,
                const render::TextureObject* frame, bool* open);
+    // The window was on screen at the last Draw (not a hidden dock tab).
+    bool Visible () const { return visible_; }
 
     static constexpr const char* kWindowName = "UI Editor";
 
@@ -57,6 +59,7 @@ private:
     ImVec2 pan_ = ImVec2(0, 0);       // offset of the image from centred, screen pixels
     ImVec2 imagePos_ = ImVec2(0, 0);  // this frame
     float  scale_ = 1.0f;             // screen pixels per game pixel this frame
+    bool   visible_ = false;
     bool   showRects_ = true;
     bool   snap_ = false;
     float  snapStep_ = 8.0f;

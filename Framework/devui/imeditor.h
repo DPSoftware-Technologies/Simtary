@@ -80,6 +80,11 @@ public:
     bool SaveSceneCopy(wi::scene::Scene& scene, const std::string& path);
 
     bool IsEnabled() const { return enabled_; }
+    // Whether the game path needs rendering for the editor. With the editor open and every
+    // panel that shows the game image hidden behind another tab, rendering it only doubles
+    // the frame's cost - the Editor Viewport is a whole second render of the scene.
+    // True whenever the editor is closed or has not drawn for a frame (DevUI hidden).
+    bool GameImageWanted() const;
     // The Game Viewport's game image this frame (screen pixels); false when the panel is
     // not showing it. `hovered`: the pointer is on the image.
     bool GameImage(ImVec2& pos, ImVec2& size, bool& hovered) const
@@ -436,6 +441,10 @@ private:
     bool    gameImageValid_     = false;
     bool    gameImageHovered_   = false;
     bool    gameViewHovered_    = false;
+    // ImGui frames: the last Draw, and the last one in which a panel showing the game image
+    //	(Game Viewport, UI Editor) was on screen. See GameImageWanted.
+    int     drawFrame_          = -10;
+    int     gameShownFrame_     = -10;
     bool    inputCaptureActive_ = false;
 
     // Free camera state (position + euler), driven only from ImGui input so it keeps

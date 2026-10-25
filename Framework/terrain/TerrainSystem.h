@@ -44,6 +44,52 @@ struct GroundSample {
     float    weights[kMaxLayers] = {}; // normalised paint, sums to 1
 };
 
+// The textures that cover one layer, by logical asset path ("thirdparty/x/rock_diff.jpg").
+// They live on the layer's material, so they save with the map like any material.
+struct LayerTextures {
+    std::string baseColor;        // colour
+    std::string normal;           // normal map, +Y up (OpenGL / glTF)
+    std::string surface;          // R occlusion, G roughness, B metalness (glTF "ARM")
+    float       tileSize = 2.0f;  // metres one repeat covers; 0 = the engine's own rule
+};
+
+// A texture set found in the mounted packages: "<dir>/<name>_diff.<ext>" plus whichever of
+// "_nor_gl" / "_arm" sit beside it (Poly Haven's names).
+struct TextureSet {
+    std::string   name;           // "<name>"
+    LayerTextures textures;
+};
+
+// The engine's grass: camera-facing cards on every chunk near the camera, where a layer marked
+// `grass` is painted. Saved with the map (the terrain's grass entity).
+struct GrassSettings {
+    bool        enabled = false;
+    std::string texture;              // card atlas, transparent background, root at the bottom
+    int         columns = 2;          // frames in the atlas: columns x rows, picked at random
+    int         rows = 2;
+    float       height = 0.5f;        // metres, before random variation
+    float       randomness = 0.4f;    // 0 = every card the same height
+    float       density = 1.0f;       // cards per vertex, relative
+    float       viewDistance = 60.0f; // metres; beyond it no grass is drawn
+    int         crossCards = 2;       // cards per tuft, crossed (1 = flat cards)
+    float       stiffness = 3.0f;     // spring back against the weather wind (the engine's 0.5 lays grass flat in gusts)
+};
+
+// A model the engine scatters over the terrain - trees, bushes, rocks - chunk by chunk around
+// the camera, where one paint layer is. Every copy shares the model's mesh (with its LODs).
+// Saved with the map.
+struct PropSettings {
+    std::string name;             // the model it came from (set by AddProp)
+    uint32_t    layer = 0;        // grows where this paint layer is
+    int         minPerChunk = 0;  // a chunk (66 samples square) tries this many..
+    int         maxPerChunk = 4;  // ..up to this many
+    float       threshold = 0.4f; // 0..1: higher = fewer, only where paint and noise are strongest
+    float       clumping = 0.03f; // noise frequency: low = big groves and clearings, high = even
+    float       minSize = 0.8f;   // random scale range
+    float       maxSize = 1.2f;
+    float       sink = 0.0f;      // metres pushed into the ground at most (roots on a slope)
+};
+
 struct CreateParams {
     std::string name    = "Terrain";
     float       spacing = 1.0f;   // metres between samples; also the engine's chunk scale
@@ -99,6 +145,30 @@ public:
                                    uint32_t layer) const;
     // A layer's colour changed: push it into its material (which rebuilds the chunks).
     void SyncLayerMaterial (wi::scene::Scene& scene, wi::ecs::Entity terrain, uint32_t layer);
+    // A layer's textures, read back from its material.
+    LayerTextures GetLayerTextures (const wi::scene::Scene& scene, wi::ecs::Entity terrain,
+                                    uint32_t layer) const;
+    // Put textures on a layer's material (the chunks rebuild their texture). Setting a colour
+    // texture turns the layer's tint white, or the tint would darken it.
+    void SetLayerTextures (wi::scene::Scene& scene, wi::ecs::Entity terrain, uint32_t layer,
+                           const LayerTextures& textures);
+    GrassSettings GetGrass (const wi::scene::Scene& scene, wi::ecs::Entity terrain) const;
+    // Apply grass settings; every chunk rebuilds its grass.
+    void SetGrass (wi::scene::Scene& scene, wi::ecs::Entity terrain, const GrassSettings& grass);
+
+    std::vector<PropSettings> GetProps (const wi::scene::Scene& scene, wi::ecs::Entity terrain) const;
+    // Import `modelPath` (a logical path - .glb/.gltf/.fbx/.obj) and scatter it. A model with
+    // several objects contributes its biggest one. LODs are generated for its meshes.
+    bool AddProp (wi::scene::Scene& scene, wi::ecs::Entity terrain, const std::string& modelPath,
+                  const PropSettings& settings, std::string* error = nullptr);
+    void UpdateProp (wi::scene::Scene& scene, wi::ecs::Entity terrain, uint32_t index, const PropSettings& settings);
+    void DeleteProp (wi::scene::Scene& scene, wi::ecs::Entity terrain, uint32_t index);
+
+    // Every texture set in the mounted packages, sorted by name.
+    static std::vector<TextureSet> FindTextureSets ();
+    // Metres one repeat covers -> repeats per chunk (whole numbers, so chunks meet seamlessly).
+    static float TilingFor (float tileSize, float spacing);
+
     // Mark the data changed outside Edit() (a layer's soil settings, say), so Flush saves it.
     void MarkDirty (wi::ecs::Entity terrain);
 

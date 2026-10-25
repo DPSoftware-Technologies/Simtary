@@ -30,6 +30,7 @@
 #include "input/InputActions.h"
 #include "io/model/ModelImporter.h"
 #include "terrain/TerrainSystem.h"
+#include "scene/DayNight.h"
 #include "terrain/TerrainGenerate.h"
 #include "vehicle/VehicleComponent.h"
 #include "ui/UISystem.h"
@@ -401,6 +402,7 @@ void EditorBridge::RegisterAll () {
         o.Set("editor", app.IsEditorMode());
         o.Set("dev_build", IsDevBuild());
         o.Set("entities", uint64_t(S().names.GetCount()));
+        o.Set("fps", double(ImGui::GetIO().Framerate)); // ImGui's average over the last 60 frames
         return o;
     });
 
@@ -1091,6 +1093,152 @@ void EditorBridge::RegisterAll () {
         });
         return Value("queued");
     });
+    Register("terrain.texture_sets", "-> [{name, base, normal, surface}] every <name>_diff texture in the packages",
+        [](const Value&, std::string&) {
+        Value list = Value::Array();
+        for (const st::terrain::TextureSet& s : st::terrain::TerrainSystem::FindTextureSets()) {
+            Value o = Value::Object();
+            o.Set("name", s.name);
+            o.Set("base", s.textures.baseColor);
+            o.Set("normal", s.textures.normal);
+            o.Set("surface", s.textures.surface);
+            list.push_back(std::move(o));
+        }
+        return list;
+    });
+    Register("terrain.layer_textures", "{terrain?, layer, set?=name|'' (none), base?, normal?, surface?, tile=2 (m)} - no set/paths: read them",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        st::terrain::TerrainSystem& sys = st::terrain::TerrainSystem::Get();
+        const Entity t = a.Has("terrain") ? ResolveEntity(scene, a, err, "terrain") : sys.FindTerrain(scene);
+        if (t == INVALID_ENTITY || !sys.IsAuthored(t)) { if (err.empty()) err = "no authored terrain"; return Value(); }
+        const uint32_t layer = uint32_t(a["layer"].AsInt(0));
+        if (layer >= sys.Data(t)->LayerCount()) { err = "no such layer"; return Value(); }
+        st::terrain::LayerTextures tex = sys.GetLayerTextures(scene, t, layer);
+        const bool write = a.Has("set") || a.Has("base") || a.Has("tile");
+        if (a.Has("set")) {
+            const std::string name = a["set"].AsString();
+            tex = st::terrain::LayerTextures();
+            if (!name.empty()) {
+                bool found = false;
+                for (const st::terrain::TextureSet& s : st::terrain::TerrainSystem::FindTextureSets())
+                    if (s.name == name) { tex = s.textures; found = true; }
+                if (!found) { err = "no texture set '" + name + "' (terrain.texture_sets)"; return Value(); }
+            }
+        }
+        if (a.Has("base")) tex.baseColor = a["base"].AsString();
+        if (a.Has("normal")) tex.normal = a["normal"].AsString();
+        if (a.Has("surface")) tex.surface = a["surface"].AsString();
+        tex.tileSize = a["tile"].AsFloat(tex.tileSize > 0.0f ? tex.tileSize : 2.0f);
+        if (write) sys.SetLayerTextures(scene, t, layer, tex);
+        Value o = Value::Object();
+        o.Set("base", tex.baseColor);
+        o.Set("normal", tex.normal);
+        o.Set("surface", tex.surface);
+        o.Set("tile", tex.tileSize);
+        return o;
+    });
+    Register("terrain.grass", "{terrain?, enabled?, texture?, columns?, rows?, height?, randomness?, density?, view_distance?, cross_cards?, stiffness?} - no args: read",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        st::terrain::TerrainSystem& sys = st::terrain::TerrainSystem::Get();
+        const Entity t = a.Has("terrain") ? ResolveEntity(scene, a, err, "terrain") : sys.FindTerrain(scene);
+        if (t == INVALID_ENTITY || !sys.IsAuthored(t)) { if (err.empty()) err = "no authored terrain"; return Value(); }
+        st::terrain::GrassSettings g = sys.GetGrass(scene, t);
+        bool write = false;
+        if (a.Has("enabled")) { g.enabled = a["enabled"].AsBool(g.enabled); write = true; }
+        if (a.Has("texture")) { g.texture = a["texture"].AsString(); write = true; }
+        if (a.Has("columns")) { g.columns = int(a["columns"].AsInt(g.columns)); write = true; }
+        if (a.Has("rows")) { g.rows = int(a["rows"].AsInt(g.rows)); write = true; }
+        if (a.Has("height")) { g.height = a["height"].AsFloat(g.height); write = true; }
+        if (a.Has("randomness")) { g.randomness = a["randomness"].AsFloat(g.randomness); write = true; }
+        if (a.Has("density")) { g.density = a["density"].AsFloat(g.density); write = true; }
+        if (a.Has("view_distance")) { g.viewDistance = a["view_distance"].AsFloat(g.viewDistance); write = true; }
+        if (a.Has("cross_cards")) { g.crossCards = int(a["cross_cards"].AsInt(g.crossCards)); write = true; }
+        if (a.Has("stiffness")) { g.stiffness = a["stiffness"].AsFloat(g.stiffness); write = true; }
+        if (write) sys.SetGrass(scene, t, g);
+        Value o = Value::Object();
+        o.Set("enabled", Value(g.enabled));
+        o.Set("texture", g.texture);
+        o.Set("columns", int64_t(g.columns));
+        o.Set("rows", int64_t(g.rows));
+        o.Set("height", g.height);
+        o.Set("randomness", g.randomness);
+        o.Set("density", g.density);
+        o.Set("view_distance", g.viewDistance);
+        o.Set("cross_cards", int64_t(g.crossCards));
+        o.Set("stiffness", g.stiffness);
+        return o;
+    });
+    Register("weather.wind", "{speed? m/s, heading? deg (blows towards), turbulence?} - the day/night weather's wind; no args: read. 'applied' = the scene weather physics reads",
+        [S](const Value& a, std::string&) {
+        st::WeatherState& w = st::DayNight::Get().settings.weather;
+        if (a.Has("speed")) w.windSpeed = std::max(0.0f, a["speed"].AsFloat(w.windSpeed));
+        if (a.Has("heading")) w.windDegrees = a["heading"].AsFloat(w.windDegrees);
+        if (a.Has("turbulence")) w.windTurbulence = std::max(0.0f, a["turbulence"].AsFloat(w.windTurbulence));
+        Value o = Value::Object();
+        o.Set("speed", w.windSpeed);
+        o.Set("heading", w.windDegrees);
+        o.Set("turbulence", w.windTurbulence);
+        const wi::scene::WeatherComponent& sw = S().weather;
+        Value applied = Value::Object();
+        applied.Set("speed", sw.windSpeed);
+        applied.Set("direction", Vec3(sw.windDirection));
+        applied.Set("turbulence", sw.windRandomness);
+        o.Set("applied", std::move(applied));
+        return o;
+    });
+    Register("terrain.props", "{terrain?, add?: model path, index?, remove?: index, layer?, min?, max?, threshold?, clumping?, min_size?, max_size?, sink?} -> the prop list",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        st::terrain::TerrainSystem& sys = st::terrain::TerrainSystem::Get();
+        const Entity t = a.Has("terrain") ? ResolveEntity(scene, a, err, "terrain") : sys.FindTerrain(scene);
+        if (t == INVALID_ENTITY || !sys.IsAuthored(t)) { if (err.empty()) err = "no authored terrain"; return Value(); }
+        std::vector<st::terrain::PropSettings> props = sys.GetProps(scene, t);
+        auto apply = [&](st::terrain::PropSettings& p) {
+            if (a.Has("layer")) p.layer = uint32_t(a["layer"].AsInt(p.layer));
+            if (a.Has("min")) p.minPerChunk = int(a["min"].AsInt(p.minPerChunk));
+            if (a.Has("max")) p.maxPerChunk = int(a["max"].AsInt(p.maxPerChunk));
+            if (a.Has("threshold")) p.threshold = a["threshold"].AsFloat(p.threshold);
+            if (a.Has("clumping")) p.clumping = a["clumping"].AsFloat(p.clumping);
+            if (a.Has("min_size")) p.minSize = a["min_size"].AsFloat(p.minSize);
+            if (a.Has("max_size")) p.maxSize = a["max_size"].AsFloat(p.maxSize);
+            if (a.Has("sink")) p.sink = a["sink"].AsFloat(p.sink);
+        };
+        if (a.Has("add")) {
+            st::terrain::PropSettings p;
+            apply(p);
+            std::string why;
+            if (!sys.AddProp(scene, t, a["add"].AsString(), p, &why)) { err = why; return Value(); }
+            props = sys.GetProps(scene, t);
+            props.push_back(p);   // the add is queued; show it as it will be
+        } else if (a.Has("remove")) {
+            const int i = int(a["remove"].AsInt(-1));
+            if (i < 0 || i >= int(props.size())) { err = "no such prop"; return Value(); }
+            sys.DeleteProp(scene, t, uint32_t(i));
+            props.erase(props.begin() + i);
+        } else if (a.Has("index")) {
+            const int i = int(a["index"].AsInt(-1));
+            if (i < 0 || i >= int(props.size())) { err = "no such prop"; return Value(); }
+            apply(props[i]);
+            sys.UpdateProp(scene, t, uint32_t(i), props[i]);
+        }
+        Value list = Value::Array();
+        for (const st::terrain::PropSettings& p : props) {
+            Value o = Value::Object();
+            o.Set("name", p.name);
+            o.Set("layer", int64_t(p.layer));
+            o.Set("min", int64_t(p.minPerChunk));
+            o.Set("max", int64_t(p.maxPerChunk));
+            o.Set("threshold", p.threshold);
+            o.Set("clumping", p.clumping);
+            o.Set("min_size", p.minSize);
+            o.Set("max_size", p.maxSize);
+            o.Set("sink", p.sink);
+            list.push_back(std::move(o));
+        }
+        return list;
+    });
     Register("terrain.sample", "{x, z} -> height, normal, dominant layer", [](const Value& a, std::string& err) {
         st::terrain::GroundSample g;
         if (!st::terrain::TerrainSystem::Get().Sample(a["x"].AsFloat(), a["z"].AsFloat(), g)) { err = "no authored terrain"; return Value(); }
@@ -1155,6 +1303,9 @@ void EditorBridge::RegisterAll () {
     Register("screenshot", "{path?} -> PNG of the game view (last rendered frame), absolute path", [this, &app](const Value& a, std::string& err) {
         const st::render::TextureObject* tex = st::render::Get().GameImage();
         if (tex == nullptr) { err = "nothing rendered yet"; return Value(); }
+        // Under the editor the game path may be skipped; keep it drawing while a tool is
+        // taking pictures (this shot can still be a frame old - wait first after a change).
+        app.HoldGamePath(30.0f);
         std::string path = a["path"].AsString();
         if (path.empty()) {
             std::error_code ec;

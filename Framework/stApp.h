@@ -41,6 +41,7 @@
 #include "render/Optics.h"
 #include "render/GraphicsAPI.h"
 #include "render/detroit/DetroitRenderer.h"
+#include "render/detroit/DetroitSplash.h"
 #include "render/hurricanes/HurricanesRenderer.h"
 #include "display/DisplaySettings.h"
 #include "io/SettingsManager.h"
@@ -92,6 +93,24 @@ struct AppConfig {
     // Shown before the graphics device exists. Relative to the working directory;
     // leave empty to skip the splash entirely.
     std::string splashImage = "assets/splash.bmp";
+
+    // In-engine splash (render/detroit/DetroitSplash.h): drawn over the first frames,
+    // after the device exists, until the world is ready to look at - object pipelines
+    // built, terrain generated - so the first thing on screen is never a world with its
+    // objects still popping in. The game runs underneath it the whole time.
+    //
+    // An intro video to play first, as a TJC stream (Framework/video). Empty = none; the
+    // splashImage is held instead. SIMTARY_SPLASH_VIDEO=0 in the environment (or
+    // --no-splash-video) skips it for one run; --no-splash skips the whole overlay.
+    std::string splashVideo;
+    bool  splashWaitForWorld   = true;    // false: fade as soon as the video ends
+    bool  splashSkippable      = true;    // key / click / tap ends the video (never the wait)
+    float splashMinSeconds     = 0.0f;    // shortest time the overlay stays, video included
+    float splashMaxWaitSeconds = 30.0f;   // longest wait for the world after the video
+    float splashFadeSeconds    = 0.5f;
+    float splashVolume         = 1.0f;
+    XMFLOAT3 splashBackground  = XMFLOAT3(0, 0, 0);   // behind the letterboxed video
+
     // Icon shown in the About window. Empty = none.
     std::string iconImage   = "assets/icon.png";
 
@@ -263,6 +282,9 @@ public:
     void SetEditorMode(bool on) { editor_.SetEnabled(on); }
     void ToggleEditorMode() { editor_.Toggle(); }
     EditorUI& Editor() { return editor_; }
+    // With the editor open, the game path is skipped while no panel shows its image. A tool
+    // that reads the game image (the editor bridge's screenshot) keeps it rendering for a while.
+    void HoldGamePath(float seconds) { gamePathHold_ = std::max(gamePathHold_, seconds); }
 
     // display
     // Window mode, monitor, resolution, v-sync, frame cap and render scale. Render
@@ -309,6 +331,13 @@ public:
     // first refusal. The default hands it to the DevUI Asset Explorer's import tray,
     // and ignores it when DevUI is not visible. Public for the same reason OnEvent is.
     virtual void HandleDroppedFile(const std::string& path);
+
+    // The in-engine startup splash (AppConfig::splash*). st::Run holds input back while
+    // it blocks, and turns a press into SkipSplashVideo() when the video is skippable.
+    bool SplashActive() const { return splash_.IsActive(); }
+    bool SplashBlocksInput() const { return splash_.BlocksInput(); }
+    bool SplashSkippable() const { return splash_.Skippable(); }
+    void SkipSplashVideo() { splash_.SkipVideo(); }
 
 protected:
     // project hooks
@@ -410,7 +439,8 @@ private:
     //	input and events. After the scene update and OnUpdate, so it lays out this frame's values.
     void UpdateGameUI(float dt, bool editing);
     bool             xrDesktopOff_ = false; // XR session: the game path is not updated/rendered
-    bool             pathOff_ = false;      // xrDesktopOff_ or headless: game path not updated/rendered
+    bool             pathOff_ = false;      // xrDesktopOff_, headless or hidden behind the editor: game path not updated/rendered
+    float            gamePathHold_ = 0.0f;  // seconds the game path renders even when the editor hides it
     SubWinStatus m_loadingScreen;
 
     // Loads/unloads AOT Faust processors, played through the engine OpenAL stream.
@@ -506,6 +536,15 @@ private:
     bool loadingSawWork_    = false;  // saw IsPipelineCreationActive() > 0 at least once
     int  loadingIdleFrames_ = 0;      // consecutive frames with no active compile jobs
     int  loadingFrames_     = 0;      // frames the overlay has been up (hard-stop guard)
+
+    // Startup splash, and the frame counters behind its "world ready" verdict.
+    st::render::detroit::StartupSplash splash_;
+    bool SplashWorldReady(std::string& status);
+    int  splashFrames_       = 0;     // frames since the splash started
+    int  splashPipelineIdle_ = 0;     // consecutive frames with no pipeline job in flight
+    bool splashSawPipelines_ = false; // saw a pipeline job at least once
+    int  splashTerrainIdle_  = 0;     // consecutive frames with no terrain generation running
+    int  splashWarmFrames_   = 0;     // frames rendered since everything above settled
 };
 
 } // namespace st

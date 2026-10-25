@@ -15,6 +15,7 @@
 
 #include "wiECS.h"
 #include "wiScene.h"
+#include "wiResourceManager.h"
 
 #include <cstdint>
 #include <string>
@@ -35,6 +36,10 @@ struct ImportContext {
 	// Synthetic names already registered for embedded images, keyed by content hash, so a
 	//	texture reused by twenty materials is registered once.
 	std::unordered_map<uint64_t, std::string> embeddedTextures;
+	// The resource manager holds resources weakly: an embedded image nobody holds is gone
+	//	before the material that names it loads it. These keep them alive until the
+	//	materials have taken their own handles.
+	std::vector<wi::Resource> embeddedResources;
 };
 
 // Finish a node transform an importer just wrote.

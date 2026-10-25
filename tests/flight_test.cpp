@@ -39,7 +39,10 @@ struct Fdm {
 
 double Clamp (double v, double lo, double hi) { return std::min(hi, std::max(lo, v)); }
 
-void FlyPreset (const std::string& name, const std::string& root) {
+// windEast: steady wind blowing towards the east, m/s. severity: Dryden turbulence index
+//	(0 none, 3 moderate) - what stFlight sets from the scene weather.
+void FlyPreset (const std::string& name, const std::string& root, double windEast = 0.0,
+                double severity = 0.0) {
     st::flight::HelicopterSpec spec;
     if (!st::flight::Preset(name, spec)) {
         Check(false, "preset missing", name);
@@ -74,14 +77,22 @@ void FlyPreset (const std::string& name, const std::string& root) {
         stj_destroy(f);
         return;
     }
+    fdm.Set("atmosphere/wind-east-fps", windEast * ftPerM);
+    if (severity > 0.0) {
+        fdm.Set("atmosphere/turb-type", 3.0);
+        fdm.Set("atmosphere/turbulence/milspec/windspeed_at_20ft_AGL-fps", windEast * ftPerM);
+        fdm.Set("atmosphere/turbulence/milspec/severity", severity);
+    }
 
     const double dt = 1.0 / 120.0;
     const double nominal = spec.mainRotor.nominalRpm;
     st::flight::Controller control;
     double collectiveI = 0.0;
     double maxBank = 0, maxPitch = 0, minAgl = 1e9, maxAgl = -1e9, maxHoverSpeed = 0, peakSpeed = 0;
+    double psiStart = 0, maxYaw = 0;
     bool ok = true;
-    const int steps = int(80.0 / dt);
+    // In wind the hold also has to find the bank into it, so it gets longer to stop.
+    const int steps = int((windEast != 0.0 ? 95.0 : 80.0) / dt);
     for (int i = 0; i < steps && ok; ++i) {
         const double t = i * dt;
         st::flight::Sensors in;
@@ -135,17 +146,20 @@ void FlyPreset (const std::string& name, const std::string& root) {
             maxHoverSpeed = std::max(maxHoverSpeed, groundSpeed);
         }
         if (t >= 50.0 && t < 60.0) peakSpeed = std::max(peakSpeed, groundSpeed);
-        if (i % int(5.0 / dt) == 0) {
-            std::printf("  t=%4.1f rpm=%6.1f thr=%.2f col=%.3f agl=%6.2f vz=%5.2f gs=%5.2f phi=%5.1f theta=%5.1f trim=%+.3f %+.3f\n",
+        // Lift-off and hover with the pedals centred: the heading must stay where it was.
+        if (t < 20.0) psiStart = in.psi;
+        else if (t < 50.0) maxYaw = std::max(maxYaw, std::fabs(std::remainder(in.psi - psiStart, 2.0 * 3.14159265358979)));
+        if (i % int((t >= 19.0 && t < 35.0 ? 1.0 : 5.0) / dt) == 0) {
+            std::printf("  t=%4.1f rpm=%6.1f thr=%.2f col=%.3f agl=%6.2f vz=%5.2f gs=%5.2f phi=%5.1f theta=%5.1f psi=%6.1f tr=%+.3f trim=%+.3f %+.3f\n",
                         t, in.rotorRpm, out.throttle, out.collective, agl, climb, groundSpeed, in.phi * 57.3,
-                        in.theta * 57.3, control.LateralTrim(), control.LongitudinalTrim());
+                        in.theta * 57.3, in.psi * 57.3, out.antitorque, control.LateralTrim(), control.LongitudinalTrim());
         }
     }
     const double finalSpeed = fdm.Get("velocities/vg-fps") / ftPerM;
     const double rpmEnd = fdm.Get("propulsion/engine[0]/rotor-rpm");
     const double tailRpm = fdm.Get("propulsion/engine[1]/rotor-rpm");
     std::printf("  rpm %.1f (nominal %.0f), tail %.0f (nominal %.0f), hover band %.2f..%.2f m, max bank %.1f, max pitch %.1f deg\n"
-                "  hover drift <= %.2f m/s, stick forward reached %.1f m/s, %.2f m/s 20 s after release\n",
+                "  hover drift <= %.2f m/s, stick forward reached %.1f m/s, %.2f m/s when the run ends\n",
                 rpmEnd, nominal, tailRpm, spec.tailRotor.nominalRpm, minAgl, maxAgl, maxBank * 57.3, maxPitch * 57.3,
                 maxHoverSpeed, peakSpeed, finalSpeed);
     Check(ok, "JSBSim stopped", name);
@@ -153,9 +167,13 @@ void FlyPreset (const std::string& name, const std::string& root) {
     Check(std::fabs(tailRpm - spec.tailRotor.nominalRpm) < spec.tailRotor.nominalRpm * 0.05, "tail rotor rpm not linked", name);
     Check(minAgl > 5.0 && maxAgl < 15.0, "did not hover at 10 m", name);
     Check(maxBank < 0.35 && maxPitch < 0.35, "attitude diverged", name);
-    Check(maxHoverSpeed < 1.0, "hover hold drifts", name);
+    std::printf("  heading moved up to %.1f deg in lift-off + hover (pedals centred)\n", maxYaw * 57.3);
+    // A crosswind weathercocks the nose (the fin turns it into the wind) before the hold answers.
+    Check(maxYaw < (windEast != 0.0 ? 15.0 : 5.0) / 57.3, "heading wanders on lift-off", name);
+    // Gusts push the aircraft around before the hold can answer; steady wind must not.
+    Check(maxHoverSpeed < (severity > 0.0 ? 3.0 : 1.0), "hover hold drifts", name);
     Check(peakSpeed > 5.0, "stick forward does not fly forward", name);
-    Check(finalSpeed < 1.0, "hover hold does not stop the aircraft", name);
+    Check(finalSpeed < (severity > 0.0 ? 3.0 : 1.0), "hover hold does not stop the aircraft", name);
     stj_destroy(f);
 }
 
@@ -347,6 +365,12 @@ int main () {
     for (const auto& name : st::flight::PresetNames()) {
         std::printf("%s\n", name.c_str());
         FlyPreset(name, root.generic_string());
+    }
+    for (const char* name : { "utility", "uh60" }) {
+        std::printf("%s, 10 m/s crosswind\n", name);
+        FlyPreset(name, root.generic_string(), 10.0);
+        std::printf("%s, 10 m/s wind + moderate turbulence\n", name);
+        FlyPreset(name, root.generic_string(), 10.0, 3.0);
     }
     ValidateUH60(root.generic_string());
     std::printf(failures ? "flight_test: %d failure(s)\n" : "flight_test: ok\n", failures);

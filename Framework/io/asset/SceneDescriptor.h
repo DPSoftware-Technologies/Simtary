@@ -99,6 +99,7 @@ struct ResourceExport {
     uint32_t skipped  = 0;  // a file of that name was already in the folder
     uint32_t rejected = 0;  // name escaped the folder (see below); nothing written
     uint32_t empty    = 0;  // resource carried no bytes; nothing written
+    uint32_t inContent = 0; // already a source file in `contentDir`; nothing written
     uint64_t bytes    = 0;  // total size of what was written
 };
 
@@ -129,8 +130,13 @@ struct ResourceExport {
 // letter, or any ".." segment - is REFUSED and counted in `rejected` rather than
 // written. Those names come out of a scene file, which is untrusted input by the time
 // it reaches here, and this writes into the developer's own source tree.
+//
+// A resource that already exists under `contentDir` (the project's own source content,
+// when given) is not copied either: the packer packs it from there, and a copy in
+// `outDir` would win over it - so the next edit of the original would never ship.
 bool ExportSceneResources (const WisceneSplit& split, const std::string& outDir,
-                           ResourceExport* out = nullptr, std::string* error = nullptr);
+                           ResourceExport* out = nullptr, std::string* error = nullptr,
+                           const std::string& contentDir = std::string());
 
 // .stsd
 

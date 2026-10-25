@@ -57,7 +57,7 @@ CBUFFER(HairParticleCB, CBSLOT_OTHER_HAIRPARTICLE)
 
 	float xHairGravityPower;
 	uint xHairBillboardCount;
-	float xHair_padding0;
+	float xHairThinDistance; // SIMTARY: beyond this, strands thin out with distance (0 = off)
 	float xHair_padding1;
 
 	HairParticleAtlasRect xHairAtlasRects[64];

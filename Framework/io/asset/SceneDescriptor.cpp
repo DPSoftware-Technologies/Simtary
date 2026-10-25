@@ -325,7 +325,7 @@ bool EscapesFolder (const std::string& logical) {
 } // namespace
 
 bool ExportSceneResources (const WisceneSplit& split, const std::string& outDir,
-                           ResourceExport* out, std::string* error) {
+                           ResourceExport* out, std::string* error, const std::string& contentDir) {
     ResourceExport result;
     if (outDir.empty()) {
         SetError(error, "no resource folder given");
@@ -343,11 +343,16 @@ bool ExportSceneResources (const WisceneSplit& split, const std::string& outDir,
             continue;
         }
 
+        std::error_code ec;
+        if (!contentDir.empty() && fs::exists(U8Path(contentDir + "/" + logical), ec)) {
+            ++result.inContent;
+            continue;
+        }
+
         const std::string path = outDir + "/" + logical;
 
         // Already there: left alone, deliberately. See the header - the folder is also
         // where a hand-made override lives, and this is what keeps a repeat export cheap.
-        std::error_code ec;
         if (fs::exists(U8Path(path), ec)) {
             ++result.skipped;
             continue;

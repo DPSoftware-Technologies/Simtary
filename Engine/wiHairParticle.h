@@ -113,6 +113,9 @@ namespace wi
 		wi::primitive::AABB aabb;
 		wi::vector<uint32_t> indices; // it is dependent on vertex_lengths and contains triangles with non-zero lengths
 		uint32_t layerMask = ~0u;
+		// SIMTARY: from this distance on, strands thin out (density ~ (thinDistance / d)^2) and
+		//	the kept ones fade in by length, so far grass costs little. 0 = off. Terrain grass sets it.
+		float thinDistance = 0;
 		mutable bool regenerate_frame = true;
 		wi::graphics::Format position_format = wi::graphics::Format::R16G16B16A16_UNORM;
 		mutable bool must_rebuild_blas = true;

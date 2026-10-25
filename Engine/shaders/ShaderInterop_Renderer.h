@@ -1770,7 +1770,7 @@ struct TerrainVirtualTexturePush
 	int blendmap_texture;
 	uint blendmap_layers;
 	int output_texture;
-	int padding0;
+	int chunk_xz; // SIMTARY: the chunk's coordinates, x in the low 16 bits and z in the high, signed (anti-tiling noise needs a world position)
 };
 struct VirtualTextureResidencyUpdateCB
 {
