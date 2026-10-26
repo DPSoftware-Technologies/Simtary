@@ -30,6 +30,7 @@
 #include "input/InputActions.h"
 #include "io/model/ModelImporter.h"
 #include "terrain/TerrainSystem.h"
+#include "damage/Damage.h"
 #include "scene/DayNight.h"
 #include "terrain/TerrainGenerate.h"
 #include "vehicle/VehicleComponent.h"
@@ -890,6 +891,29 @@ void EditorBridge::RegisterAll () {
         if (m != nullptr)
             for (const Value& k : a["keys"].Items()) EraseMetadata(*m, k.AsString());
         return m ? MetadataJson(*m) : Value();
+    });
+    Register("damage.break", "{id|name (entity with stDamage), part} -> breaks the part off as debris (Play)",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        if (!st::damage::BreakPart(scene, e, a["part"].AsString(), &err)) return Value();
+        return Value(st::damage::Status(scene, e));
+    });
+    Register("damage.hit", "{id|name, part, amount=50} -> lowers the part's health; breaks it at 0 (Play)",
+        [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        const float amount = a.Has("amount") ? a["amount"].AsFloat() : 50.0f;
+        if (!st::damage::DamagePart(scene, e, a["part"].AsString(), amount, &err)) return Value();
+        return Value(st::damage::Status(scene, e));
+    });
+    Register("damage.status", "{id|name} -> each part's health", [S](const Value& a, std::string& err) {
+        WScene& scene = S();
+        const Entity e = ResolveEntity(scene, a, err);
+        if (e == INVALID_ENTITY) return Value();
+        return Value(st::damage::Status(scene, e));
     });
     Register("native.list", "{} -> every registered native component name", [](const Value&, std::string&) {
         wi::vector<std::string> names;

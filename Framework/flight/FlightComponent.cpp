@@ -216,7 +216,7 @@ void FlightComponent::ReadInput (float dt) {
     controls.cyclicX = std::clamp(stick.x, -1.0f, 1.0f);
     controls.cyclicY = std::clamp(stick.y, -1.0f, 1.0f);
     controls.pedals = std::clamp(input_->Value(idPedals_), -1.0f, 1.0f);
-    if (input_->Pressed(idEngine_)) {
+    if (input_->Pressed(idEngine_) && !damage_.engineFailed) {
         engineOn_ = !engineOn_;
         wi::backlog::post(std::string("stFlight: engine ") + (engineOn_ ? "start" : "stop"));
     }
@@ -241,7 +241,13 @@ void FlightComponent::Step () {
     pilot.pedals = controls.pedals;
     control_.assist = assist;
     control_.engineOn = engineOn_;
-    const st::flight::Outputs out = control_.Update(spec_, pilot, in, kStep);
+    st::flight::Outputs out = control_.Update(spec_, pilot, in, kStep);
+    if (damage_.tailRotorLost) {
+        // Root pitch that puts the 3/4-radius blade at zero: no thrust (FlightControl's
+        //	output is 3/4R pitch minus 0.75 x the tail's twist).
+        out.antitorque = -0.75 * spec_.tailRotor.twistDeg * kPi / 180.0;
+    }
+    ApplyDamage();
     stj_set(fdm_, "fcs/throttle-cmd-norm[0]", out.throttle);
     stj_set(fdm_, "propulsion/engine[0]/collective-ctrl-rad", out.collective);
     stj_set(fdm_, "propulsion/engine[0]/lateral-ctrl-rad", out.lateral);
@@ -254,6 +260,70 @@ void FlightComponent::Step () {
         ready = false;
     }
     telemetry.throttle = out.throttle;
+}
+
+void FlightComponent::ApplyDamage () {
+    // Lift the missing main blades no longer make (body +Z is down), at the hub.
+    const double thrust = Get(fdm_, "propulsion/engine[0]/thrust-lbs");
+    const int blades = std::max(1, spec_.mainRotor.blades);
+    const int lost = std::clamp(damage_.mainBladesLost, 0, blades);
+    const double force = std::isfinite(thrust) ? std::max(0.0, thrust) * lost / blades : 0.0;
+
+    double l = 0.0, m = 0.0;
+    if (lost > 0 && lost < blades && std::isfinite(thrust)) {
+        // Once-per-revolution imbalance: the missing blades' share of the lift at 0.7 R,
+        //	turning with the rotor. Scaled down for what the flapping hinges absorb.
+        constexpr double kImbalance = 0.25;
+        const double omega = Get(fdm_, "propulsion/engine[0]/rotor-rpm") / 60.0 * 2.0 * kPi;
+        damageAzimuth_ = std::fmod(damageAzimuth_ + omega * kStep, 2.0 * kPi);
+        const double radiusFt = spec_.mainRotor.diameter * 0.5 * kFtPerM;
+        const double amp = kImbalance * std::max(0.0, thrust) / blades * 0.7 * radiusFt;
+        l = amp * std::cos(damageAzimuth_);
+        m = amp * std::sin(damageAzimuth_);
+    }
+    if (damage_.stabilizerLost) {
+        // Take back what the stabiliser contributed (aerodynamics in FlightModel.cpp).
+        const double stab = Get(fdm_, "aero/pitch-stabilizer") + Get(fdm_, "aero/pitch-damping");
+        if (std::isfinite(stab)) m -= stab;
+    }
+    stj_set(fdm_, "external_reactions/damage-force/magnitude", force);
+    stj_set(fdm_, "external_reactions/damage-moment/magnitude-lbsft", 1.0);
+    stj_set(fdm_, "external_reactions/damage-moment/l", l);
+    stj_set(fdm_, "external_reactions/damage-moment/m", m);
+    stj_set(fdm_, "external_reactions/damage-moment/n", 0.0);
+}
+
+void FlightComponent::SetDamage (const Damage& damage) {
+    damage_ = damage;
+    // A rotor that came off is not ours to spin any more.
+    if (damage_.tailRotorLost) tailRotor_ = INVALID_ENTITY;
+    if (damage_.engineFailed) engineOn_ = false;
+    wi::backlog::post(std::string("stFlight: damage - tail rotor ") + (damage_.tailRotorLost ? "LOST" : "ok") +
+                      ", main blades lost " + std::to_string(damage_.mainBladesLost) +
+                      ", stabilizer " + (damage_.stabilizerLost ? "LOST" : "ok") +
+                      ", engine " + (damage_.engineFailed ? "FAILED" : "ok"));
+}
+
+namespace {
+// The spin vector of a rotor node: its axis is the one SpinRotors turns it about, which the
+//	spin itself leaves where it is in world space.
+XMFLOAT3 RotorSpin (Scene* scene, Entity rotor, int axis, double rpm, double sense) {
+    const TransformComponent* t = (scene && rotor != INVALID_ENTITY) ? scene->transforms.GetComponent(rotor) : nullptr;
+    if (t == nullptr) return XMFLOAT3(0, 0, 0);
+    const XMMATRIX w = XMLoadFloat4x4(&t->world);
+    const XMVECTOR a = XMVector3Normalize(w.r[axis]);
+    XMFLOAT3 out;
+    XMStoreFloat3(&out, XMVectorScale(a, float(-sense * rpm / 60.0 * 2.0 * kPi)));
+    return out;
+}
+} // namespace
+
+XMFLOAT3 FlightComponent::MainRotorSpin () const {
+    return RotorSpin(scene, mainRotor_, 1, telemetry.rotorRpm, spec_.mainRotor.sense);
+}
+
+XMFLOAT3 FlightComponent::TailRotorSpin () const {
+    return RotorSpin(scene, tailRotor_, 0, telemetry.tailRpm, spec_.tailRotor.sense);
 }
 
 void FlightComponent::ApplyWind () {
@@ -386,7 +456,8 @@ void FlightComponent::DrawDebug () {
     }
     if (ImGui::Checkbox("Assist (hover + heading hold)", &assist)) SaveBoundParams();
     ImGui::SameLine();
-    if (ImGui::SmallButton(engineOn_ ? "Stop engine" : "Start engine")) engineOn_ = !engineOn_;
+    if (damage_.engineFailed) ImGui::TextDisabled("[engine failed]");
+    else if (ImGui::SmallButton(engineOn_ ? "Stop engine" : "Start engine")) engineOn_ = !engineOn_;
     ImGui::SameLine();
     if (ImGui::SmallButton("Reset")) Reset();
     const Telemetry& tm = telemetry;
@@ -397,6 +468,10 @@ void FlightComponent::DrawDebug () {
     ImGui::Text("hdg %.0f  pitch %+.1f  bank %+.1f", tm.heading, tm.pitch, tm.bank);
     ImGui::Text("collective %.2f  cyclic %+.2f %+.2f  pedals %+.2f", controls.collective, controls.cyclicX,
                 controls.cyclicY, controls.pedals);
+    if (damage_.tailRotorLost || damage_.mainBladesLost || damage_.stabilizerLost || damage_.engineFailed)
+        ImGui::TextColored(ImVec4(1, 0.4f, 0.3f, 1), "damage: %s%s%s%s", damage_.tailRotorLost ? "tail rotor  " : "",
+                           damage_.mainBladesLost ? "main blades  " : "", damage_.stabilizerLost ? "stabilizer  " : "",
+                           damage_.engineFailed ? "engine" : "");
 }
 
 } // namespace st

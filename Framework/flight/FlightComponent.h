@@ -81,6 +81,21 @@ struct FlightComponent : wi::scene::NativeComponent {
     // with the rotor still turning if the engine runs.
     void Reset ();
 
+    // What is broken, as the flight model sees it (stDamage sets it when a part comes off).
+    // Applied every step through the model's damage force / moment - see FlightModel.cpp.
+    struct Damage {
+        bool tailRotorLost = false;  // no anti-torque: the main rotor's torque turns the airframe
+        int  mainBladesLost = 0;     // lift lost per blade, plus a once-per-rev imbalance
+        bool stabilizerLost = false; // its pitch stability and damping are gone
+        bool engineFailed = false;   // no power, and it cannot be restarted: autorotate
+    };
+    void SetDamage (const Damage& damage);
+    const Damage& GetDamage () const { return damage_; }
+    // World-space angular velocity of the main / tail rotor right now (rad/s) and its hub,
+    // for debris that leaves a spinning rotor.
+    XMFLOAT3 MainRotorSpin () const;
+    XMFLOAT3 TailRotorSpin () const;
+
     void DescribeRequired (wi::vector<wi::scene::RequiredComponent>& out) override;
     void Start () override;
     void Update (float dt) override;
@@ -98,6 +113,7 @@ private:
     void ApplyWind ();
     void WriteTransform ();
     void SpinRotors (float dt);
+    void ApplyDamage ();
 
     st::flight::HelicopterSpec spec_;
     stj_fdm* fdm_ = nullptr;
@@ -113,6 +129,8 @@ private:
     XMFLOAT4 mainRest_ = XMFLOAT4(0, 0, 0, 1), tailRest_ = XMFLOAT4(0, 0, 0, 1);
     bool engineOn_ = true;
     int rebuilds_ = 0;              // simulations rebuilt after breaking; stops after a few
+    Damage damage_;
+    double damageAzimuth_ = 0.0;    // rad, where the missing blade's imbalance points
 };
 
 } // namespace st

@@ -321,7 +321,17 @@ bool WriteJSBSimModel (const HelicopterSpec& s, const std::string& root, const s
       << "          <property>atmosphere/rho-slugs_ft3</property>\n          <property>velocities/vt-fps</property>\n"
       << "          <property>velocities/q-aero-rad_sec</property>\n        </product>\n      </function>\n"
       << "    </axis>\n"
-      << "  </aerodynamics>\n\n</fdm_config>\n";
+      << "  </aerodynamics>\n\n";
+
+    // Damage (flight/FlightComponent SetDamage): one force at the main rotor hub and one moment,
+    //	both zero until something breaks. The game writes them every step through
+    //	external_reactions/damage-*/{magnitude, x y z} and {magnitude-lbsft, l m n}.
+    o << "  <external_reactions>\n"
+      << "    <force name=\"damage-force\" frame=\"BODY\">\n" << Location(nullptr, hub, "      ")
+      << "      <direction><x>0</x><y>0</y><z>1</z></direction>\n    </force>\n"
+      << "    <moment name=\"damage-moment\" frame=\"BODY\">\n"
+      << "      <direction><x>1</x><y>0</y><z>0</z></direction>\n    </moment>\n"
+      << "  </external_reactions>\n\n</fdm_config>\n";
 
     return WriteFile(aircraftDir / (model + ".xml"), o.str(), error);
 }
